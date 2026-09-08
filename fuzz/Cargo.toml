@@ -1,0 +1,30 @@
+[package]
+name = "ble-framing-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Its own workspace: cargo-fuzz builds with a different profile and toolchain.
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ble-framing = { path = "../crates/ble-framing" }
+ctaphid = { path = "../crates/ctaphid" }
+
+[[bin]]
+name = "ble_reassembly"
+path = "fuzz_targets/ble_reassembly.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ctaphid_frames"
+path = "fuzz_targets/ctaphid_frames.rs"
+test = false
+doc = false
+bench = false

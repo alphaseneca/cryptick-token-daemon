@@ -1,0 +1,6 @@
+/target
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+Cargo.lock.orig
+.DS_Store
