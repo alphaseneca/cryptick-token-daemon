@@ -1,0 +1,77 @@
+# Trimmed to what exists today. Jobs from PROJECT.md §14 that reference crates
+# not yet written — linux-uhid, gated-adapters, hardware — are added as those
+# crates land, so that a red CI always means a real regression.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --all-features
+
+  # Pure crates must pass with no hardware and no platform APIs. If this job
+  # ever needs a radio or a device node, the layering is broken.
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p ctap -p ctaphid -p ble-framing -p ipc
+
+  # Substitutes the BLE transport for an in-process fake speaking real CTAP.
+  # Proves the proxy logic end to end with no radio. Highest-value job (§14 L2).
+  fake-device:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p daemon --features fake-transport
+
+  # Malformed input must never panic the daemon. Sources: our own firmware,
+  # pre-bond BLE paths, and any local process writing to the virtual HID node.
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run ble_reassembly -- -max_total_time=60
+      - run: cargo fuzz run ctaphid_frames  -- -max_total_time=60
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans sources licenses
+      - name: The alpha crates must be pinned exactly
+        run: |
+          ! grep -E '^(webauthn-authenticator-rs|soft-fido2[a-z-]*)\s*=\s*"\^?[0-9]' Cargo.toml \
+            || (echo "Pin these exactly — see PROJECT.md §7" && exit 1)

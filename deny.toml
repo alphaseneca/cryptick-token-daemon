@@ -1,0 +1,29 @@
+# cargo-deny. A release gate, not a suggestion (PROJECT.md §14).
+
+[advisories]
+yanked = "deny"
+
+[bans]
+# Two versions of the same crate in an authenticator path means two code paths
+# to audit and one of them is the one nobody looked at.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+[licenses]
+# Permissive only. A copyleft dependency in a daemon we intend to ship signed
+# and notarised is a licensing problem discovered far too late.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
