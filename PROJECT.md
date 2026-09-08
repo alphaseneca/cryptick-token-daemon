@@ -138,7 +138,8 @@ to do.
 
 Stated once, because the naming misleads:
 
-- The **device is BLE only.** No WiFi role anywhere in this design.
+- The device speaks **USB and BLE**. No WiFi role anywhere in this design,
+  and no internet in either direction.
 - `vpcd` listens on **loopback** ports 35963/35964. Local IPC.
 - USB/IP on Windows is a **local socket to the kernel's virtual USB host
   controller**. "IP" is the packet encoding, not a network hop. 127.0.0.1.
@@ -152,8 +153,11 @@ filesystem/named-pipe endpoint.** Enforced by §15.6.
 **Rust** for the core and the daemon. **Swift** for exactly one thing: the macOS
 virtual HID helper, because CoreHID is Swift-only.
 
-Rust is right here for a specific reason, not a general one: both halves of the
-daemon already exist as Rust crates (§7).
+Rust is right here for two specific reasons, not a general one. The BLE client
+half exists as a Rust crate (§7). And the OS-facing half is a parser sitting on
+the least protected surface in the project (§14) — any local process can write
+to the virtual HID node — which is exactly where a memory-safe language pays
+for itself.
 
 The macOS helper is a **separate signed process**, not FFI into the daemon. The
 entitlement requires a provisioning profile, which embeds into an app bundle; and
@@ -928,7 +932,24 @@ Do not guess. Test and record the answer here.
 - Typed errors with `thiserror`; no stringly-typed failures across crate lines.
 - New runtime dependencies in `daemon/` or `sk-middleware/` need discussion.
   Supply chain surface in an authenticator path is a real cost.
-- Commits: `area: summary`, e.g. `transport-ble: read control point length before framing`.
+- Commits follow **Conventional Commits**: `type(scope): summary`, e.g.
+  `feat(transport-ble): read control point length before framing`.
+  - Types: `feat`, `fix`, `docs`, `test`, `refactor`, `perf`, `ci`, `build`,
+    `chore`.
+  - Scope is the crate name — `ble-framing`, `ctaphid`, `ctap`, `ipc`, `daemon`,
+    `vhid-linux`, `sk-middleware`, `vpcd-client`. Omit it when a change spans
+    several.
+  - **An IPC message shape change is a breaking change**: mark it `feat(ipc)!:`
+    and bump `PROTOCOL_VERSION` in the same commit, or §14's release gate 6 is
+    violated the moment the change lands.
+  - Anything touching a §15 invariant, a §7 dependency decision, or a §19 dead
+    end puts the reasoning in the **body**, not just the summary. That is how
+    the next agent learns why; §19 is long precisely because nobody wrote it
+    down the first time.
+  - Write bodies with `git commit -F <file>`, never `-m`. An apostrophe closes
+    a single-quoted shell string and the rest of the message becomes pathspecs;
+    backticks inside double quotes get executed. Both failure modes are quiet
+    enough to produce a wrong commit rather than an error.
 - Every behaviour derived from a spec, an OS doc, or a forum answer gets a comment
   citing the source. Future agents will otherwise re-litigate it — that is exactly
   how §19 got long.
