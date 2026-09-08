@@ -1,0 +1,25 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+description = "The bridge daemon: owns the radio, hosts the adapters"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+# Swaps the BLE transport for an in-process fake speaking real CTAP. Proves the
+# proxy end to end with no radio, on all three OSes. PROJECT.md §14 (L2).
+fake-transport = []
+
+[dependencies]
+ble-framing.workspace = true
+ctap.workspace = true
+ctaphid.workspace = true
+ipc.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "net", "io-util"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "io-util", "net"] }
