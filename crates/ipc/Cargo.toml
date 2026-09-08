@@ -1,0 +1,16 @@
+[package]
+name = "ipc"
+version = "0.1.0"
+description = "Wire types and framing for the local IPC between the daemon and its clients"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

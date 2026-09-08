@@ -1,0 +1,10 @@
+[package]
+name = "ctap"
+version = "0.1.0"
+description = "CTAP2 command and status codes, and request/response framing"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
