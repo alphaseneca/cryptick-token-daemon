@@ -36,7 +36,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ctap -p ctaphid -p ble-framing -p ipc
+      - run: cargo test -p ctap -p ctaphid -p ctap-client -p ble-framing -p ipc
 
   # Substitutes the BLE transport for an in-process fake speaking real CTAP.
   # Proves the proxy logic end to end with no radio. Highest-value job (§14 L2).
@@ -52,6 +52,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p daemon --features fake-transport
 
+      # The real ssh-keygen, through the middleware and the daemon, against the
+      # fake device. Same script the hardware job runs with a radio.
+      - name: SSH round trip
+        if: matrix.os != 'windows-latest'
+        run: ./tools/ci/ssh-roundtrip.sh
+
   # Malformed input must never panic the daemon. Sources: our own firmware,
   # pre-bond BLE paths, and any local process writing to the virtual HID node.
   fuzz:
@@ -63,6 +69,7 @@ jobs:
       - run: cargo install cargo-fuzz --locked
       - run: cargo fuzz run ble_reassembly -- -max_total_time=60
       - run: cargo fuzz run ctaphid_frames  -- -max_total_time=60
+      - run: cargo fuzz run ctap_cbor       -- -max_total_time=60
 
   deny:
     runs-on: ubuntu-latest

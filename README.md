@@ -21,16 +21,21 @@ not review nits.
 | `ctap` | Command/status bytes and message framing | done |
 | `ctaphid` | 64-byte packets, channels, reassembly (the OS-facing envelope) | done |
 | `ipc` | Wire types and length-prefixed framing (§13) | done |
+| `ctap-client` | CBOR, COSE, authdata, DER, CTAP2 requests — the browser's half | done |
+| `sk-middleware` | OpenSSH `SecurityKeyProvider` cdylib | **working** — enrols and signs |
 | `daemon` | Transaction core, one-in-flight bridge, IPC server, CTAPHID↔BLE adapter | core done |
 | `transport-ble` | The real radio, and bonding checks per platform | **not started** |
 | `vhid-linux` | `/dev/uhid` node → the adapter above | not started |
 | `vhid-windows` | USB/IP → VHCI → the adapter above | not started |
-| `sk-middleware` | OpenSSH `SecurityKeyProvider` | not started |
 | `vpcd-client` | PIV relay for login and screen unlock | not started |
 
-The whole proxy path works end to end today — CTAPHID packets in, CTAP BLE
-fragments out, answer back — against a hostile in-process fake device rather than
-a radio. That is the L2 layer of §14 and deliberately where most of the test
+**`ssh-keygen -t ed25519-sk` works today.** The real OpenSSH binary enrols a key
+and signs with it, through the middleware, the IPC socket and the daemon — see
+`tools/ci/ssh-roundtrip.sh`. The device at the far end is an in-process fake
+rather than a radio, so the credential and signature are fixtures.
+
+The CTAPHID path works end to end too — packets in, CTAP BLE fragments out,
+answer back. That is the L2 layer of §14 and deliberately where most of the test
 effort sits. The three `vhid-*` crates are thin: they open a device node and feed
 bytes to `daemon::HidBridge`, which is already written and tested.
 

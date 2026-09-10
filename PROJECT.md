@@ -457,8 +457,13 @@ current CTAP spec:
 
 Commands: `PING 0x81`, `KEEPALIVE 0x82`, `MSG 0x83`, `CANCEL 0xBE`, `ERROR 0xBF`.
 
-PIV rides a separate private GATT service with our own chunking — see
-`docs/device-protocol.md`. That one is ours and may change freely.
+PIV rides a separate private GATT service, specified in
+`docs/device-protocol.md`. It reuses this framing byte for byte rather than
+inventing a second one, so the conformance corpus covers both services and
+`SEQ` wrapping has one implementation instead of two. That document also
+records why a second service is not the §19 dead end: PIV keys are different
+material, which §15.9 requires be kept separate, and this is the only door to
+them rather than a second door to the FIDO material.
 
 ## 13. Local IPC
 
@@ -525,6 +530,37 @@ reorder continuation fragments, and return CTAP error statuses on every branch.
 
 GitHub's Linux runners give root in a VM, so `modprobe uhid` works and the full
 path runs for real. Not a mock. A failure here is a shipping bug.
+
+### Shared conformance corpus
+
+`crates/ble-framing/tests/conformance/ble_fido_v1.json`, vendored from the
+firmware repo. 37 vectors whose expectations are **authored from CTAP2 §11.4,
+not captured from either implementation**, each carrying a `why`. Both sides
+replay the same file, so a wire-format divergence fails CI on whichever side
+moved instead of being found by reading both implementations side by side.
+
+Two rules keep it honest:
+
+- **A vector's expectation is only as good as its spec citation.** The corpus
+  shipped with `cancel_mid_transaction_is_also_an_init_violation` expecting
+  `ERR_INVALID_SEQ`, which §11.4.8 forbids — "the authenticator MUST NOT reply
+  to the cancel message itself". Both implementations had agreed on it.
+- **Disagreements are recorded as self-clearing, never skipped.** The `DISPUTED`
+  list in `tests/conformance.rs` asserts that each disputed vector *still*
+  disagrees, so correcting the corpus fails the test and forces the entry out. A
+  skip list that passes silently would rot.
+
+**`expect` means the last delivery, not the only one**, and a vector may carry
+`deliveries` — an ordered list of every message delivered — when that matters.
+"Last" alone would hide a real divergence: two implementations reaching the same
+final state by different routes, one delivering a CANCEL and then a message, the
+other only the message, would both pass. Every vector that delivers at most once
+reads identically under either rule, which is why settling this cost nothing.
+
+`direction` (`both` / `host_to_device` / `device_to_host`) is what lets one file
+serve both sides. Getting it wrong is a real failure mode: a rule that holds only
+for writes to `fidoControlPoint` must not be tagged `both`, or the host side
+inherits a constraint the spec never placed on notifications.
 
 ### Golden transcripts
 
@@ -740,7 +776,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: Confirm the device is bonded and present
-        run: cargo run -p tools --bin ble-probe -- --require-bonded
+        run: cargo run -p transport-ble --bin ble-probe -- --require-bonded
       - name: Full CTAP suite over BLE
         run: cargo test -p daemon --features hardware-ble -- --test-threads=1
       - name: SSH round trip
@@ -801,16 +837,48 @@ Windows named pipes. Validate peer credentials where the platform allows
 state returns an error. Never guess in the user's favour.
 
 **15.9 Key separation on the device.** PIV authentication keys and FIDO2
-credentials are distinct material in distinct slots. PIN semantics don't map
+credentials must never derive from the same input. PIN semantics don't map
 between the protocols; sharing means a weakness in one costs you both.
 
-**15.10 The device is not tamper-resistant, and the docs must say so.** There is
-no secure element (§17): keys sit in NVS/LittleFS on an ESP32-S3 with neither
-flash encryption nor secure boot enabled. Physical possession is key extraction.
-§15.1 keeps key material out of the *daemon*, which is still worth doing — it
-keeps keys off a general-purpose OS with a browser on it — but it does not make
-the device a hardware root of trust, and no user-facing text may imply it does
-until flash encryption and a real attestation key ship.
+**"Distinct slots" was the wrong way to state this, and the applet boundary is
+not what protects it.** Both families derive through
+`HMAC(master_secret, input)`, so separation reduces entirely to the two never
+being handed the same input. Routing was never the risk — the applet boundary
+stops a PIV request reaching `ctap_request()` and does nothing about a
+derivation-input collision.
+
+**Not every FIDO path is dangerous, and that determines the fix.** Checked in
+firmware on 2026-09-10:
+
+| Path | Input | Gate |
+|---|---|---|
+| CTAP2 credential | 70 bytes | HMAC tag verified before deriving |
+| U2F key handle | 48 bytes | HMAC tag verified before deriving |
+| Wallet / custom | ≥24 bytes | **static 4-byte tag, no MAC** |
+| PIV slot label | 16 bytes | — |
+
+The first two are not reachable without the master secret. **The wallet path is
+the entire risk**: its input is genuinely attacker-chosen, and the only thing
+between a chosen credential id and a PIV signing key is that
+`WALLET_MIN_LENGTH` is 24 while the PIV label is 16.
+
+**Domain separation does not fix this, which is not the obvious conclusion.**
+`HMAC(master, "piv" ‖ label)` is 19 bytes — still short, still separated by the
+same length comparison, a rename of the mechanism rather than a replacement.
+Construction-level separation needs the *FIDO* side prefixed too, and that side
+is vendored Solo code whose derivation change would invalidate every credential
+already registered on every device. Registered passkeys would stop working, in
+exchange for a property the length check already enforces.
+
+So **the length assertion is load-bearing, not a stopgap**, and the firmware
+pins it two ways: the label is too short to reach the wallet path, and it must
+not open with `WALLET_TAG` for the day someone lengthens it past 24. Either
+barrier alone suffices; both are asserted at compile time.
+
+The general instinct — prefer construction to arithmetic — is right and was
+wrong here, because only one of the two derivations is ours to change and the
+one that is not is the one with the weak gate. Record it that way round: the
+natural fix is unavailable, not merely unchosen.
 
 ---
 
@@ -834,8 +902,17 @@ as little as possible.
    validated against the proven daemon. Without this, daemon and firmware are only
    ever tested against each other, and a shared misreading of the spec stays
    invisible. Budget for one key — it is the cheapest correctness insurance here.
-3. **Daemon + SK middleware → SSH.** `ssh-keygen -t ed25519-sk` over BLE. First
-   real end-to-end win. No entitlements, drivers, or signing on any OS.
+3. **Daemon + SK middleware → SSH.** `ssh-keygen -t ed25519-sk`. First real
+   end-to-end win. No entitlements, drivers, or signing on any OS.
+   **Reached against the fake device on 2026-09-10**: the real `ssh-keygen`
+   enrols an `sk-ssh-ed25519@openssh.com` key and signs with it, through
+   `ssh-sk-helper` → our cdylib → the IPC socket → the daemon. Repeatable as
+   `tools/ci/ssh-roundtrip.sh`, which the hardware job runs unchanged with
+   `FEATURES=hardware-ble`.
+
+   What that does *not* yet prove: the fixture returns a canned credential and
+   a signature that is 64 bytes of `0x42`, so `ssh-keygen -Y verify` will
+   reject it. Everything above the radio is exercised; nothing below it is.
 4. **PIV applet + vpcd on Linux** → `pam_pkcs11` login.
 5. **PIV on macOS** → `sc_auth pair`, screen unlock, proximity lock.
 6. **Virtual HID on Linux (`uhid`)** → browser passkeys. Validates CTAPHID framing.
@@ -859,9 +936,9 @@ Rows below marked **answered** were read out of that repo at commit `d3b4701` on
 | Item | Where | What's needed |
 |---|---|---|
 | USB VID/PID for the virtual HID device | §9, udev rules | **Answered:** `1209:BEEE` (pid.codes), "Cryptick Token". The virtual HID should present the same pair so host rules match the real device. |
-| Private GATT service + characteristic UUIDs for PIV | §12, `docs/uuids.md` | Open — no BLE service exists in firmware yet |
-| PIV-over-BLE chunking format | §12, `docs/device-protocol.md` | Fragment size, sequencing, error signalling |
-| `fidoControlPointLength` actual value | §12 | Open. Will follow the negotiated ATT MTU (`MTU-3`), so it varies per connection — read it, never assume. Firmware caps CTAP messages at 1200 bytes (`CTAP_MAX_MESSAGE_SIZE`); `Reassembler::with_max_message_len` takes that ceiling. |
+| Private GATT service + characteristic UUIDs for PIV | §12, `docs/device-protocol.md` | **Settled** 2026-09-10, not yet implemented either side. Service `FBF6EB90-7F39-41B1-A191-9527CC42F8BE`; framing reused from `0xFFFD`; messages capped at 261 (short APDUs only); not advertised; no `PING`. Nothing open on the wire format. |
+| PIV-over-BLE chunking format | §12, `docs/device-protocol.md` | **Answered:** identical to the `0xFFFD` transport, so the conformance corpus covers both. APDU chaining stays in the applet, not the transport. |
+| `fidoControlPointLength` actual value | §12 | Open — device now exists and advertises, so this is one characteristic read away. Blocked on a macOS Bluetooth grant, not on firmware. Will follow the negotiated ATT MTU (`MTU-3`), so it varies per connection — read it, never assume. Firmware caps CTAP messages at 1200 bytes (`CTAP_MAX_MESSAGE_SIZE`); `Reassembler::with_max_message_len` takes that ceiling. |
 | Advertisement format and device identity | §14 fuzz target 2, §15.2 | How the daemon recognises *this* device vs any FIDO peripheral |
 | User-presence signalling | §13 keepalive, §15.3 | **Answered:** R557 fingerprint, not a button (`ctap_user_presence_test`, `core/fido2/hal_esp32.cpp:130`). It is user *verification*, so stronger than §15.4 asks for. Keepalive already ticks at 100 ms but is hardwired to CTAPHID. |
 | PIV slot population | §11 | Planned 9A/9D (`docs/MAC_LOGIN.md`), matching §11. Applet today is SELECT-only (`core/piv/piv.c`); no GENERATE, VERIFY or GENERAL AUTHENTICATE. |
@@ -894,6 +971,18 @@ Do not guess. Test and record the answer here.
   `LimitLoadToSessionType = ["LoginWindow"]` runs in the login window's graphical
   domain. Whether that context can hold Bluetooth TCC consent is untested and is the
   one remaining thing to try before declaring login-window unlock dead. **Gates step 5.**
+
+- **Practical corollary, hit on 2026-09-10 during firmware bring-up.** A
+  command-line tool that touches CoreBluetooth without a grant is killed on the
+  spot — `SIGABRT`, no output, nothing to diagnose. Bluetooth being on at the
+  system level is irrelevant; the grant is per-application.
+
+  **A CLI tool inherits the grant from the process that launched it.** So the
+  fix is to grant Bluetooth to the *terminal application* — System Settings →
+  Privacy & Security → Bluetooth — not to the binary, which cannot hold one.
+  Anything running our BLE code on macOS during development hits this, ours and
+  the firmware's alike, and it looks like a crash rather than a permission
+  error.
 - **Does the Accessibility prompt appear for a FIDO-usage-page virtual device**, or
   only for keyboard/pointer descriptors? The one shipped implementation used a FIDO
   descriptor and did see it. Assume yes; confirm.
@@ -942,10 +1031,11 @@ Do not guess. Test and record the answer here.
   - **An IPC message shape change is a breaking change**: mark it `feat(ipc)!:`
     and bump `PROTOCOL_VERSION` in the same commit, or §14's release gate 6 is
     violated the moment the change lands.
-  - Anything touching a §15 invariant, a §7 dependency decision, or a §19 dead
-    end puts the reasoning in the **body**, not just the summary. That is how
-    the next agent learns why; §19 is long precisely because nobody wrote it
-    down the first time.
+  - **Keep them short.** Subject under 72 characters; most commits need no body
+    at all. Add one only where the *why* is not visible in the diff — a §15
+    invariant, a §7 dependency decision, a §19 dead end — and then a few lines,
+    not an essay. The durable reasoning belongs in this document, where it can
+    be revised; a commit body cannot be.
   - Write bodies with `git commit -F <file>`, never `-m`. An apostrophe closes
     a single-quoted shell string and the rest of the message becomes pathspecs;
     backticks inside double quotes get executed. Both failure modes are quiet
@@ -953,6 +1043,35 @@ Do not guess. Test and record the answer here.
 - Every behaviour derived from a spec, an OS doc, or a forum answer gets a comment
   citing the source. Future agents will otherwise re-litigate it — that is exactly
   how §19 got long.
+- **Anything we emit, the party we emit it to must be able to read back.** An
+  encoder that can produce input its own decoder rejects is a bug even when no
+  caller currently triggers it, because the guard is the API, not the callers.
+  This has already caught three: a multi-fragment `CANCEL` nothing would
+  reassemble, a CBOR map whose two keys canonicalised to the same bytes, and
+  the same `CANCEL` bug independently in the firmware.
+
+  The qualifier matters in a direction-asymmetric protocol. `KEEPALIVE` and
+  `ERROR` travel device-to-host only, so the device emits them and never
+  reassembles them — the round trip for those is the *host's* to hold. Assert
+  the property per direction, or "fixing" the exclusion later makes the device
+  accept `KEEPALIVE` on its control point. For a direction-agnostic codec like
+  `ble-framing` both readings collapse into one, which is why it holds there
+  unqualified.
+
+- **Verify constants against the specification, not against the other side's
+  code.** Daemon and firmware are developed in parallel, often by agents. Two
+  implementations that agree with each other prove nothing — it is the same
+  failure §14 already names about mocks: *a mock that agrees with your bugs
+  tests nothing.* A golden transcript captured from our own firmware is a
+  regression check, not a conformance check.
+
+  This is not hypothetical. `ble-framing` shipped with `0x06` commented as
+  "reserved for CTAPHID", carried straight from `ERR_BUSY`'s absence in a
+  half-remembered table, with a unit test asserting the wrong behaviour. CTAP
+  2.1 §11.4.4.3 lists `ERR_BUSY = 0x06` as a real BLE error code; only `0x0a`
+  and `0x0b` are HID-reserved. Reading the spec found it in minutes; no amount
+  of cross-checking against the firmware would have, because the firmware was
+  written from the same assumption.
 
 ## 21. Things not to do
 

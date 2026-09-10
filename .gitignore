@@ -4,4 +4,3 @@
 /fuzz/artifacts
 Cargo.lock.orig
 .DS_Store
-/.commit-messages
