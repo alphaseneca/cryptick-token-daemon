@@ -52,10 +52,27 @@ pub enum Reply {
         /// How many fragments actually arrive.
         fragments: usize,
     },
-    /// One fragment longer than the advertised `fidoControlPointLength`.
+    /// One fragment longer than the transport's ceiling.
+    ///
+    /// Deliberately beyond `MAX_FRAGMENT_SIZE` rather than merely beyond the
+    /// advertised `fidoControlPointLength`: the latter bounds writes to the
+    /// control point, not notifications, so it is not a limit the reassembler
+    /// may enforce.
     OversizedFragment,
     /// Exactly these fragments, for cases the variants above do not cover.
     Raw(Vec<Vec<u8>>),
+
+    /// Answers according to the CTAP command byte in the request.
+    ///
+    /// The other variants are scripted in advance, which is right for framing
+    /// tests but useless when the request order is decided by whatever client
+    /// happens to connect.
+    ByCtapCommand {
+        /// Response body for `authenticatorMakeCredential`.
+        make_credential: Vec<u8>,
+        /// Response body for `authenticatorGetAssertion`.
+        get_assertion: Vec<u8>,
+    },
 }
 
 /// What the fake saw and what it has left to say.
@@ -99,7 +116,7 @@ impl FakeDevice {
                 fragment_size,
                 response_fragment_size: fragment_size,
                 link: LinkState::READY,
-                rx: Reassembler::new(fragment_size),
+                rx: Reassembler::new(),
             })),
         }
     }
@@ -134,7 +151,12 @@ impl FakeDevice {
 }
 
 /// Turns a reply into the fragments the device will notify.
-fn render(reply: &Reply, size: FragmentSize, out: &mut VecDeque<Vec<u8>>) -> Option<Vec<u8>> {
+fn render(
+    reply: &Reply,
+    size: FragmentSize,
+    out: &mut VecDeque<Vec<u8>>,
+    request: &[u8],
+) -> Option<Vec<u8>> {
     let emit = |message: &Message, out: &mut VecDeque<Vec<u8>>| {
         if let Ok(frags) = fragments(message, size) {
             out.extend(frags);
@@ -154,7 +176,7 @@ fn render(reply: &Reply, size: FragmentSize, out: &mut VecDeque<Vec<u8>>) -> Opt
             for _ in 0..*count {
                 emit(&Message::new(Command::KeepAlive, vec![status.as_u8()]), out);
             }
-            render(then, size, out)
+            render(then, size, out, request)
         }
         Reply::KeepaliveForever(status) => {
             let message = Message::new(Command::KeepAlive, vec![status.as_u8()]);
@@ -187,13 +209,31 @@ fn render(reply: &Reply, size: FragmentSize, out: &mut VecDeque<Vec<u8>>) -> Opt
             None
         }
         Reply::OversizedFragment => {
+            let over = ble_framing::MAX_FRAGMENT_SIZE as usize + 1;
             let mut fragment = vec![Command::Msg.as_u8(), 0x00, 0x01];
-            fragment.resize(size.get() as usize + 1, 0xaa);
+            fragment.resize(over, 0xaa);
             out.push_back(fragment);
             None
         }
         Reply::Raw(frags) => {
             out.extend(frags.iter().cloned());
+            None
+        }
+        Reply::ByCtapCommand {
+            make_credential,
+            get_assertion,
+        } => {
+            // The first byte of a CTAP request is the command.
+            let response = match request.first() {
+                Some(0x01) => ctap::Response::new(ctap::StatusCode::OK, make_credential.clone()),
+                Some(0x02) => ctap::Response::new(ctap::StatusCode::OK, get_assertion.clone()),
+                // Anything else, including getInfo, is refused rather than
+                // answered with something plausible-looking.
+                _ => ctap::Response::error(ctap::StatusCode::INVALID_COMMAND),
+            };
+            // A CTAP response is a status byte followed by CBOR, never bare
+            // CBOR — encode() is what puts the status on.
+            emit(&Message::new(Command::Msg, response.encode()), out);
             None
         }
     }
@@ -235,8 +275,13 @@ impl FragmentTransport for FakeDevice {
 
         if let Some(reply) = state.script.pop_front() {
             let size = state.response_fragment_size;
+            let request = state
+                .received
+                .last()
+                .map(|m| m.payload.clone())
+                .unwrap_or_default();
             let mut outbox = std::mem::take(&mut state.outbox);
-            let repeat = render(&reply, size, &mut outbox);
+            let repeat = render(&reply, size, &mut outbox, &request);
             state.outbox = outbox;
             state.repeat = repeat;
         }
