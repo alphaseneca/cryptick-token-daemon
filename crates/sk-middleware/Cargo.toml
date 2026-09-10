@@ -1,0 +1,19 @@
+[package]
+name = "sk-middleware"
+version = "0.1.0"
+description = "OpenSSH SecurityKeyProvider middleware for the Cryptick token"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "sk_blebridge"
+# dlopen'd by ssh-sk-helper. rlib as well so the logic can be unit tested.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ctap.workspace = true
+ctap-client.workspace = true
+ipc.workspace = true
+libc.workspace = true
+thiserror.workspace = true

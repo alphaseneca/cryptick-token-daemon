@@ -22,6 +22,38 @@ mod codec;
 
 pub use codec::{FrameDecoder, MAX_FRAME_LEN};
 
+/// `sun_path` is 104 bytes on macOS and 108 on Linux, terminator included.
+/// Application Support paths get long, so this is a real limit and not a
+/// theoretical one; exceeding it otherwise surfaces as an opaque `EINVAL`.
+pub const MAX_SOCKET_PATH: usize = 100;
+
+/// Where the daemon's socket lives by default.
+///
+/// Lives here rather than in the daemon because every client needs it, and
+/// `sk-middleware` must not depend on the daemon crate — that would pull an
+/// async runtime into `ssh-sk-helper` (PROJECT.md §10).
+///
+/// `$XDG_RUNTIME_DIR` when the session provides one, since it is already
+/// per-user and cleaned up at logout; otherwise Application Support on macOS,
+/// or `~/.cryptick` as a last resort.
+#[cfg(unix)]
+pub fn default_socket_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return Some(PathBuf::from(dir).join("cryptick").join("daemon.sock"));
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    if cfg!(target_os = "macos") {
+        return Some(
+            home.join("Library")
+                .join("Application Support")
+                .join("cryptick")
+                .join("daemon.sock"),
+        );
+    }
+    Some(home.join(".cryptick").join("daemon.sock"))
+}
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 

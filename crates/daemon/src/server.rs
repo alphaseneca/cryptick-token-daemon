@@ -283,11 +283,7 @@ pub mod unix {
     };
     use tokio::net::{UnixListener, UnixStream};
 
-    /// `sun_path` is 104 bytes on macOS and 108 on Linux, including the
-    /// terminator. Application Support paths get long, so this is a real limit
-    /// rather than a theoretical one, and the failure it produces otherwise is
-    /// an opaque `EINVAL`.
-    const MAX_SOCKET_PATH: usize = 100;
+    use ipc::MAX_SOCKET_PATH;
 
     /// An owner-only listening socket.
     #[derive(Debug)]
@@ -366,24 +362,5 @@ pub mod unix {
         }
     }
 
-    /// Where the socket lives by default.
-    ///
-    /// `$XDG_RUNTIME_DIR` when the session provides one — it is already
-    /// per-user and cleaned up at logout — otherwise the user's Application
-    /// Support directory on macOS, or `~/.cryptick` as a last resort.
-    pub fn default_socket_path() -> Option<PathBuf> {
-        if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-            return Some(PathBuf::from(dir).join("cryptick").join("daemon.sock"));
-        }
-        let home = PathBuf::from(std::env::var_os("HOME")?);
-        if cfg!(target_os = "macos") {
-            return Some(
-                home.join("Library")
-                    .join("Application Support")
-                    .join("cryptick")
-                    .join("daemon.sock"),
-            );
-        }
-        Some(home.join(".cryptick").join("daemon.sock"))
-    }
+    pub use ipc::default_socket_path;
 }
