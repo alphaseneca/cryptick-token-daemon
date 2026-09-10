@@ -16,6 +16,22 @@ use thiserror::Error;
 /// only "some bond exists" cannot satisfy PROJECT.md §15.2. Any backend that
 /// cannot distinguish the two must report `authenticated: false` rather than
 /// guessing in the user's favour (§15.8).
+///
+/// # Where `authenticated` can come from
+///
+/// Only one platform answers the question directly. Windows exposes
+/// `DeviceInformationPairing.ProtectionLevel`, which reads back
+/// `EncryptionAndAuthentication` after pairing. BlueZ has `Paired` and `Bonded`
+/// and no security-level property at all. CoreBluetooth has nothing.
+///
+/// So on two of three platforms this field can only ever become `true` the
+/// other way: the peripheral marks `fidoControlPoint` as requiring encrypted
+/// **and authenticated** access, and an operation on it that the device accepts
+/// is proof the link met that bar. A refusal arrives as
+/// [`TransportError::InsufficientAuthentication`]. That evidence is better than
+/// the query anyway — the query asks the local OS, which is inside the trust
+/// boundary this invariant defends, while the ATT permission is checked on the
+/// device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkState {
     /// A device is reachable.
@@ -59,6 +75,36 @@ pub enum TransportError {
     /// `fidoControlPointLength` held a value outside the permitted range.
     #[error("device published an unusable fidoControlPointLength: {0}")]
     BadControlPointLength(u16),
+
+    /// The device refused the operation: ATT `Insufficient Authentication`.
+    ///
+    /// This is where PROJECT.md §15.2 is actually enforced. The peripheral
+    /// requires encrypted and authenticated access to `fidoControlPoint`, so
+    /// this code means the link is unbonded or was bonded by Just Works.
+    /// Fatal: never retried, and never answered by starting a pairing that
+    /// would settle for Just Works.
+    #[error("device refused the operation: the link is not authenticated (ATT 0x05)")]
+    InsufficientAuthentication,
+
+    /// The device refused the operation: ATT `Insufficient Encryption`.
+    ///
+    /// Treated exactly like [`Self::InsufficientAuthentication`].
+    #[error("device refused the operation: the link is not encrypted (ATT 0x0F)")]
+    InsufficientEncryption,
+}
+
+impl TransportError {
+    /// Whether this failure means the link did not meet §15.2.
+    ///
+    /// A backend that cannot classify an error must leave it as
+    /// [`Self::Gatt`]. That still fails the transaction, so a missed
+    /// classification costs an accurate message and never a guarantee.
+    pub const fn is_bond_failure(&self) -> bool {
+        matches!(
+            self,
+            TransportError::InsufficientAuthentication | TransportError::InsufficientEncryption
+        )
+    }
 }
 
 /// A bidirectional pipe for CTAP BLE fragments.

@@ -797,21 +797,58 @@ wrong.
 
 **15.2 Unbonded links are refused, always, with no override flag.** CTAP requires
 LE Secure Connections bonding **with MITM protection**. A bond formed by Just
-Works pairing is still MITM-able by an attacker present at pairing time, so verify
-the pairing method and the authenticated-encryption state — not merely that some
-bond exists. On Linux check BlueZ `Paired` and `Bonded`. On macOS CoreBluetooth
-pairs implicitly when a characteristic requires encryption; confirm the state,
-never assume.
+Works pairing is still MITM-able by an attacker present at pairing time, so the
+state to verify is *authenticated* encryption, not merely that some bond exists.
 
-**`btleplug` cannot do this at all** — checked against 0.13.0 on 2026-09-07: it
-exposes no pairing, bonding, or encryption-state API, and no ATT MTU accessor
-either (deviceplug/btleplug#246, open since 2022, with users "settling for the
-minimum MTU of 20"). So this invariant is **not** a check we bolt on top of
-`btleplug`; it is three separate platform backends we have to write and maintain:
-BlueZ D-Bus properties on Linux, CoreBluetooth on macOS, and WinRT
-`DeviceInformation.Pairing` on Windows. Scope `transport-ble` accordingly — it is
-the largest and riskiest crate in §8, not a thin wrapper. Test against real
-hardware, not mocks.
+**Only one of the three platforms will tell you.** Checked against vendor
+documentation on 2026-09-11:
+
+| Platform | Source | Bonded? | With MITM? |
+|---|---|---|---|
+| Windows | `DeviceInformationPairing.ProtectionLevel` | yes (`IsPaired`) | **yes** — `EncryptionAndAuthentication` (3), readable after pairing |
+| Linux | BlueZ `org.bluez.Device1` | yes (`Paired`, `Bonded`) | **no** — the interface has no security-level, key-type or encryption property |
+| Linux | `/var/lib/bluetooth/<adapter>/<dev>/info` | yes | yes — `[LongTermKey] Authenticated=1` — but root-only and not a supported API |
+| Linux | `getsockopt(SOL_BLUETOOTH, BT_SECURITY)` | — | yes — `BT_SECURITY_HIGH` (3) / `FIPS` (4) mean an authenticated key, but it needs the L2CAP socket, which BlueZ owns when GATT goes over D-Bus |
+| macOS | CoreBluetooth | **no** | **no** — no bonding property on `CBPeripheral`; `IOBluetoothDevice.pairedDevices()` is BR/EDR only |
+
+So the host-side query is not portable, and on macOS it does not exist. This
+invariant cannot be built on it.
+
+**The portable check is behavioural — and it is the stronger one.** The
+peripheral declares `fidoControlPoint` and `fidoStatus` as requiring encrypted
+**and authenticated** access. A link that is unbonded, or bonded only by Just
+Works, fails at ATT with `Insufficient Authentication` (0x05) or `Insufficient
+Encryption` (0x0F). A control-point write that *succeeds* is therefore proof the
+link met the requirement, and it is proof produced by the device.
+
+That ordering is the point. A daemon asking its own operating system whether the
+link is safe is asking a component that sits inside the trust boundary the
+invariant defends; the answer is advisory. The device's ATT permissions are
+checked on the device.
+
+Concretely:
+
+- The **first control-point write is the gate.** An `Insufficient
+  Authentication` or `Insufficient Encryption` ATT error ends the session
+  (§15.8). It is never retried, and never answered by initiating pairing that
+  would settle for Just Works.
+- Where the platform does answer (Windows), query it and refuse early. That buys
+  a better error message, not a different guarantee.
+- What every backend must therefore surface is **the ATT error code of a failed
+  operation**, distinguishable from a generic I/O error. That, not the bonding
+  query, is what makes this invariant enforceable.
+- The device side is load-bearing: if the peripheral marks those characteristics
+  encryption-only, the whole check silently degrades to "some bond exists".
+  Pin it in firmware and assert it from the host conformance run.
+
+**`btleplug` supplies none of it** — checked against 0.13.0 on 2026-09-07: no
+pairing, bonding or encryption-state API, no ATT MTU accessor
+(deviceplug/btleplug#246, open since 2022, with users "settling for the minimum
+MTU of 20"), and write failures arrive without ATT codes. Three platform
+backends are still required — BlueZ D-Bus, CoreBluetooth, WinRT — but the table
+above changes what they are *for*: ATT error fidelity first, bonding query only
+where it happens to exist. Scope `transport-ble` accordingly; it is the largest
+and riskiest crate in §8, not a thin wrapper. Test against real hardware.
 
 **15.3 User presence is physical, on the device.** The daemon may never
 auto-satisfy a touch. Proximity is not presence.
@@ -1107,3 +1144,8 @@ Do not guess. Test and record the answer here.
 - soft-fido2: https://github.com/pando85/soft-fido2
 - soft-fido2-transport (UHID): https://docs.rs/soft-fido2-transport
 - passless: https://lib.rs/crates/passless-core
+- BlueZ `org.bluez.Device1` properties: https://github.com/bluez/bluez/blob/master/doc/org.bluez.Device.rst
+- Linux `BT_SECURITY` levels: https://manpages.debian.org/unstable/libbluetooth-dev/l2cap.7.en.html
+- WinRT `DeviceInformationPairing`: https://learn.microsoft.com/en-us/uwp/api/windows.devices.enumeration.deviceinformationpairing
+- WinRT `DevicePairingProtectionLevel`: https://learn.microsoft.com/en-us/uwp/api/windows.devices.enumeration.devicepairingprotectionlevel
+- CoreBluetooth bonding (no API): https://punchthrough.com/core-bluetooth-guide/

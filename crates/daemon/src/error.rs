@@ -54,7 +54,24 @@ pub enum DaemonError {
 
     /// The transport failed.
     #[error("transport failure: {0}")]
-    Transport(#[from] TransportError),
+    Transport(TransportError),
+}
+
+/// Written by hand rather than derived, so that an ATT refusal cannot reach a
+/// client as a vague transport failure.
+///
+/// The device is the party that enforces §15.2 — it marks `fidoControlPoint`
+/// as needing encrypted, authenticated access — so its refusal *is* the answer
+/// to "is this link bonded with MITM protection", and it must surface as
+/// [`DaemonError::NotBonded`] wherever a `?` carries it up.
+impl From<TransportError> for DaemonError {
+    fn from(error: TransportError) -> Self {
+        if error.is_bond_failure() {
+            DaemonError::NotBonded
+        } else {
+            DaemonError::Transport(error)
+        }
+    }
 }
 
 impl DaemonError {
@@ -76,5 +93,32 @@ impl DaemonError {
             | DaemonError::UnexpectedResponse { .. } => ErrorCode::ProtocolError,
             DaemonError::Transport(_) => ErrorCode::NotConnected,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_att_refusal_reaches_the_client_as_not_bonded() {
+        // §15.2 is enforced by the device, not by a platform query, so its
+        // refusal must not be flattened into a generic transport failure.
+        for error in [
+            TransportError::InsufficientAuthentication,
+            TransportError::InsufficientEncryption,
+        ] {
+            assert_eq!(DaemonError::from(error.clone()), DaemonError::NotBonded);
+            assert_eq!(DaemonError::from(error).ipc_code(), ErrorCode::NotBonded);
+        }
+    }
+
+    #[test]
+    fn an_unclassified_transport_error_still_fails_the_transaction() {
+        // A backend that cannot read an ATT code loses the message, never the
+        // guarantee.
+        let error = DaemonError::from(TransportError::Gatt("write failed".into()));
+        assert!(matches!(error, DaemonError::Transport(_)));
+        assert_ne!(error.ipc_code(), ErrorCode::NotBonded);
     }
 }

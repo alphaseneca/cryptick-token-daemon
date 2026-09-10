@@ -5,15 +5,29 @@
 //! Checked against 0.13: it exposes **no pairing, no bonding, and no
 //! encryption-state API**, and no ATT MTU accessor either
 //! (deviceplug/btleplug#246, open since 2022). PROJECT.md §15.2 makes "refuse
-//! unbonded links, with MITM protection" a release blocker, so that check is
-//! not a wrapper over this crate — it is three platform backends we write and
-//! maintain: BlueZ D-Bus properties on Linux, CoreBluetooth on macOS, and
-//! WinRT `DeviceInformation.Pairing` on Windows.
+//! unbonded links, with MITM protection" a release blocker.
 //!
-//! Until those exist, everything here reports [`LinkState::authenticated`] as
-//! `false`, which makes the daemon refuse to transact. That is the correct
-//! failure: §15.8 says fail closed, and a transport that cannot prove the bond
-//! must not claim one.
+//! # Asking the platform does not work
+//!
+//! Checked against vendor documentation on 2026-09-11. Windows answers:
+//! `DeviceInformationPairing.ProtectionLevel` reads back
+//! `EncryptionAndAuthentication` after pairing. BlueZ does not — `Device1` has
+//! `Paired` and `Bonded` and no security-level, key-type or encryption
+//! property. CoreBluetooth does not either, and has no bonding property at all.
+//!
+//! # So the device answers instead
+//!
+//! The peripheral marks `fidoControlPoint` as requiring encrypted **and
+//! authenticated** access. A link that is unbonded, or bonded by Just Works,
+//! is refused at ATT with `Insufficient Authentication` (0x05) or
+//! `Insufficient Encryption` (0x0F); a write the device accepts is proof the
+//! link cleared that bar. This crate's job for §15.2 is therefore to preserve
+//! **ATT error fidelity** — see [`classify_att`] — not to query pairing state.
+//!
+//! Until a backend can do that, everything here reports
+//! [`LinkState::authenticated`] as `false`, which makes the daemon refuse to
+//! transact. That is the correct failure: §15.8 says fail closed, and a
+//! transport that cannot prove the bond must not claim one.
 //!
 //! # macOS
 //!
@@ -27,7 +41,7 @@
 
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use daemon::LinkState;
+use daemon::{LinkState, TransportError};
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
@@ -153,8 +167,10 @@ pub async fn find_device(adapter: &Adapter, timeout: Duration) -> Result<Periphe
 
 /// Connects, discovers services, and reads what the transport needs.
 ///
-/// Deliberately reports [`LinkState::authenticated`] as `false`: nothing here
-/// can prove a bond, and §15.2 does not permit assuming one.
+/// Deliberately reports [`LinkState::authenticated`] as `false`. Probing reads
+/// `fidoControlPointLength`, which is world-readable; only an operation on
+/// `fidoControlPoint` carries the authentication requirement, so a successful
+/// probe proves nothing about the bond and §15.2 does not permit assuming one.
 pub async fn probe(peripheral: &Peripheral) -> Result<DeviceInfo, BleError> {
     if !peripheral.is_connected().await? {
         peripheral.connect().await?;
@@ -213,6 +229,56 @@ pub async fn probe(peripheral: &Peripheral) -> Result<DeviceInfo, BleError> {
     })
 }
 
+/// Recovers the ATT error behind a `btleplug` failure, where it survives.
+///
+/// `btleplug` has no typed ATT error: every backend flattens the code into a
+/// string before we see it. So this reads the message, matching only phrases
+/// each platform's own stack produces:
+///
+/// - **macOS** — `CBATTErrorDomain` codes 5 and 15, whose `NSError`
+///   descriptions are "Insufficient authentication" and "Insufficient
+///   encryption".
+/// - **Windows** — WinRT reports `GattCommunicationStatus::ProtocolError` and
+///   carries the raw ATT byte in `ProtocolError`.
+/// - **Linux** — BlueZ maps the ATT codes onto D-Bus errors, so the text
+///   arrives as `org.bluez.Error.NotPermitted` / `NotAuthorized`.
+///
+/// **Failing to classify is safe.** An unrecognised error stays
+/// [`TransportError::Gatt`], which still fails the transaction — a miss costs
+/// an accurate message, never the invariant (see `TransportError::is_bond_failure`).
+/// Guessing the other way would not be safe, so nothing here maps a vague
+/// error onto success.
+///
+/// **[HW]** The exact strings are transcribed from platform documentation and
+/// have not yet been observed against hardware (PROJECT.md §17). Widen the
+/// matches when a real device produces something else; never narrow the
+/// resulting behaviour.
+pub fn classify_att(error: &btleplug::Error) -> TransportError {
+    let text = error.to_string();
+    let lower = text.to_ascii_lowercase();
+
+    let insufficient = |what: &str| {
+        lower.contains(&format!("insufficient {what}"))
+            || lower.contains(&format!("insufficient{what}"))
+    };
+
+    if insufficient("authentication")
+        || lower.contains("notauthorized")
+        || lower.contains("not authorized")
+        || lower.contains("notpermitted")
+    {
+        return TransportError::InsufficientAuthentication;
+    }
+    if insufficient("encryption") {
+        return TransportError::InsufficientEncryption;
+    }
+
+    match error {
+        btleplug::Error::NotConnected => TransportError::Disconnected,
+        other => TransportError::Gatt(other.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +311,44 @@ mod tests {
             FIDO_SERVICE_REVISION_BITFIELD.to_string(),
             "f1d0fff4-deaa-ecee-b42f-c9ba7ed623bb"
         );
+    }
+
+    #[test]
+    fn an_att_authentication_refusal_is_recognised() {
+        // The only evidence §15.2 gets on macOS and Linux, so losing it here
+        // loses the invariant's error message entirely.
+        let error = btleplug::Error::Other(Box::new(std::io::Error::other(
+            "Insufficient authentication.",
+        )));
+        assert_eq!(
+            classify_att(&error),
+            TransportError::InsufficientAuthentication
+        );
+
+        let bluez = btleplug::Error::Other(Box::new(std::io::Error::other(
+            "org.bluez.Error.NotPermitted: Write not permitted",
+        )));
+        assert_eq!(
+            classify_att(&bluez),
+            TransportError::InsufficientAuthentication
+        );
+    }
+
+    #[test]
+    fn an_att_encryption_refusal_is_recognised() {
+        let error =
+            btleplug::Error::Other(Box::new(std::io::Error::other("Insufficient encryption.")));
+        assert_eq!(classify_att(&error), TransportError::InsufficientEncryption);
+    }
+
+    #[test]
+    fn an_unrecognised_error_is_not_promoted_to_a_bond_failure() {
+        // Failing to classify must cost the message and not the guarantee: it
+        // still fails the transaction, it just does not claim to know why.
+        let error = btleplug::Error::Other(Box::new(std::io::Error::other("write failed")));
+        let classified = classify_att(&error);
+        assert!(!classified.is_bond_failure());
+        assert!(matches!(classified, TransportError::Gatt(_)));
     }
 
     #[test]
