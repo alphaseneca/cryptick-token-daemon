@@ -30,7 +30,7 @@
 //! let size = FragmentSize::new(20)?;
 //! let sent = Message::new(Command::Msg, b"a CTAP2 CBOR request".to_vec());
 //!
-//! let mut rx = Reassembler::new(size);
+//! let mut rx = Reassembler::new();
 //! let mut received = None;
 //! for fragment in fragments(&sent, size)? {
 //!     received = rx.push(&fragment)?;
@@ -85,8 +85,15 @@ impl Message {
 
     /// The number of fragments this message needs at the given fragment size.
     ///
-    /// Returns an error if the payload is longer than [`MAX_PAYLOAD_LEN`].
+    /// Errors if the payload is longer than [`MAX_PAYLOAD_LEN`], or if this is
+    /// a `CANCEL` carrying a payload — reassembly discards that payload, so
+    /// emitting one would produce bytes this crate cannot read back.
     pub fn fragment_count(&self, size: FragmentSize) -> Result<usize, FramingError> {
+        if self.command == Command::Cancel && !self.payload.is_empty() {
+            return Err(FramingError::CancelWithPayload {
+                len: self.payload.len(),
+            });
+        }
         fragment::fragment_count(self.payload.len(), size)
     }
 }

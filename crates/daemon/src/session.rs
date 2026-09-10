@@ -84,7 +84,7 @@ impl<T: FragmentTransport> Session<T> {
             self.transport.write_fragment(&fragment).await?;
         }
 
-        let mut rx = Reassembler::with_max_message_len(size, self.max_message_len);
+        let mut rx = Reassembler::with_max_message_len(self.max_message_len);
 
         loop {
             let notification = tokio::select! {
@@ -130,10 +130,9 @@ impl<T: FragmentTransport> Session<T> {
                 Command::Msg => return Ok(ctap::Response::decode(&message.payload)?),
 
                 Command::Error => {
-                    let code = message
-                        .payload
-                        .first()
-                        .map_or(BleErrorCode::Other, |&b| BleErrorCode::from_u8(b));
+                    // The spec calls this "a variable-length, big-endian
+                    // integer", not a byte, so a zero-padded code still parses.
+                    let code = BleErrorCode::from_payload(&message.payload);
                     return Err(DaemonError::DeviceError(code));
                 }
 

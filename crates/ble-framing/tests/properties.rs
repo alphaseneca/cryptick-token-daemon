@@ -6,12 +6,18 @@
 use ble_framing::{fragments, Command, FragmentSize, Message, Reassembler, MAX_FRAGMENT_SIZE};
 use proptest::prelude::*;
 
+/// Every command that carries a payload.
+///
+/// `CANCEL` is excluded deliberately: it is delivered on its first fragment
+/// with the payload discarded (CTAP2 §11.4.8 — a cancel can never be replied
+/// to, so it can never be rejected either), which makes it the one command
+/// that does not round-trip. `cancel_round_trips_when_empty` covers the shape
+/// it does have.
 fn any_command() -> impl Strategy<Value = Command> {
     prop_oneof![
         Just(Command::Ping),
         Just(Command::KeepAlive),
         Just(Command::Msg),
-        Just(Command::Cancel),
         Just(Command::Error),
     ]
 }
@@ -19,6 +25,18 @@ fn any_command() -> impl Strategy<Value = Command> {
 fn any_size() -> impl Strategy<Value = FragmentSize> {
     (20u16..=MAX_FRAGMENT_SIZE)
         .prop_map(|n| FragmentSize::new(n).expect("in range by construction"))
+}
+
+#[test]
+fn cancel_round_trips_when_empty() {
+    let size = FragmentSize::new(20).unwrap();
+    let sent = Message::new(Command::Cancel, Vec::new());
+    let mut rx = Reassembler::new();
+    let mut received = None;
+    for fragment in fragments(&sent, size).unwrap() {
+        received = rx.push(&fragment).unwrap();
+    }
+    assert_eq!(received, Some(sent));
 }
 
 proptest! {
@@ -30,7 +48,7 @@ proptest! {
         size in any_size(),
     ) {
         let sent = Message::new(command, payload);
-        let mut rx = Reassembler::new(size);
+        let mut rx = Reassembler::new();
         let mut received = None;
         for fragment in fragments(&sent, size).expect("payload fits in HLEN") {
             received = rx.push(&fragment).expect("our own fragments are well formed");
@@ -68,9 +86,8 @@ proptest! {
             prop::collection::vec(any::<u8>(), 0..600),
             0..40,
         ),
-        size in any_size(),
     ) {
-        let mut rx = Reassembler::with_max_message_len(size, 1200);
+        let mut rx = Reassembler::with_max_message_len(1200);
         for fragment in &fragments {
             let _ = rx.push(fragment);
         }
@@ -86,7 +103,7 @@ proptest! {
         let all: Vec<_> = fragments(&msg, size).expect("payload fits").collect();
         prop_assume!(all.len() > 1);
 
-        let mut rx = Reassembler::new(size);
+        let mut rx = Reassembler::new();
         for fragment in &all[..all.len() - 1] {
             prop_assert_eq!(rx.push(fragment).expect("well formed"), None);
         }
@@ -105,7 +122,7 @@ proptest! {
         let all: Vec<_> = fragments(&msg, size).expect("payload fits").collect();
         prop_assume!(all.len() > 2);
 
-        let mut rx = Reassembler::new(size);
+        let mut rx = Reassembler::new();
         rx.push(&all[0]).expect("init fragment is well formed");
 
         if rx.push(&junk).is_err() {

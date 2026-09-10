@@ -16,6 +16,12 @@ pub enum BleErrorCode {
     InvalidSeq,
     /// The request timed out.
     ReqTimeout,
+    /// The device is busy and cannot accept commands at this time.
+    ///
+    /// The spec says a client SHOULD retry after a short delay. We do not:
+    /// PROJECT.md §21 forbids retrying a failed CTAP transaction
+    /// automatically, so this is surfaced and the caller decides.
+    Busy,
     /// Unspecified error.
     Other,
 }
@@ -29,16 +35,17 @@ impl BleErrorCode {
             BleErrorCode::InvalidLen => 0x03,
             BleErrorCode::InvalidSeq => 0x04,
             BleErrorCode::ReqTimeout => 0x05,
+            BleErrorCode::Busy => 0x06,
             BleErrorCode::Other => 0x7f,
         }
     }
 
     /// Parses an error code byte.
     ///
-    /// Values reserved for CTAPHID (`0x06`, `0x0a`, `0x0b`) and anything else
-    /// undefined map to [`BleErrorCode::Other`] rather than failing: an error
-    /// response we cannot parse is still an error response, and turning that
-    /// into a second error would lose the original failure.
+    /// `0x0a` and `0x0b` are reserved for CTAPHID, and anything else undefined
+    /// maps to [`BleErrorCode::Other`] rather than failing: an error response
+    /// we cannot parse is still an error response, and turning that into a
+    /// second error would lose the original failure.
     pub const fn from_u8(byte: u8) -> Self {
         match byte {
             0x01 => BleErrorCode::InvalidCmd,
@@ -46,6 +53,25 @@ impl BleErrorCode {
             0x03 => BleErrorCode::InvalidLen,
             0x04 => BleErrorCode::InvalidSeq,
             0x05 => BleErrorCode::ReqTimeout,
+            0x06 => BleErrorCode::Busy,
+            _ => BleErrorCode::Other,
+        }
+    }
+
+    /// Parses the payload of an `ERROR` command.
+    ///
+    /// The spec describes this as "an error code as a variable-length,
+    /// big-endian integer", not as a single byte. Every defined code fits in
+    /// one, but a peer is entitled to send `00 06`, and taking the first byte
+    /// of that would read the padding and lose the error.
+    pub fn from_payload(payload: &[u8]) -> Self {
+        // Skip leading zero padding, then take the least significant byte. A
+        // value too large for u8 is not a code we know, which is Other anyway.
+        match payload.iter().copied().find(|&b| b != 0) {
+            Some(byte) if payload.iter().filter(|&&b| b != 0).count() == 1 => {
+                BleErrorCode::from_u8(byte)
+            }
+            // All-zero or multi-byte: undefined either way.
             _ => BleErrorCode::Other,
         }
     }
@@ -57,6 +83,18 @@ pub enum FramingError {
     /// A fragment size outside the range the transport permits.
     #[error("fragment size {0} is outside the permitted range {min}..={max}", min = crate::MIN_FRAGMENT_SIZE, max = crate::MAX_FRAGMENT_SIZE)]
     InvalidFragmentSize(u16),
+
+    /// A `CANCEL` built with a payload.
+    ///
+    /// Rejected at the source because reassembly delivers `CANCEL` on its
+    /// first fragment and discards the rest, so a multi-fragment `CANCEL`
+    /// would be something this crate emits and cannot read back. `CANCEL` has
+    /// no payload defined; build it empty.
+    #[error("CANCEL must carry no payload, but {len} bytes were supplied")]
+    CancelWithPayload {
+        /// The payload length supplied.
+        len: usize,
+    },
 
     /// A payload too long for a 16-bit `HLEN` to describe.
     #[error("payload of {len} bytes exceeds the maximum of {max}")]
@@ -157,7 +195,8 @@ impl FramingError {
             | FramingError::TruncatedInitFragment { .. }
             | FramingError::EmptyContinuation
             | FramingError::DeclaredLengthExceeded { .. }
-            | FramingError::DeclaredLengthTooLarge { .. } => BleErrorCode::InvalidLen,
+            | FramingError::DeclaredLengthTooLarge { .. }
+            | FramingError::CancelWithPayload { .. } => BleErrorCode::InvalidLen,
 
             FramingError::UnexpectedSequence { .. }
             | FramingError::ContinuationWithoutInit
@@ -186,10 +225,35 @@ mod tests {
 
     #[test]
     fn ctaphid_reserved_codes_become_other() {
-        // 0x06, 0x0a and 0x0b are reserved for CTAPHID and undefined here.
-        for byte in [0x06, 0x0a, 0x0b, 0x00, 0xff] {
+        // Only 0x0a and 0x0b are reserved for CTAPHID. 0x06 is ERR_BUSY, a
+        // real BLE code — an earlier version of this file wrongly listed it
+        // as reserved, which is why the spec text is quoted in from_u8.
+        for byte in [0x0a, 0x0b, 0x00, 0x30, 0xff] {
             assert_eq!(BleErrorCode::from_u8(byte), BleErrorCode::Other);
         }
+        assert_eq!(BleErrorCode::from_u8(0x06), BleErrorCode::Busy);
+    }
+
+    #[test]
+    fn an_error_payload_is_a_big_endian_integer_not_a_byte() {
+        assert_eq!(BleErrorCode::from_payload(&[0x06]), BleErrorCode::Busy);
+        // Zero-padded, which the "variable-length big-endian integer" wording
+        // permits and a first-byte read would get wrong.
+        assert_eq!(
+            BleErrorCode::from_payload(&[0x00, 0x06]),
+            BleErrorCode::Busy
+        );
+        assert_eq!(
+            BleErrorCode::from_payload(&[0x00, 0x00, 0x7f]),
+            BleErrorCode::Other
+        );
+        // Nothing usable.
+        assert_eq!(BleErrorCode::from_payload(&[]), BleErrorCode::Other);
+        assert_eq!(BleErrorCode::from_payload(&[0x00]), BleErrorCode::Other);
+        assert_eq!(
+            BleErrorCode::from_payload(&[0x01, 0x02]),
+            BleErrorCode::Other
+        );
     }
 
     #[test]

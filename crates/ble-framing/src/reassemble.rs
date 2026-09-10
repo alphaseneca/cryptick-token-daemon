@@ -1,6 +1,6 @@
 //! Turning fragments back into a message.
 
-use crate::{error::FramingError, Command, FragmentSize, Message, MAX_PAYLOAD_LEN};
+use crate::{error::FramingError, Command, Message, MAX_FRAGMENT_SIZE, MAX_PAYLOAD_LEN};
 
 #[derive(Debug, Clone)]
 enum State {
@@ -26,17 +26,28 @@ enum State {
 /// retrying (PROJECT.md §21).
 #[derive(Debug, Clone)]
 pub struct Reassembler {
-    size: FragmentSize,
     max_message_len: usize,
     state: State,
 }
 
+impl Default for Reassembler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Reassembler {
-    /// A reassembler for the given fragment size, accepting messages up to
-    /// [`MAX_PAYLOAD_LEN`].
-    pub fn new(size: FragmentSize) -> Self {
+    /// A reassembler accepting messages up to [`MAX_PAYLOAD_LEN`].
+    ///
+    /// Deliberately takes no fragment size. `fidoControlPointLength` bounds
+    /// *writes to the control point*; inbound fragments arrive as notifications
+    /// on `fidoStatus`, whose size follows the negotiated ATT MTU and may be
+    /// larger. Bounding reassembly by the write limit would reject a device
+    /// that advertises 20 and notifies at MTU-3 — legal, and something a vendor
+    /// can plausibly ship. Fragments are instead capped at
+    /// [`MAX_FRAGMENT_SIZE`], which still bounds memory.
+    pub fn new() -> Self {
         Self {
-            size,
             max_message_len: MAX_PAYLOAD_LEN,
             state: State::Idle,
         }
@@ -51,9 +62,8 @@ impl Reassembler {
     /// anything is buffered. The Solo-derived stack in the firmware caps CTAP
     /// messages at 1200 bytes (`CTAP_MAX_MESSAGE_SIZE`), so that is the value
     /// to use against this device.
-    pub fn with_max_message_len(size: FragmentSize, max_message_len: usize) -> Self {
+    pub fn with_max_message_len(max_message_len: usize) -> Self {
         Self {
-            size,
             max_message_len: max_message_len.min(MAX_PAYLOAD_LEN),
             state: State::Idle,
         }
@@ -92,10 +102,32 @@ impl Reassembler {
     fn push_inner(&mut self, fragment: &[u8]) -> Result<Option<Message>, FramingError> {
         let (&first, rest) = fragment.split_first().ok_or(FramingError::EmptyFragment)?;
 
-        if fragment.len() > self.size.get() as usize {
+        // CANCEL is handled before every check that could produce an error,
+        // and that ordering is the whole point.
+        //
+        // CTAP 2.1 §11.4.8 requires the outstanding request to be cancelled and
+        // forbids replying to the cancel itself — "whether a request was
+        // cancelled or not, the authenticator MUST NOT reply to the cancel
+        // message itself". So there is no way to tell a peer its CANCEL was
+        // malformed. A command that cannot be rejected has to be acted on:
+        // waiting for continuations of an over-declared CANCEL, or erroring on
+        // a truncated one, both amount to ignoring it, and ignoring a CANCEL
+        // violates the MUST.
+        //
+        // Therefore any fragment beginning with the CANCEL byte delivers
+        // `(Cancel, [])` at once, whatever its length or declared HLEN, and
+        // abandons whatever was in flight. The declared length is ignored
+        // rather than validated, and any payload is discarded — CANCEL has
+        // none defined.
+        if first == Command::Cancel.as_u8() {
+            self.state = State::Idle;
+            return Ok(Some(Message::new(Command::Cancel, Vec::new())));
+        }
+
+        if fragment.len() > MAX_FRAGMENT_SIZE as usize {
             return Err(FramingError::FragmentTooLong {
                 len: fragment.len(),
-                max: self.size.get(),
+                max: MAX_FRAGMENT_SIZE,
             });
         }
 
@@ -113,14 +145,19 @@ impl Reassembler {
         rest: &[u8],
         fragment_len: usize,
     ) -> Result<Option<Message>, FramingError> {
-        if self.in_progress() {
-            return Err(FramingError::UnexpectedInitFragment);
-        }
         if rest.len() < 2 {
             return Err(FramingError::TruncatedInitFragment { len: fragment_len });
         }
 
         let command = Command::from_u8(command_byte)?;
+
+        if self.in_progress() {
+            // CANCEL never reaches here — push_inner intercepts it before any
+            // check that could fail. Every other command starting a message
+            // before the last one finished means the stream is out of order.
+            debug_assert_ne!(command, Command::Cancel);
+            return Err(FramingError::UnexpectedInitFragment);
+        }
         let declared = u16::from_be_bytes([rest[0], rest[1]]) as usize;
         let data = &rest[2..];
 
@@ -193,7 +230,7 @@ impl Reassembler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fragments;
+    use crate::{fragments, FragmentSize};
 
     fn size(n: u16) -> FragmentSize {
         FragmentSize::new(n).expect("test uses a legal fragment size")
@@ -201,7 +238,7 @@ mod tests {
 
     fn round_trip(message: &Message, n: u16) -> Message {
         let s = size(n);
-        let mut rx = Reassembler::new(s);
+        let mut rx = Reassembler::new();
         let mut out = None;
         for fragment in fragments(message, s).expect("payload fits") {
             out = rx.push(&fragment).expect("fragment is well formed");
@@ -228,23 +265,41 @@ mod tests {
 
     #[test]
     fn empty_fragment_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[]), Err(FramingError::EmptyFragment));
     }
 
     #[test]
     fn oversized_fragment_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
-        let fragment = vec![0x83; 21];
+        let mut rx = Reassembler::new();
+        // Bounded by the transport ceiling, not by fidoControlPointLength:
+        // notifications are sized by the ATT MTU, not by the write limit.
+        let fragment = vec![0x83; MAX_FRAGMENT_SIZE as usize + 1];
         assert_eq!(
             rx.push(&fragment),
-            Err(FramingError::FragmentTooLong { len: 21, max: 20 })
+            Err(FramingError::FragmentTooLong {
+                len: MAX_FRAGMENT_SIZE as usize + 1,
+                max: MAX_FRAGMENT_SIZE
+            })
+        );
+    }
+
+    #[test]
+    fn a_notification_larger_than_the_control_point_length_is_accepted() {
+        // fidoControlPointLength bounds writes to fidoControlPoint. A device
+        // may advertise 20 and still notify at the negotiated ATT MTU.
+        let mut rx = Reassembler::new();
+        let mut fragment = vec![0x83, 0x00, 0xc8];
+        fragment.extend(std::iter::repeat_n(0xaa, 200));
+        assert_eq!(
+            rx.push(&fragment).unwrap(),
+            Some(Message::new(Command::Msg, vec![0xaa; 200]))
         );
     }
 
     #[test]
     fn truncated_init_fragment_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(
             rx.push(&[0x83]),
             Err(FramingError::TruncatedInitFragment { len: 1 })
@@ -257,7 +312,7 @@ mod tests {
 
     #[test]
     fn unknown_command_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(
             rx.push(&[0x84, 0x00, 0x00]),
             Err(FramingError::UnknownCommand(0x84))
@@ -266,7 +321,7 @@ mod tests {
 
     #[test]
     fn continuation_without_init_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(
             rx.push(&[0x00, 0xde, 0xad]),
             Err(FramingError::ContinuationWithoutInit)
@@ -275,7 +330,7 @@ mod tests {
 
     #[test]
     fn out_of_order_continuation_is_rejected_and_aborts() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[0x83, 0x00, 0x40]).unwrap(), None);
         assert!(rx.in_progress());
         // Expecting SEQ 0x00, sending 0x01.
@@ -297,7 +352,7 @@ mod tests {
         let mut frags: Vec<_> = fragments(&msg, s).unwrap().collect();
         frags.swap(2, 3);
 
-        let mut rx = Reassembler::new(s);
+        let mut rx = Reassembler::new();
         let mut saw_error = false;
         for f in &frags {
             if rx.push(f).is_err() {
@@ -310,14 +365,14 @@ mod tests {
 
     #[test]
     fn empty_continuation_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[0x83, 0x00, 0x40]).unwrap(), None);
         assert_eq!(rx.push(&[0x00]), Err(FramingError::EmptyContinuation));
     }
 
     #[test]
     fn more_data_than_declared_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         // Declares 4 bytes, init fragment carries 2.
         assert_eq!(rx.push(&[0x83, 0x00, 0x04, 0xaa, 0xbb]).unwrap(), None);
         assert_eq!(
@@ -328,7 +383,7 @@ mod tests {
 
     #[test]
     fn init_fragment_carrying_more_than_it_declares_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(
             rx.push(&[0x83, 0x00, 0x01, 0xaa, 0xbb]),
             Err(FramingError::DeclaredLengthExceeded { declared: 1 })
@@ -336,8 +391,50 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_may_interrupt_a_message_in_flight() {
+        // CTAP 2.1 §11.4.8 requires the outstanding request to be cancelled
+        // and forbids replying to the cancel itself, so this must yield the
+        // CANCEL rather than an error.
+        let mut rx = Reassembler::new();
+        assert_eq!(rx.push(&[0x83, 0x01, 0x00, 0xaa]).unwrap(), None);
+        assert!(rx.in_progress());
+
+        assert_eq!(
+            rx.push(&[0xbe, 0x00, 0x00]).unwrap(),
+            Some(Message::new(Command::Cancel, Vec::new()))
+        );
+        assert!(!rx.in_progress(), "the interrupted message is abandoned");
+    }
+
+    #[test]
+    fn every_shape_of_cancel_delivers_immediately_and_silently() {
+        // There is no legal way to report a malformed CANCEL, so each of these
+        // must yield `(CANCEL, "")` rather than an error or a wait:
+        // a bare command byte, a truncated header, a zero-length cancel, one
+        // over-declaring its length, and one longer than any control point.
+        let mut oversized = vec![0xbe, 0xff, 0xff];
+        oversized.resize(600, 0x5a);
+
+        for fragment in [
+            &[0xbe][..],
+            &[0xbe, 0x00],
+            &[0xbe, 0x00, 0x00],
+            &[0xbe, 0x01, 0xf4, 0x6a, 0x75, 0x6e, 0x6b], // HLEN 500, "junk"
+            &oversized,
+        ] {
+            let mut rx = Reassembler::new();
+            assert_eq!(
+                rx.push(fragment).unwrap(),
+                Some(Message::new(Command::Cancel, Vec::new())),
+                "fragment {fragment:02x?}"
+            );
+            assert!(!rx.in_progress());
+        }
+    }
+
+    #[test]
     fn init_fragment_mid_transaction_is_rejected() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[0x83, 0x00, 0x40]).unwrap(), None);
         assert_eq!(
             rx.push(&[0x83, 0x00, 0x40]),
@@ -349,7 +446,7 @@ mod tests {
     #[test]
     fn declared_length_above_the_configured_ceiling_is_rejected_before_buffering() {
         // The firmware's CTAP_MAX_MESSAGE_SIZE.
-        let mut rx = Reassembler::with_max_message_len(size(20), 1200);
+        let mut rx = Reassembler::with_max_message_len(1200);
         assert_eq!(
             rx.push(&[0x83, 0x04, 0xb1]),
             Err(FramingError::DeclaredLengthTooLarge {
@@ -367,7 +464,7 @@ mod tests {
         // peer that under-fills is unambiguous and harmless. Accepting this
         // costs nothing and avoids a needless interop failure with firmware
         // that fragments differently; the total is still bounded by HLEN.
-        let mut rx = Reassembler::new(size(512));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[0x83, 0x00, 0x04, 0xaa]).unwrap(), None);
         assert_eq!(rx.push(&[0x00, 0xbb]).unwrap(), None);
         assert_eq!(rx.push(&[0x01, 0xcc]).unwrap(), None);
@@ -379,7 +476,7 @@ mod tests {
 
     #[test]
     fn reset_discards_a_partial_transaction() {
-        let mut rx = Reassembler::new(size(20));
+        let mut rx = Reassembler::new();
         assert_eq!(rx.push(&[0x83, 0x00, 0x40]).unwrap(), None);
         assert!(rx.in_progress());
         rx.reset();

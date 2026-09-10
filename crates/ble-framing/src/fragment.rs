@@ -71,7 +71,7 @@ pub(crate) fn fragment_count(
 /// Fragments are filled to capacity; the last one is whatever remains. Returns
 /// an error if the payload is longer than [`MAX_PAYLOAD_LEN`].
 pub fn fragments(message: &Message, size: FragmentSize) -> Result<Fragments<'_>, FramingError> {
-    let remaining = fragment_count(message.payload.len(), size)?;
+    let remaining = message.fragment_count(size)?;
     Ok(Fragments {
         command: message.command,
         payload: &message.payload,
@@ -236,6 +236,22 @@ mod tests {
                 assert_eq!(it.count(), expected, "size {n}, len {len}");
             }
         }
+    }
+
+    #[test]
+    fn a_cancel_with_a_payload_is_refused_at_the_source() {
+        // Reassembly delivers CANCEL on its first fragment and discards the
+        // rest, so emitting a multi-fragment one would produce bytes we cannot
+        // read back.
+        let msg = Message::new(Command::Cancel, vec![0u8; 4]);
+        assert_eq!(
+            msg.fragment_count(size(20)),
+            Err(FramingError::CancelWithPayload { len: 4 })
+        );
+        assert!(fragments(&msg, size(20)).is_err());
+        // Empty is the only legal shape, and it is one fragment.
+        let empty = Message::new(Command::Cancel, Vec::new());
+        assert_eq!(empty.fragment_count(size(20)), Ok(1));
     }
 
     #[test]
