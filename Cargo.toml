@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ble-framing", "crates/ipc", "crates/ctap", "crates/ctaphid", "crates/daemon"]
+members = ["crates/ble-framing", "crates/ipc", "crates/ctap", "crates/ctaphid", "crates/ctap-client", "crates/daemon", "crates/transport-ble", "crates/sk-middleware"]
 
 [workspace.package]
 edition = "2021"
@@ -18,9 +18,21 @@ serde_json = "1"
 base64 = "0.22"
 tokio = "1"
 async-trait = "0.1"
+libc = "0.2"
+# SHA-256 for the clientDataHash. RustCrypto rather than hand-rolled: the SK
+# API requires the challenge be hashed, and a hand-written hash in an
+# authenticator path is a worse trade than the supply-chain cost (PROJECT.md §20).
+sha2 = "0.10"
+# The BLE radio. Exposes no pairing, bonding or MTU API — see §15.2; those are
+# platform backends we write ourselves, not something this provides.
+btleplug = "0.13"
+futures = "0.3"
+uuid = "1"
 
 # Local crates
 ble-framing = { path = "crates/ble-framing" }
 ctap = { path = "crates/ctap" }
+ctap-client = { path = "crates/ctap-client" }
 ctaphid = { path = "crates/ctaphid" }
+daemon = { path = "crates/daemon" }
 ipc = { path = "crates/ipc" }

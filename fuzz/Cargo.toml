@@ -14,6 +14,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 ble-framing = { path = "../crates/ble-framing" }
 ctaphid = { path = "../crates/ctaphid" }
+ctap-client = { path = "../crates/ctap-client" }
 
 [[bin]]
 name = "ble_reassembly"
@@ -25,6 +26,13 @@ bench = false
 [[bin]]
 name = "ctaphid_frames"
 path = "fuzz_targets/ctaphid_frames.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ctap_cbor"
+path = "fuzz_targets/ctap_cbor.rs"
 test = false
 doc = false
 bench = false
