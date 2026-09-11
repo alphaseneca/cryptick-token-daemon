@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ble-framing", "crates/ipc", "crates/ctap", "crates/ctaphid", "crates/ctap-client", "crates/daemon", "crates/transport-ble", "crates/sk-middleware", "crates/piv"]
+members = ["crates/ble-framing", "crates/ipc", "crates/ctap", "crates/ctaphid", "crates/ctap-client", "crates/daemon", "crates/transport-ble", "crates/sk-middleware", "crates/piv", "crates/vpcd"]
 
 [workspace.package]
 edition = "2021"
@@ -37,3 +37,4 @@ ctaphid = { path = "crates/ctaphid" }
 daemon = { path = "crates/daemon" }
 ipc = { path = "crates/ipc" }
 piv = { path = "crates/piv" }
+vpcd = { path = "crates/vpcd" }

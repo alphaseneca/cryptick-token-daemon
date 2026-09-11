@@ -1,0 +1,13 @@
+[package]
+name = "vpcd"
+version = "0.1.0"
+description = "The vpcd/vicc wire protocol: a virtual smart card reader over loopback"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

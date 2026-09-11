@@ -260,7 +260,7 @@ crates/
   vhid-linux/        /dev/uhid backend.
   vhid-windows/      USB/IP client -> VHCI.
   sk-middleware/     cdylib. OpenSSH SK API. Separate artifact (§10).
-  vpcd-client/       vpcd protocol, PIV relay.
+  vpcd/              vpcd/vicc wire protocol. Pure. No I/O.
 macos/
   VirtualHIDHelper/  Swift. CoreHID. Signed with the entitlement.
 packaging/
@@ -275,8 +275,8 @@ docs/
   manual-tests.md    the pre-release checklist CI can't automate
 ```
 
-The four pure crates (`ctap`, `ble-framing`, `piv`, `ipc`) must build and test
-with **no platform APIs and no hardware**. Anything needing a radio is an
+The five pure crates (`ctap`, `ble-framing`, `piv`, `vpcd`, `ipc`) must build
+and test with **no platform APIs and no hardware**. Anything needing a radio is an
 integration test behind `--features hardware`.
 
 ### The daemon pipes payloads; it does not understand them
