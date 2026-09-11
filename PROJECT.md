@@ -252,8 +252,8 @@ Therefore:
 crates/
   ctap/              CTAP2 CBOR encode/decode. Pure. No I/O.
   ble-framing/       CTAP BLE fragmentation (§12). Pure. No I/O.
-  piv/               APDU chunking for BLE + the ATR vpcd needs. Pure. No I/O.
-                     NOT an APDU parser — see the note below.
+  piv/               The PIV card edge: ISO 7816 APDUs, BER-TLV, SP 800-73-5.
+                     Host-side client only — `daemon` must not depend on it.
   ipc/               Wire types shared by daemon and every client.
   transport-ble/     btleplug client, bonding verification, range events.
   daemon/            The service. Owns the radio. Hosts the adapters.
@@ -293,8 +293,21 @@ to end.
 This is a security property, not laziness. A relay that parses payloads it has no
 business interpreting adds attack surface and a second place for the spec to be
 misread, and §21 already forbids the daemon from implementing PIN/UV or making
-origin decisions. `ctap` therefore has no CBOR parser and `piv` has no APDU
-parser, and neither is a gap to fill in later.
+origin decisions. `ctap` therefore has no CBOR parser, and is not a gap to fill
+in later.
+
+**`piv` now does parse APDUs, and that is a deliberate narrowing of this rule
+rather than an exception to it.** Written 2026-09-11: provisioning has to build
+`GENERATE ASYMMETRIC KEY PAIR` and a chained `PUT DATA`, and no other component
+will. The original wording assumed every PIV APDU the project ever touched
+would be one the OS built and we relayed, which is true of the relay path and
+false of provisioning.
+
+What holds the property is therefore a dependency rule, not the absence of the
+code: **`daemon` does not depend on `piv`.** On the relay path an APDU stays an
+opaque `Vec<u8>` between `vpcd` and the radio. The card edge lives in a separate
+process that owns no radio and no socket. `crates/daemon/tests/relay_stays_opaque.rs`
+fails the build if that dependency ever appears.
 
 What genuinely cannot be piped is the **framing**. USB CTAPHID (64-byte reports,
 4-byte channel IDs, 7-byte init headers) and BLE (fragments, `HLEN`, wrapping
