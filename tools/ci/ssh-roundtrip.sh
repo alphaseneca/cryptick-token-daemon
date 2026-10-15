@@ -30,13 +30,17 @@ case "$(uname -s)" in
 esac
 
 echo "building (features: $FEATURES)"
-cargo build --manifest-path "$ROOT/Cargo.toml" \
-    -p daemon --features "$FEATURES" --bin cryptick-daemon -p sk-middleware
+cargo build --manifest-path "$ROOT/Cargo.toml" -p daemon --features "$FEATURES" --bin cryptick-daemon
+cargo build --manifest-path "$ROOT/Cargo.toml" -p sk-middleware
 
 PROVIDER="$ROOT/target/debug/$LIB"
 test -f "$PROVIDER" || { echo "no middleware at $PROVIDER"; exit 1; }
 
-SOCKET="${XDG_RUNTIME_DIR:-$HOME/Library/Application Support}/cryptick/daemon.sock"
+if [ "$(uname -s)" = "Darwin" ]; then
+    SOCKET="${HOME}/Library/Application Support/cryptick/daemon.sock"
+else
+    SOCKET="${XDG_RUNTIME_DIR:-$HOME/.cryptick}/daemon.sock"
+fi
 
 # A daemon killed by a signal never runs its Drop, so a dead socket file can be
 # left behind. Existence therefore proves nothing — the wait below connects.
