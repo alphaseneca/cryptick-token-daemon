@@ -177,14 +177,10 @@ function applyStatus(res) {
       totpClockBadge.textContent = isClockSynced ? 'In Sync' : 'Sync Needed';
       totpClockBadge.style.background = isClockSynced ? 'var(--md-sys-color-secondary-container)' : 'var(--md-sys-color-error-container)';
       totpClockBadge.style.color = isClockSynced ? 'var(--md-sys-color-on-secondary-container)' : 'var(--md-sys-color-on-error-container)';
-      if (totpClockOffsetBadge) {
-        totpClockOffsetBadge.textContent = `Offset: ${timeOffsetSecs > 0 ? '+' : ''}${timeOffsetSecs}s`;
-      }
-      totpClockReadout.textContent = `${timeInfo.localTime} (${tzOffsetStr}) • ${timeInfo.utcTime}`;
+      totpClockReadout.textContent = `${timeInfo.utcTime} • Host In-Sync`;
     } else {
       totpClockDot.className = 'm3-status-dot yellow';
       totpClockBadge.textContent = 'Offline';
-      if (totpClockOffsetBadge) totpClockOffsetBadge.textContent = 'Offset: —';
       totpClockReadout.textContent = 'Token Disconnected';
     }
   }
@@ -716,7 +712,7 @@ async function fetchTotpCode(name, container, origBtn) {
   try {
     const res = await chrome.runtime.sendMessage({
       action: 'totp_code',
-      payload: { name, offset: currentClockOffsetSecs }
+      payload: { name }
     });
     if (res && res.status === 'ok' && res.code) {
       container.innerHTML = '';
@@ -899,11 +895,8 @@ async function syncClock(btn) {
         totpClockBadge.style.background = '';
         totpClockBadge.style.color = '';
       }
-      if (totpClockOffsetBadge) {
-        totpClockOffsetBadge.textContent = 'Offset: 0s';
-      }
       if (totpClockReadout) {
-        totpClockReadout.textContent = `${timeInfo.localTime} (${tzStr}) • ${timeInfo.utcTime}`;
+        totpClockReadout.textContent = `${timeInfo.utcTime} • Host In-Sync`;
       }
       if (bannerEl && bannerText) {
         bannerText.textContent = `✓ Hardware RTC & soft clock synced to Host (${tzStr})`;
@@ -1000,7 +993,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (telClock) telClock.textContent = `${info.localTime} (${tzStr})`;
     if (telUtcClock) telUtcClock.textContent = info.utcTime;
-    if (totpClockReadout) totpClockReadout.textContent = `${info.localTime} (${tzStr}) • ${info.utcTime}`;
+    if (totpClockReadout) totpClockReadout.textContent = `${info.utcTime} • Host In-Sync`;
   }, 1000);
 
   window.addEventListener('beforeunload', () => {

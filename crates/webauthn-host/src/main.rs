@@ -42,8 +42,6 @@ enum HostRequest {
 #[derive(Debug, Deserialize)]
 struct TotpCodeRequest {
     name: String,
-    #[serde(default)]
-    offset: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -738,10 +736,8 @@ fn main() {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let offset = req.offset.unwrap_or(0);
-                let effective_now = (now as i64 + offset).max(0) as u64;
-                let counter = effective_now / 30;
-                let remaining = (30 - (effective_now % 30)) as u32;
+                let counter = now / 30;
+                let remaining = (30 - (now % 30)) as u32;
                 match handle_totp_code(&req.name, counter) {
                     Ok(code) => {
                         let mut r = HostResponse::ok();
@@ -749,7 +745,6 @@ fn main() {
                         r.code = Some(code);
                         r.remaining = Some(remaining);
                         r.clock_utc = Some(now);
-                        r.time_offset_secs = Some(offset);
                         let (tz_mins, tz_str) = get_local_tz_offset();
                         r.tz_offset_mins = Some(tz_mins);
                         r.tz_offset_str = Some(tz_str);
