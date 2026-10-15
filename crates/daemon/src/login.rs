@@ -260,7 +260,7 @@ fn check_linux_status(user: &str) -> LoginStatusReport {
 
     let paired_hash = if cryptick_u2f_path.exists() {
         Some("~/.config/cryptick/u2f_keys".to_string())
-    } else if standard_u2f_path.exists() {
+    } else if fallback_u2f_path.exists() {
         Some("~/.config/cryptick/u2f_keys (pam-u2f)".to_string())
     } else {
         None

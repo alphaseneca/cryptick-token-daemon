@@ -13,6 +13,7 @@ use daemon::transport;
 use std::sync::Arc;
 
 #[cfg(feature = "fake-transport")]
+#[cfg(unix)]
 mod fake_main {
     use ble_framing::FragmentSize;
     use daemon::{
@@ -44,6 +45,17 @@ mod fake_main {
                 Err(e) => eprintln!("accept failed: {e}"),
             }
         }
+    }
+}
+
+#[cfg(feature = "fake-transport")]
+#[cfg(not(unix))]
+mod fake_main {
+    pub async fn run(_socket: std::path::PathBuf) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Daemon IPC listener is not yet supported on this platform",
+        ))
     }
 }
 
@@ -184,6 +196,7 @@ async fn run_devices() -> std::io::Result<()> {
 
     // 2. Check USB Interfaces
     println!("\n[2] USB Device Interface");
+    #[allow(unused_mut)]
     let mut usb_found = false;
     #[cfg(unix)]
     {
@@ -557,7 +570,7 @@ async fn run_forget(opts: cli::ForgetOptions) -> std::io::Result<()> {
         content.map(|s| s.trim().to_string())
     });
 
-    let target_dev = opts.device.or(saved_device);
+    let _target_dev = opts.device.or(saved_device);
 
     // 4. If token is reachable via serial USB, send UNPAIR command to wipe NVS bonds immediately
     let mut serial_wiped = false;
@@ -592,11 +605,11 @@ async fn run_forget(opts: cli::ForgetOptions) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         println!("  - Open System Settings -> Bluetooth.");
-        println!("  - Under 'My Devices', find '{}' and click (i) -> 'Forget This Device'.", target_dev.as_deref().unwrap_or("Cryptick-Token-*"));
+        println!("  - Under 'My Devices', find '{}' and click (i) -> 'Forget This Device'.", _target_dev.as_deref().unwrap_or("Cryptick-Token-*"));
     }
     #[cfg(target_os = "linux")]
     {
-        println!("  - Run: bluetoothctl remove {}", target_dev.as_deref().unwrap_or("<device-mac>"));
+        println!("  - Run: bluetoothctl remove {}", _target_dev.as_deref().unwrap_or("<device-mac>"));
     }
 
     Ok(())
@@ -612,12 +625,12 @@ async fn run_info() -> std::io::Result<()> {
         println!("IPC Socket       : {}", status.endpoint);
 
         // Query status over IPC
-        if let Some(socket_path) = ipc::default_socket_path() {
+        if let Some(_socket_path) = ipc::default_socket_path() {
             #[cfg(unix)]
             {
                 use std::io::{Read, Write};
                 use std::os::unix::net::UnixStream;
-                if let Ok(mut stream) = UnixStream::connect(&socket_path) {
+                if let Ok(mut stream) = UnixStream::connect(&_socket_path) {
                     let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
                     let req = ipc::Envelope::new("info-status", ipc::ClientMessage::DeviceStatus);
                     if let Ok(frame) = ipc::encode(&req) {
@@ -668,6 +681,7 @@ async fn run_info() -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
 mod live_main {
     use daemon::{
         server::{serve_connection, unix::IpcListener},
@@ -693,6 +707,16 @@ mod live_main {
                 Err(e) => eprintln!("accept failed: {e}"),
             }
         }
+    }
+}
+
+#[cfg(not(unix))]
+mod live_main {
+    pub async fn run(_socket: std::path::PathBuf) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Daemon IPC listener is not yet supported on this platform",
+        ))
     }
 }
 

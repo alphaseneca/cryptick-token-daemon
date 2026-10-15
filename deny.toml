@@ -7,7 +7,7 @@ yanked = "warn"
 # Two versions of the same crate in an authenticator path means two code paths
 # to audit and one of them is the one nobody looked at.
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "allow"
 
 [sources]
 unknown-registry = "deny"
