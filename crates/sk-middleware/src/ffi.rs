@@ -131,18 +131,67 @@ unsafe fn c_str(ptr: *const c_char) -> Option<String> {
     raw.to_str().ok().map(str::to_owned)
 }
 
+use crate::usb::UsbClient;
+
+/// The active transport selected for the transaction (USB prioritized, BLE fallback).
+pub enum ActiveTransport {
+    /// Direct USB CTAPHID connection.
+    Usb(UsbClient),
+    /// BLE connection via cryptick-daemon socket.
+    Daemon(DaemonClient),
+}
+
 /// Connects and confirms the token is actually usable.
-///
-/// Separated out because every operation needs it, and because it is the part
-/// that produces a *useful* error: "no device" sends the user to check pairing,
-/// whereas a general failure tells them nothing.
-fn reachable_device() -> Result<DaemonClient, i32> {
-    let mut client = DaemonClient::connect(CONNECT_TIMEOUT).map_err(|e| e.sk_error())?;
-    let status = client.device_status().map_err(|e| e.sk_error())?;
+/// Prioritizes USB HID when plugged in, falling back to BLE via the daemon.
+fn reachable_device() -> Result<ActiveTransport, i32> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log").ok();
+    if let Some(f) = &mut f {
+        let _ = writeln!(f, "reachable_device called, checking USB first...");
+    }
+
+    let force_ble = std::env::var("CRYPTICK_TRANSPORT").as_deref() == Ok("ble")
+        || std::env::var("SSH_SK_FORCE_BLE").is_ok();
+
+    // 1. Prioritize direct USB CTAPHID if token is plugged in (and BLE not forced)
+    if !force_ble {
+        if let Some(usb) = UsbClient::try_connect() {
+            if let Some(f) = &mut f {
+                let _ = writeln!(f, "reachable_device: connected via USB CTAPHID");
+            }
+            return Ok(ActiveTransport::Usb(usb));
+        }
+    }
+
+    // 2. Fall back to BLE via daemon bridge
+    if let Some(f) = &mut f {
+        let _ = writeln!(f, "reachable_device: using BLE daemon bridge (force_ble={force_ble})...");
+    }
+    let mut client = match DaemonClient::connect(CONNECT_TIMEOUT) {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(f) = &mut f {
+                let _ = writeln!(f, "DaemonClient::connect error: {:?}", e);
+            }
+            return Err(e.sk_error());
+        }
+    };
+    let status = match client.device_status() {
+        Ok(s) => s,
+        Err(e) => {
+            if let Some(f) = &mut f {
+                let _ = writeln!(f, "device_status error: {:?}", e);
+            }
+            return Err(e.sk_error());
+        }
+    };
+    if let Some(f) = &mut f {
+        let _ = writeln!(f, "device_status: in_range={}, bonded={}", status.in_range, status.bonded);
+    }
     if !status.in_range || !status.bonded {
         return Err(SSH_SK_ERR_DEVICE_NOT_FOUND);
     }
-    Ok(client)
+    Ok(ActiveTransport::Daemon(client))
 }
 
 /// Maps an SSH algorithm to its COSE identifier.
@@ -154,21 +203,49 @@ fn cose_alg(alg: u32) -> Option<i64> {
     }
 }
 
-/// Runs one CTAP transaction against the daemon.
+/// Runs one CTAP transaction against the active transport (USB or BLE).
 fn transact(request: &ctap::Request) -> Result<ctap::Response, i32> {
-    let mut client = reachable_device()?;
-    let response = client
-        .transact(request, OPERATION_TIMEOUT)
-        .map_err(|e| e.sk_error())?;
-    if !response.status.is_ok() {
-        // A CTAP status is the authenticator's answer, not a transport
-        // failure. The distinctions OpenSSH can act on are narrow, so most
-        // collapse to a general error rather than being invented.
-        return Err(match response.status {
-            ctap::StatusCode::OPERATION_DENIED => SSH_SK_ERR_GENERAL,
-            _ => SSH_SK_ERR_GENERAL,
-        });
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log").ok();
+    if let Some(f) = &mut f {
+        let _ = writeln!(f, "transact called with request len {}", request.encode().len());
     }
+    let mut transport = reachable_device()?;
+    let response = match &mut transport {
+        ActiveTransport::Usb(usb) => {
+            let r = usb.transact(request, OPERATION_TIMEOUT)?;
+            if let Some(f) = &mut f {
+                let _ = writeln!(f, "transact USB Ok: status={:?}", r.status);
+            }
+            if !r.status.is_ok() {
+                if let Some(f) = &mut f {
+                    let _ = writeln!(f, "transact USB returned error status: {:?}", r.status);
+                }
+                return Err(SSH_SK_ERR_GENERAL);
+            }
+            r
+        }
+        ActiveTransport::Daemon(client) => {
+            let r = match client.transact(request, OPERATION_TIMEOUT) {
+                Ok(r) => {
+                    if let Some(f) = &mut f {
+                        let _ = writeln!(f, "transact BLE Ok: status={:?}", r.status);
+                    }
+                    r
+                }
+                Err(e) => {
+                    if let Some(f) = &mut f {
+                        let _ = writeln!(f, "transact BLE Err: {:?}, sk_error={}", e, e.sk_error());
+                    }
+                    return Err(e.sk_error());
+                }
+            };
+            if !r.status.is_ok() {
+                return Err(SSH_SK_ERR_GENERAL);
+            }
+            r
+        }
+    };
     Ok(response)
 }
 
@@ -355,8 +432,15 @@ pub unsafe extern "C" fn sk_enroll(
             Ok(response) => response,
             Err(code) => return code,
         };
-        let Ok(parsed) = MakeCredentialResponse::parse(&response.data) else {
-            return SSH_SK_ERR_GENERAL;
+        let parsed = match MakeCredentialResponse::parse(&response.data) {
+            Ok(p) => p,
+            Err(e) => {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log") {
+                    let _ = writeln!(f, "MakeCredentialResponse::parse failed: {:?}, data len={}, hex={:02x?}", e, response.data.len(), response.data);
+                }
+                return SSH_SK_ERR_GENERAL;
+            }
         };
         match build_enroll_response(&parsed) {
             Ok(out) => {

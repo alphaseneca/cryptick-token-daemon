@@ -347,8 +347,26 @@ pub mod unix {
         /// checking the peer's credentials as well means a misconfigured
         /// directory is not enough on its own (PROJECT.md §15.7).
         pub async fn accept(&self) -> io::Result<Option<UnixStream>> {
-            let (stream, _addr) = self.listener.accept().await?;
-            let uid = stream.peer_cred()?.uid();
+            let stream = match self.listener.accept().await {
+                Ok((s, _)) => s,
+                Err(e)
+                    if e.kind() == io::ErrorKind::NotConnected
+                        || e.kind() == io::ErrorKind::ConnectionReset =>
+                {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
+            let uid = match stream.peer_cred() {
+                Ok(cred) => cred.uid(),
+                Err(e)
+                    if e.kind() == io::ErrorKind::NotConnected
+                        || e.kind() == io::ErrorKind::ConnectionReset =>
+                {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
             if uid != self.owner_uid {
                 return Ok(None);
             }

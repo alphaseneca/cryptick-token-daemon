@@ -1,0 +1,8 @@
+# Udev rules for Cryptick Token Hardware (VID: 0x1209, PID: 0xBEEE)
+# Grants unprivileged desktop users (uaccess) read/write access to USB CTAPHID and CCID endpoints.
+
+# CTAPHID raw interface (hidraw)
+KERNEL=="hidraw*", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="beee", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+
+# USB Device interface
+SUBSYSTEM=="usb", ATTR{idVendor}=="1209", ATTR{idProduct}=="beee", TAG+="uaccess", MODE="0660", GROUP="plugdev"

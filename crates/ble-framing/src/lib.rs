@@ -57,11 +57,13 @@ mod command;
 mod error;
 mod fragment;
 mod reassemble;
+mod transport;
 
 pub use command::{Command, KeepAliveStatus};
 pub use error::{BleErrorCode, FramingError};
 pub use fragment::{fragments, FragmentSize, Fragments, MAX_FRAGMENT_SIZE, MIN_FRAGMENT_SIZE};
 pub use reassemble::Reassembler;
+pub use transport::{FragmentTransport, LinkState, TransportError};
 
 /// The largest payload a single message can carry.
 ///

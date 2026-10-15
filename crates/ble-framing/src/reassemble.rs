@@ -59,7 +59,7 @@ impl Reassembler {
     /// `HLEN` is 16 bits, so a peer can declare 65535 bytes whatever the
     /// authenticator can actually handle. Setting this to the device's real
     /// ceiling rejects an over-large message at its first fragment, before
-    /// anything is buffered. The Solo-derived stack in the firmware caps CTAP
+    /// anything is buffered. The Cryptick token firmware caps CTAP
     /// messages at 1200 bytes (`CTAP_MAX_MESSAGE_SIZE`), so that is the value
     /// to use against this device.
     pub fn with_max_message_len(max_message_len: usize) -> Self {

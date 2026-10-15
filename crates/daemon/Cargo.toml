@@ -1,10 +1,11 @@
 [package]
 name = "daemon"
-version = "0.1.0"
+version.workspace = true
 description = "The bridge daemon: owns the radio, hosts the adapters"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+default-run = "cryptick-daemon"
 
 [features]
 # Swaps the BLE transport for an in-process fake speaking real CTAP. Proves the
@@ -23,6 +24,13 @@ serde.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "net", "io-util"] }
+transport-ble = { workspace = true }
+vpcd = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "io-util", "net"] }
+
+[[bin]]
+name = "cryptick-daemon"
+path = "src/main.rs"
+

@@ -39,14 +39,24 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
+use ble_framing::{LinkState, TransportError};
+use btleplug::api::{Central as _, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager, Peripheral};
-use daemon::{LinkState, TransportError};
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
+pub use btleplug;
 pub use btleplug::api::bleuuid::uuid_from_u16;
+
+pub mod transport;
+pub use transport::{
+    BleTransport, MockBleHandle, MockWriteError, DEFAULT_FRAGMENT_SIZE, MAX_FRAGMENT_SIZE,
+    MIN_FRAGMENT_SIZE,
+};
+
+pub mod piv;
+pub use piv::{MockPivBleHandle, PivBleTransport, PivTransportError, MAX_APDU_LEN};
 
 /// The FIDO GATT service, `0xFFFD` expanded against the Bluetooth base UUID.
 pub fn fido_service() -> Uuid {
@@ -62,6 +72,30 @@ pub const FIDO_CONTROL_POINT_LENGTH: Uuid = Uuid::from_u128(0xF1D0FFF3_DEAA_ECEE
 /// `fidoServiceRevisionBitfield` — bit 5 (`0x20`) means FIDO2.
 pub const FIDO_SERVICE_REVISION_BITFIELD: Uuid =
     Uuid::from_u128(0xF1D0FFF4_DEAA_ECEE_B42F_C9BA7ED623BB);
+
+/// The Cryptick PIV Service UUID: FBF6EB90-7F39-41B1-A191-9527CC42F8BE.
+pub const PIV_SERVICE: Uuid = Uuid::from_u128(0xFBF6EB90_7F39_41B1_A191_9527CC42F8BE);
+/// `pivControlPoint` — host writes APDU fragments here.
+pub const PIV_CONTROL_POINT: Uuid = Uuid::from_u128(0xFBF6EB91_7F39_41B1_A191_9527CC42F8BE);
+/// `pivStatus` — the token notifies APDU fragments here.
+pub const PIV_STATUS: Uuid = Uuid::from_u128(0xFBF6EB92_7F39_41B1_A191_9527CC42F8BE);
+/// `pivControlPointLength` — max write size, 20–512.
+pub const PIV_CONTROL_POINT_LENGTH: Uuid =
+    Uuid::from_u128(0xFBF6EB93_7F39_41B1_A191_9527CC42F8BE);
+/// `pivAtr` — static Answer-to-Reset.
+pub const PIV_ATR: Uuid = Uuid::from_u128(0xFBF6EB94_7F39_41B1_A191_9527CC42F8BE);
+
+/// The Cryptick Daemon Bridge Service UUID: FBF6EB80-7F39-41B1-A191-9527CC42F8BE.
+pub const DAEMON_SERVICE: Uuid = Uuid::from_u128(0xFBF6EB80_7F39_41B1_A191_9527CC42F8BE);
+/// `daemonControlPoint` — daemon writes CTAP fragments here.
+pub const DAEMON_CONTROL_POINT: Uuid = Uuid::from_u128(0xFBF6EB81_7F39_41B1_A191_9527CC42F8BE);
+/// `daemonStatus` — token notifies CTAP response fragments here.
+pub const DAEMON_STATUS: Uuid = Uuid::from_u128(0xFBF6EB82_7F39_41B1_A191_9527CC42F8BE);
+/// `daemonControlPointLength` — max write size, 20–512.
+pub const DAEMON_CONTROL_POINT_LENGTH: Uuid =
+    Uuid::from_u128(0xFBF6EB83_7F39_41B1_A191_9527CC42F8BE);
+/// `daemonVersion` — protocol version (1 byte, 0x01).
+pub const DAEMON_VERSION: Uuid = Uuid::from_u128(0xFBF6EB84_7F39_41B1_A191_9527CC42F8BE);
 
 /// Bit 5 of `fidoServiceRevisionBitfield`: this authenticator speaks FIDO2.
 pub const REVISION_FIDO2: u8 = 0x20;
@@ -93,6 +127,13 @@ pub enum BleError {
     /// `fidoControlPointLength` held something the spec forbids.
     #[error("fidoControlPointLength is {got:?}, which is not a 2-byte value in 20..=512")]
     BadControlPointLength {
+        /// What was actually read.
+        got: Vec<u8>,
+    },
+
+    /// `pivAtr` held an empty or invalid ATR.
+    #[error("pivAtr characteristic held invalid ATR bytes: {got:?}")]
+    BadAtr {
         /// What was actually read.
         got: Vec<u8>,
     },
@@ -133,22 +174,40 @@ pub async fn adapter() -> Result<Adapter, BleError> {
         .ok_or(BleError::NoAdapter)
 }
 
-/// Scans for a device advertising the FIDO service.
-pub async fn find_device(adapter: &Adapter, timeout: Duration) -> Result<Peripheral, BleError> {
+/// Scans for a device advertising the FIDO service, optionally filtering by target address or UUID.
+pub async fn find_device_with_target(
+    adapter: &Adapter,
+    target: Option<&str>,
+    timeout: Duration,
+) -> Result<Peripheral, BleError> {
     let service = fido_service();
-    adapter
-        .start_scan(ScanFilter {
-            services: vec![service],
-        })
-        .await?;
+    adapter.start_scan(ScanFilter::default()).await?;
 
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        for peripheral in adapter.peripherals().await? {
-            // The scan filter is advisory on some backends, so confirm the
-            // service really is advertised rather than trusting the filter.
+        let periphs = adapter.peripherals().await?;
+        for peripheral in periphs {
             if let Some(props) = peripheral.properties().await? {
-                if props.services.contains(&service) {
+                let name_str = props.local_name.as_deref().unwrap_or("");
+                let is_fido = props.services.contains(&service)
+                    || props.services.contains(&DAEMON_SERVICE)
+                    || props.services.contains(&PIV_SERVICE)
+                    || name_str.to_lowercase().contains("cryptick");
+
+                if let Some(t) = target {
+                    let addr = display_address(&peripheral);
+                    let id_str = peripheral.id().to_string();
+                    let mac_str = peripheral.address().to_string();
+                    let t_lower = t.to_lowercase();
+                    if addr.to_lowercase().contains(&t_lower)
+                        || id_str.to_lowercase().contains(&t_lower)
+                        || mac_str.to_lowercase().contains(&t_lower)
+                        || (!name_str.is_empty() && name_str.to_lowercase().contains(&t_lower))
+                    {
+                        let _ = adapter.stop_scan().await;
+                        return Ok(peripheral);
+                    }
+                } else if is_fido {
                     let _ = adapter.stop_scan().await;
                     return Ok(peripheral);
                 }
@@ -162,6 +221,52 @@ pub async fn find_device(adapter: &Adapter, timeout: Duration) -> Result<Periphe
             });
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Scans for a device advertising the FIDO service.
+pub async fn find_device(adapter: &Adapter, timeout: Duration) -> Result<Peripheral, BleError> {
+    find_device_with_target(adapter, None, timeout).await
+}
+
+/// Scans for all devices advertising the FIDO service within the given timeout window.
+pub async fn find_all_devices(
+    adapter: &Adapter,
+    timeout: Duration,
+) -> Result<Vec<Peripheral>, BleError> {
+    let service = fido_service();
+    adapter.start_scan(ScanFilter::default()).await?;
+
+    tokio::time::sleep(timeout).await;
+    let _ = adapter.stop_scan().await;
+
+    let mut found = Vec::new();
+    for peripheral in adapter.peripherals().await? {
+        if let Some(props) = peripheral.properties().await? {
+            let name_str = props.local_name.as_deref().unwrap_or("");
+            let is_fido = props.services.contains(&service)
+                || props.services.contains(&DAEMON_SERVICE)
+                || props.services.contains(&PIV_SERVICE)
+                || name_str.to_lowercase().contains("cryptick");
+            if is_fido {
+                found.push(peripheral);
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Returns a formatted address or platform device ID.
+///
+/// On macOS, CoreBluetooth intentionally conceals MAC addresses and `p.address()` returns
+/// `00:00:00:00:00:00`. This helper returns the non-zero MAC address if available,
+/// or falls back to the peripheral ID (platform UUID on macOS, BD_ADDR on Linux/Windows).
+pub fn display_address(peripheral: &Peripheral) -> String {
+    let addr = peripheral.address().to_string();
+    if addr != "00:00:00:00:00:00" {
+        addr
+    } else {
+        peripheral.id().to_string()
     }
 }
 
@@ -215,7 +320,7 @@ pub async fn probe(peripheral: &Peripheral) -> Result<DeviceInfo, BleError> {
     let properties = peripheral.properties().await?;
     Ok(DeviceInfo {
         name: properties.as_ref().and_then(|p| p.local_name.clone()),
-        address: peripheral.address().to_string(),
+        address: display_address(peripheral),
         control_point_length,
         revision_bitfield,
         speaks_fido2,
@@ -271,6 +376,16 @@ pub fn classify_att(error: &btleplug::Error) -> TransportError {
     }
     if insufficient("encryption") {
         return TransportError::InsufficientEncryption;
+    }
+
+    if lower.contains("disconnected")
+        || lower.contains("no longer available")
+        || lower.contains("connection was lost")
+        || lower.contains("connection timed out")
+        || lower.contains("connection has timed out")
+        || lower.contains("not connected")
+    {
+        return TransportError::Disconnected;
     }
 
     match error {

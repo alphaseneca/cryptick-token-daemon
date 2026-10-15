@@ -46,15 +46,23 @@
 #![deny(missing_docs)]
 
 pub mod apdu;
+pub mod cert;
 pub mod chaining;
+pub mod cli;
 pub mod commands;
 pub mod objects;
+pub mod provision;
 pub mod tlv;
 
 pub use apdu::{ApduError, Command, Response, StatusWord};
+pub use cert::{CertError, CertificateBuilder, KeyUsage, ParsedCertificate};
 pub use chaining::{chain, ChainError, Collector, Next};
+pub use cli::{help_text, parse_args, parse_slot, run_provision, CliCommand};
 pub use objects::{ObjectError, Slot};
+pub use provision::{CardTransceiver, ProvisionError, ProvisionOptions, ProvisionReport, SimulatedCard};
 pub use tlv::{Tag, Tlv, TlvError};
+
+
 
 /// Cryptographic mechanism identifiers, SP 800-78-5 Table 9.
 ///

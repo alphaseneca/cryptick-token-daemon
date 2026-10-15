@@ -1,6 +1,6 @@
 [package]
 name = "ipc"
-version = "0.1.0"
+version.workspace = true
 description = "Wire types and framing for the local IPC between the daemon and its clients"
 edition.workspace = true
 license.workspace = true

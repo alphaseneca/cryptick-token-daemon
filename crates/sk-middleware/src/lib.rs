@@ -43,8 +43,10 @@
 pub mod alloc;
 pub mod client;
 pub mod ffi;
+pub mod usb;
 
 pub use client::{ClientError, DaemonClient};
+pub use usb::UsbClient;
 
 /// The SK API version this middleware implements, from OpenSSH's `sk-api.h`
 /// at `V_10_3_P1`.

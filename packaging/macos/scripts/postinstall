@@ -1,0 +1,47 @@
+#!/bin/bash
+set -e
+
+# Cryptick Token Daemon macOS Post-Installation Script
+echo "Running Cryptick Token Daemon postinstall setup..."
+
+# 1. Fix Permissions
+chmod 755 /usr/local/bin/cryptick* /usr/local/bin/ble-* 2>/dev/null || true
+chmod 755 /usr/local/lib/libsk_blebridge.dylib 2>/dev/null || true
+
+# 2. Virtual PCD SmartCard Driver setup
+if [ -d "/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle" ]; then
+    chown -R root:wheel "/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle" 2>/dev/null || true
+    chmod -R 755 "/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle" 2>/dev/null || true
+
+    # Configure /etc/reader.conf
+    if ! grep -q "ifd-vpcd.bundle" /etc/reader.conf 2>/dev/null; then
+        cat << 'EOF' >> /etc/reader.conf
+FRIENDLYNAME    Virtual PCD
+DEVICENAME      /dev/null:35963
+LIBPATH         /usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle
+CHANNELID       0x8C7B
+EOF
+        chmod 644 /etc/reader.conf
+    fi
+
+    # Restart smartcard / CryptoTokenKit subsystems
+    killall -HUP ctkd 2>/dev/null || true
+    killall -HUP pcscd 2>/dev/null || true
+    killall -9 com.apple.ifdreader 2>/dev/null || true
+    launchctl kickstart -k system/com.apple.ifdreader 2>/dev/null || true
+fi
+
+# 3. Kickstart LaunchAgent for active GUI console user
+CONSOLE_USER=$(stat -f "%Su" /dev/console 2>/dev/null || echo "")
+if [ -n "$CONSOLE_USER" ] && [ "$CONSOLE_USER" != "root" ]; then
+    CONSOLE_UID=$(id -u "$CONSOLE_USER" 2>/dev/null || echo "")
+    if [ -n "$CONSOLE_UID" ]; then
+        echo "Registering Cryptick daemon for console user: $CONSOLE_USER (UID $CONSOLE_UID)"
+        launchctl bootout "gui/$CONSOLE_UID/com.cryptick.daemon" 2>/dev/null || true
+        launchctl bootstrap "gui/$CONSOLE_UID" "/Library/LaunchAgents/com.cryptick.daemon.plist" 2>/dev/null || true
+        launchctl kickstart -k "gui/$CONSOLE_UID/com.cryptick.daemon" 2>/dev/null || true
+    fi
+fi
+
+echo "Cryptick Token Daemon installation completed successfully."
+exit 0

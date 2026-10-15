@@ -31,7 +31,7 @@ esac
 
 echo "building (features: $FEATURES)"
 cargo build --manifest-path "$ROOT/Cargo.toml" \
-    -p daemon --features "$FEATURES" --bin daemon -p sk-middleware
+    -p daemon --features "$FEATURES" --bin cryptick-daemon -p sk-middleware
 
 PROVIDER="$ROOT/target/debug/$LIB"
 test -f "$PROVIDER" || { echo "no middleware at $PROVIDER"; exit 1; }
@@ -43,7 +43,7 @@ SOCKET="${XDG_RUNTIME_DIR:-$HOME/Library/Application Support}/cryptick/daemon.so
 rm -f "$SOCKET"
 
 echo "starting daemon"
-"$ROOT/target/debug/daemon" &
+"$ROOT/target/debug/cryptick-daemon" &
 DAEMON_PID=$!
 
 connectable() {

@@ -1,0 +1,9 @@
+{
+  "name": "com.cryptick.webauthn",
+  "description": "Cryptick Token WebAuthn Native Messaging Host",
+  "path": "/Users/aurelius/.local/bin/cryptick-webauthn-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://jbggkoakhockpdblbiohpdfjcpolbfha/"
+  ]
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=Cryptick Token Host Daemon
+Documentation=https://github.com/alphaseneca/cryptick-token-daemon
+After=default.target
+
+[Service]
+Type=simple
+ExecStart="%h/.local/bin/cryptick-daemon" run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

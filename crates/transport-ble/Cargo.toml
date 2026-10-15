@@ -1,6 +1,6 @@
 [package]
 name = "transport-ble"
-version = "0.1.0"
+version.workspace = true
 description = "The BLE radio: scanning, bonding verification, and the CTAP fragment transport"
 edition.workspace = true
 license.workspace = true
@@ -10,11 +10,17 @@ repository.workspace = true
 name = "ble-probe"
 path = "src/bin/probe.rs"
 
+[[bin]]
+name = "ble-ctap"
+path = "src/bin/ctap.rs"
+
 [dependencies]
 ble-framing.workspace = true
 btleplug.workspace = true
-daemon.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
-tokio = { workspace = true, features = ["rt", "macros", "time"] }
+ctap.workspace = true
+ctap-client.workspace = true
+async-trait.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "sync"] }

@@ -21,7 +21,7 @@ use crate::{
 };
 use ctaphid::{
     Assembler, ChannelAllocator, ChannelId, Cmd, ErrorCode, KeepaliveStatus, Message, Packet,
-    CAPABILITY_CBOR, CAPABILITY_NMSG,
+    CAPABILITY_CBOR, CAPABILITY_WINK,
 };
 use ipc::KeepaliveReason;
 use std::{
@@ -84,13 +84,10 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
 
     /// The capabilities reported to the host.
     ///
-    /// `CBOR` because CTAP2 is the whole point, and `NMSG` because CTAPHID_MSG
-    /// carries CTAP1/U2F APDUs and whether those ride the BLE transport is a
-    /// firmware protocol question that is not settled (PROJECT.md §17).
-    /// Declaring `NMSG` and refusing `MSG` is honest; silently relaying
-    /// something the device may not parse is not.
+    /// `CBOR` because CTAP2 is the whole point, and `WINK` to satisfy macOS/Chrome
+    /// probes. `NMSG` is omitted so browsers don't refuse the key.
     pub const fn capabilities(&self) -> u8 {
-        CAPABILITY_CBOR | CAPABILITY_NMSG
+        CAPABILITY_CBOR | CAPABILITY_WINK
     }
 
     /// Feeds one report from the device node, writing any replies to `out`.
@@ -149,6 +146,11 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
                 send_message(out, &Message::new(channel, Cmd::Ping, message.payload));
             }
 
+            Cmd::Wink => {
+                // Answered here with empty payload
+                send_message(out, &Message::new(channel, Cmd::Wink, Vec::new()));
+            }
+
             Cmd::Cancel => {
                 // No response, per the transport. The pending transaction's own
                 // reply carries the cancellation.
@@ -158,9 +160,8 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
 
             Cmd::Cbor => self.start_transaction(channel, message.payload, out),
 
-            // MSG is refused rather than relayed; see `capabilities`. LOCK and
-            // WINK are optional and not advertised.
-            Cmd::Msg | Cmd::Lock | Cmd::Wink => {
+            // MSG and LOCK are refused.
+            Cmd::Msg | Cmd::Lock => {
                 send(out, Packet::error(channel, ErrorCode::InvalidCmd));
             }
 

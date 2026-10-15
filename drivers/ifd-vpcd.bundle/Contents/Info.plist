@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>English</string>
+	<key>CFBundleExecutable</key>
+	<string>libifd-vpcd.dylib</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ifd-vpcd</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleVersion</key>
+	<string>0.8</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.8</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.vsmartcard.virtualsmartcard.mac.ifd-vpcd</string>
+
+	<key>ifdManufacturerString</key>
+	<string>Virtual Smart Card Architecture</string>
+	<key>ifdProductString</key>
+	<string>Virtual PCD</string>
+
+	<key>ifdCapabilities</key>
+	<string>0x00000000</string>
+	<key>ifdProtocolSupport</key>
+	<string>0x00000001</string>
+	<key>ifdVersionNumber</key>
+	<string>0x00000001</string>
+
+	<key>ifdFriendlyName</key>
+	<array>
+		<string>Virtual PCD</string>
+	</array>
+
+	<key>Copyright</key>
+	<string>GNU General Public License version 3</string>
+</dict>
+</plist>

@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+# Reload udev rules for Cryptick Token hardware
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules 2>/dev/null || true
+    udevadm trigger 2>/dev/null || true
+fi
+
+# Enable systemd user service globally
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --global enable cryptick-daemon.service 2>/dev/null || true
+fi
+
+exit 0

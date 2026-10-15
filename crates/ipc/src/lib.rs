@@ -19,13 +19,40 @@
 #![deny(missing_docs)]
 
 mod codec;
+pub mod platform;
 
 pub use codec::{FrameDecoder, MAX_FRAME_LEN};
+pub use platform::{IpcEndpoint, WINDOWS_NAMED_PIPE};
 
 /// `sun_path` is 104 bytes on macOS and 108 on Linux, terminator included.
 /// Application Support paths get long, so this is a real limit and not a
 /// theoretical one; exceeding it otherwise surfaces as an opaque `EINVAL`.
 pub const MAX_SOCKET_PATH: usize = 100;
+
+/// Derives the socket path given explicit environment parameters and OS indicator.
+///
+/// Ensures `target_os = "macos"` takes precedence over `XDG_RUNTIME_DIR`.
+pub fn socket_path_from_env(
+    target_os_macos: bool,
+    xdg_runtime_dir: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+) -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if target_os_macos {
+        let home = PathBuf::from(home?);
+        Some(
+            home.join("Library")
+                .join("Application Support")
+                .join("cryptick")
+                .join("daemon.sock"),
+        )
+    } else if let Some(dir) = xdg_runtime_dir {
+        Some(PathBuf::from(dir).join("cryptick").join("daemon.sock"))
+    } else {
+        let home = PathBuf::from(home?);
+        Some(home.join(".cryptick").join("daemon.sock"))
+    }
+}
 
 /// Where the daemon's socket lives by default.
 ///
@@ -33,25 +60,22 @@ pub const MAX_SOCKET_PATH: usize = 100;
 /// `sk-middleware` must not depend on the daemon crate — that would pull an
 /// async runtime into `ssh-sk-helper` (PROJECT.md §10).
 ///
-/// `$XDG_RUNTIME_DIR` when the session provides one, since it is already
-/// per-user and cleaned up at logout; otherwise Application Support on macOS,
-/// or `~/.cryptick` as a last resort.
+/// On macOS, `~/Library/Application Support/cryptick/daemon.sock` is always preferred.
+/// On other Unix platforms, `$XDG_RUNTIME_DIR` is preferred when set, falling back to
+/// `~/.cryptick/daemon.sock`. On Windows, the named pipe `\\.\pipe\cryptick-daemon` is returned.
 #[cfg(unix)]
 pub fn default_socket_path() -> Option<std::path::PathBuf> {
-    use std::path::PathBuf;
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return Some(PathBuf::from(dir).join("cryptick").join("daemon.sock"));
-    }
-    let home = PathBuf::from(std::env::var_os("HOME")?);
-    if cfg!(target_os = "macos") {
-        return Some(
-            home.join("Library")
-                .join("Application Support")
-                .join("cryptick")
-                .join("daemon.sock"),
-        );
-    }
-    Some(home.join(".cryptick").join("daemon.sock"))
+    socket_path_from_env(
+        cfg!(target_os = "macos"),
+        std::env::var_os("XDG_RUNTIME_DIR").as_deref(),
+        std::env::var_os("HOME").as_deref(),
+    )
+}
+
+/// Where the daemon's socket / named pipe lives by default on Windows.
+#[cfg(windows)]
+pub fn default_socket_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(WINDOWS_NAMED_PIPE))
 }
 
 use serde::{Deserialize, Serialize};
@@ -412,5 +436,46 @@ mod tests {
             ClientMessage::CtapRequest { cbor: got, .. } => assert_eq!(got, cbor),
             other => panic!("wrong body: {other:?}"),
         }
+    }
+
+    #[test]
+    fn socket_path_precedence_rules() {
+        use std::ffi::OsStr;
+        use std::path::PathBuf;
+
+        // macOS precedence: macOS MUST ignore XDG_RUNTIME_DIR even when set
+        let macos_path = socket_path_from_env(
+            true,
+            Some(OsStr::new("/tmp/xdg_runtime")),
+            Some(OsStr::new("/Users/alice")),
+        );
+        assert_eq!(
+            macos_path,
+            Some(PathBuf::from(
+                "/Users/alice/Library/Application Support/cryptick/daemon.sock"
+            ))
+        );
+
+        // Linux with XDG_RUNTIME_DIR
+        let linux_xdg = socket_path_from_env(
+            false,
+            Some(OsStr::new("/run/user/1000")),
+            Some(OsStr::new("/home/bob")),
+        );
+        assert_eq!(
+            linux_xdg,
+            Some(PathBuf::from("/run/user/1000/cryptick/daemon.sock"))
+        );
+
+        // Linux without XDG_RUNTIME_DIR
+        let linux_fallback = socket_path_from_env(false, None, Some(OsStr::new("/home/bob")));
+        assert_eq!(
+            linux_fallback,
+            Some(PathBuf::from("/home/bob/.cryptick/daemon.sock"))
+        );
+
+        // Missing home and xdg
+        assert_eq!(socket_path_from_env(false, None, None), None);
+        assert_eq!(socket_path_from_env(true, None, None), None);
     }
 }

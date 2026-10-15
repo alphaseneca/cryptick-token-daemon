@@ -5,123 +5,290 @@
 //! must sit above the seam where the fake transport can attack it. A trait that
 //! exchanged whole messages would hide exactly the code that needs testing.
 
+pub use ble_framing::{FragmentTransport, LinkState, TransportError};
+
 use ble_framing::FragmentSize;
-use thiserror::Error;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::RwLock;
+use transport_ble::btleplug::platform::Adapter;
+use transport_ble::BleTransport;
 
-/// What the link is currently doing.
-///
-/// `bonded` and `authenticated` are separate on purpose. A bond formed by Just
-/// Works pairing exists but carries no MITM protection, and CTAP requires LE
-/// Secure Connections **with** MITM protection — so a transport that reports
-/// only "some bond exists" cannot satisfy PROJECT.md §15.2. Any backend that
-/// cannot distinguish the two must report `authenticated: false` rather than
-/// guessing in the user's favour (§15.8).
-///
-/// # Where `authenticated` can come from
-///
-/// Only one platform answers the question directly. Windows exposes
-/// `DeviceInformationPairing.ProtectionLevel`, which reads back
-/// `EncryptionAndAuthentication` after pairing. BlueZ has `Paired` and `Bonded`
-/// and no security-level property at all. CoreBluetooth has nothing.
-///
-/// So on two of three platforms this field can only ever become `true` the
-/// other way: the peripheral marks `fidoControlPoint` as requiring encrypted
-/// **and authenticated** access, and an operation on it that the device accepts
-/// is proof the link met that bar. A refusal arrives as
-/// [`TransportError::InsufficientAuthentication`]. That evidence is better than
-/// the query anyway — the query asks the local OS, which is inside the trust
-/// boundary this invariant defends, while the ATT permission is checked on the
-/// device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LinkState {
-    /// A device is reachable.
-    pub connected: bool,
-    /// A bond exists.
-    pub bonded: bool,
-    /// The bond was formed with MITM protection and the link is encrypted.
-    pub authenticated: bool,
-}
-
-impl LinkState {
-    /// Nothing connected.
-    pub const DISCONNECTED: LinkState = LinkState {
-        connected: false,
-        bonded: false,
-        authenticated: false,
-    };
-
-    /// Connected, bonded, MITM-protected. The only state we will transact in.
-    pub const READY: LinkState = LinkState {
-        connected: true,
-        bonded: true,
-        authenticated: true,
-    };
-
-    /// Whether a CTAP transaction may proceed.
-    pub const fn is_usable(self) -> bool {
-        self.connected && self.bonded && self.authenticated
+/// Returns the path to the stored paired device configuration file (~/.config/cryptick/paired_device).
+pub fn paired_device_path() -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .map(|p| p.join("cryptick").join("paired_device"))
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .map(|p| p.join(".config").join("cryptick").join("paired_device"))
     }
 }
 
-/// The transport failed underneath us.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum TransportError {
-    /// The link dropped.
-    #[error("the link went down")]
-    Disconnected,
-    /// A GATT operation failed.
-    #[error("GATT operation failed: {0}")]
-    Gatt(String),
-    /// `fidoControlPointLength` held a value outside the permitted range.
-    #[error("device published an unusable fidoControlPointLength: {0}")]
-    BadControlPointLength(u16),
-
-    /// The device refused the operation: ATT `Insufficient Authentication`.
-    ///
-    /// This is where PROJECT.md §15.2 is actually enforced. The peripheral
-    /// requires encrypted and authenticated access to `fidoControlPoint`, so
-    /// this code means the link is unbonded or was bonded by Just Works.
-    /// Fatal: never retried, and never answered by starting a pairing that
-    /// would settle for Just Works.
-    #[error("device refused the operation: the link is not authenticated (ATT 0x05)")]
-    InsufficientAuthentication,
-
-    /// The device refused the operation: ATT `Insufficient Encryption`.
-    ///
-    /// Treated exactly like [`Self::InsufficientAuthentication`].
-    #[error("device refused the operation: the link is not encrypted (ATT 0x0F)")]
-    InsufficientEncryption,
+/// An auto-reconnecting BLE fragment transport.
+///
+/// Holds an active BLE connection to the Cryptick Token. If the connection drops
+/// (e.g. device reboot, temporary power interruption, or signal loss), a background
+/// task automatically scans for and reconnects to the token over the dedicated
+/// Daemon Bridge GATT service.
+#[derive(Clone, Debug)]
+pub struct ReconnectingBleTransport {
+    inner: Arc<RwLock<Option<BleTransport>>>,
+    target_device: Option<String>,
+    is_connecting: Arc<AtomicBool>,
+    connected: Arc<AtomicBool>,
+    bonded: Arc<AtomicBool>,
+    authenticated: Arc<AtomicBool>,
 }
 
-impl TransportError {
-    /// Whether this failure means the link did not meet §15.2.
-    ///
-    /// A backend that cannot classify an error must leave it as
-    /// [`Self::Gatt`]. That still fails the transaction, so a missed
-    /// classification costs an accurate message and never a guarantee.
-    pub const fn is_bond_failure(&self) -> bool {
-        matches!(
-            self,
-            TransportError::InsufficientAuthentication | TransportError::InsufficientEncryption
+impl ReconnectingBleTransport {
+    /// Spawns an auto-reconnecting transport monitor, lazily acquiring the BLE adapter in background.
+    pub async fn spawn(
+        adapter: Option<Adapter>,
+        target_device: Option<String>,
+    ) -> (Self, tokio::task::JoinHandle<()>) {
+        let target_device = target_device.or_else(|| {
+            paired_device_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+
+        eprintln!("Auto-reconnect target: {:?}", target_device);
+
+        let inner: Arc<RwLock<Option<BleTransport>>> = Arc::new(RwLock::new(None));
+        let is_connecting = Arc::new(AtomicBool::new(false));
+        let connected = Arc::new(AtomicBool::new(false));
+        let bonded = Arc::new(AtomicBool::new(false));
+        let authenticated = Arc::new(AtomicBool::new(false));
+
+        let inner_clone = Arc::clone(&inner);
+        let connecting_clone = Arc::clone(&is_connecting);
+        let connected_clone = Arc::clone(&connected);
+        let bonded_clone = Arc::clone(&bonded);
+        let authenticated_clone = Arc::clone(&authenticated);
+        let target_clone = target_device.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut opt_adapter = adapter;
+            let mut current_target = target_clone;
+            loop {
+                let need_reconnect = {
+                    let r = inner_clone.read().await;
+                    match r.as_ref() {
+                        Some(t) => {
+                            let st = t.link();
+                            connected_clone.store(st.connected, Ordering::SeqCst);
+                            bonded_clone.store(st.bonded, Ordering::SeqCst);
+                            authenticated_clone.store(st.authenticated, Ordering::SeqCst);
+                            !st.connected
+                        }
+                        None => {
+                            connected_clone.store(false, Ordering::SeqCst);
+                            true
+                        }
+                    }
+                };
+
+                if need_reconnect {
+                    {
+                        let mut w = inner_clone.write().await;
+                        *w = None;
+                        connected_clone.store(false, Ordering::SeqCst);
+                        bonded_clone.store(false, Ordering::SeqCst);
+                        authenticated_clone.store(false, Ordering::SeqCst);
+                    }
+                    if opt_adapter.is_none() {
+                        match transport_ble::adapter().await {
+                            Ok(a) => opt_adapter = Some(a),
+                            Err(e) => {
+                                eprintln!("Waiting for Bluetooth radio adapter: {e}");
+                                tokio::time::sleep(Duration::from_millis(1500)).await;
+                                continue;
+                            }
+                        }
+                    }
+                    let adapter_ref = opt_adapter.as_ref().unwrap();
+
+                    connecting_clone.store(true, Ordering::SeqCst);
+                    let find_res = match transport_ble::find_device_with_target(
+                        adapter_ref,
+                        current_target.as_deref(),
+                        Duration::from_secs(3),
+                    )
+                    .await {
+                        Ok(p) => Ok(p),
+                        Err(_) if current_target.is_some() => {
+                            // Pinned device not found; fallback to any advertising Cryptick Token
+                            transport_ble::find_device(adapter_ref, Duration::from_secs(3)).await
+                        }
+                        Err(e) => Err(e),
+                    };
+
+                    match find_res {
+                        Ok(peripheral) => {
+                            let addr = transport_ble::display_address(&peripheral);
+                            if current_target.as_deref() != Some(&addr) {
+                                current_target = Some(addr.clone());
+                                if let Some(p) = paired_device_path() {
+                                    let _ = std::fs::write(&p, format!("{}\n", addr));
+                                }
+                            }
+                            eprintln!("Discovered Cryptick Token [{addr}], connecting via Daemon Bridge GATT...");
+                            match tokio::time::timeout(Duration::from_secs(15), BleTransport::connect_daemon(&peripheral)).await {
+                                Ok(Ok(new_transport)) => {
+                                    eprintln!("Connected to Cryptick Token [{addr}]!");
+                                    let mut w = inner_clone.write().await;
+                                    *w = Some(new_transport);
+                                    connected_clone.store(true, Ordering::SeqCst);
+                                    bonded_clone.store(true, Ordering::SeqCst);
+                                    authenticated_clone.store(true, Ordering::SeqCst);
+                                    connecting_clone.store(false, Ordering::SeqCst);
+
+                                    // Attempt PIV connection if exposed
+                                    match tokio::time::timeout(Duration::from_secs(12), transport_ble::PivBleTransport::connect(&peripheral)).await {
+                                        Ok(Ok(piv_t)) => {
+                                            eprintln!("Connected to PIV service (spawning vpcd relay on 127.0.0.1:35963)");
+                                            tokio::spawn(async move {
+                                                let _ = crate::vpcd_relay::run_vpcd_relay(piv_t, None).await;
+                                            });
+                                        }
+                                        Ok(Err(e)) => {
+                                            eprintln!("PIV service not available on token: {e}");
+                                        }
+                                        Err(_) => {
+                                            eprintln!("PIV connect timed out on token [{addr}]");
+                                        }
+                                    }
+                                }
+                                Ok(Err(e)) => {
+                                    eprintln!("Failed to connect to token [{addr}]: {e}");
+                                    connecting_clone.store(false, Ordering::SeqCst);
+                                }
+                                Err(_) => {
+                                    eprintln!("Connection to token [{addr}] timed out");
+                                    connecting_clone.store(false, Ordering::SeqCst);
+                                }
+                            }
+                        }
+                        Err(_e) => {
+                            // Token not discovered during this scan window
+                            connecting_clone.store(false, Ordering::SeqCst);
+                            // Avoid spamming logs every 3s when token is sleeping; log cleanly
+                        }
+                    }
+                }
+
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+            }
+        });
+
+        (
+            Self {
+                inner,
+                target_device,
+                is_connecting,
+                connected,
+                bonded,
+                authenticated,
+            },
+            handle,
         )
     }
+
+    /// Returns whether the transport is currently connected to the token.
+    pub fn is_connected(&self) -> bool {
+        self.link().connected
+    }
+
+    /// Returns the target device name/address filter, if pinned.
+    pub fn target_device(&self) -> Option<&str> {
+        self.target_device.as_deref()
+    }
+
+    /// Returns whether a reconnect scan is currently in progress.
+    pub fn is_reconnecting(&self) -> bool {
+        self.is_connecting.load(Ordering::SeqCst)
+    }
 }
 
-/// A bidirectional pipe for CTAP BLE fragments.
 #[async_trait::async_trait]
-pub trait FragmentTransport: Send {
-    /// The value published in `fidoControlPointLength`.
-    ///
-    /// Read from the characteristic, never assumed — it follows the negotiated
-    /// ATT MTU and so varies per connection (PROJECT.md §12, §17).
-    async fn fragment_size(&mut self) -> Result<FragmentSize, TransportError>;
+impl FragmentTransport for ReconnectingBleTransport {
+    async fn fragment_size(&mut self) -> Result<FragmentSize, TransportError> {
+        let r = self.inner.read().await;
+        match &*r {
+            Some(t) => BleTransport::fragment_size(t).await,
+            None => Err(TransportError::Disconnected),
+        }
+    }
 
-    /// Writes one fragment to `fidoControlPoint`.
-    async fn write_fragment(&mut self, fragment: &[u8]) -> Result<(), TransportError>;
+    async fn write_fragment(&mut self, fragment: &[u8]) -> Result<(), TransportError> {
+        let r = self.inner.read().await;
+        match &*r {
+            Some(t) => match BleTransport::write_fragment(t, fragment).await {
+                Ok(()) => Ok(()),
+                Err(err) => {
+                    if matches!(err, TransportError::Disconnected) {
+                        self.connected.store(false, Ordering::SeqCst);
+                    }
+                    Err(err)
+                }
+            },
+            None => {
+                self.connected.store(false, Ordering::SeqCst);
+                Err(TransportError::Disconnected)
+            }
+        }
+    }
 
-    /// Waits for the next notification on `fidoStatus`.
-    async fn next_notification(&mut self) -> Result<Vec<u8>, TransportError>;
+    async fn next_notification(&mut self) -> Result<Vec<u8>, TransportError> {
+        let r = self.inner.read().await;
+        match &*r {
+            Some(t) => match BleTransport::read_fragment(t).await {
+                Ok(notif) => Ok(notif),
+                Err(err) => {
+                    if matches!(err, TransportError::Disconnected) {
+                        self.connected.store(false, Ordering::SeqCst);
+                    }
+                    Err(err)
+                }
+            },
+            None => {
+                self.connected.store(false, Ordering::SeqCst);
+                Err(TransportError::Disconnected)
+            }
+        }
+    }
 
-    /// The current link state.
-    fn link(&self) -> LinkState;
+    fn link(&self) -> LinkState {
+        if let Ok(r) = self.inner.try_read() {
+            if let Some(t) = &*r {
+                let st = t.link();
+                self.connected.store(st.connected, Ordering::SeqCst);
+                self.bonded.store(st.bonded, Ordering::SeqCst);
+                self.authenticated.store(st.authenticated, Ordering::SeqCst);
+                return st;
+            } else {
+                self.connected.store(false, Ordering::SeqCst);
+                self.bonded.store(false, Ordering::SeqCst);
+                self.authenticated.store(false, Ordering::SeqCst);
+                return LinkState {
+                    connected: false,
+                    bonded: false,
+                    authenticated: false,
+                };
+            }
+        }
+        LinkState {
+            connected: self.connected.load(Ordering::SeqCst),
+            bonded: self.bonded.load(Ordering::SeqCst),
+            authenticated: self.authenticated.load(Ordering::SeqCst),
+        }
+    }
 }

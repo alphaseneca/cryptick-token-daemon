@@ -1,6 +1,6 @@
 [package]
 name = "ctap-client"
-version = "0.1.0"
+version.workspace = true
 description = "The CTAP2 client half: CBOR, request building, and response parsing"
 edition.workspace = true
 license.workspace = true

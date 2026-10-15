@@ -1,0 +1,11 @@
+Package: cryptick-token-daemon
+Version: 0.1.0
+Section: utils
+Priority: optional
+Architecture: amd64
+Maintainer: Cryptick Security Team <security@alphaseneca.com>
+Depends: libc6, libudev1, libhidapi-hidraw0, pcscd
+Description: Cryptick Token Host Daemon & OpenSSH Middleware
+ Bridges Cryptick Token hardware across USB and Bluetooth Low Energy (BLE)
+ to the host OS. Exposes CTAPHID virtual interfaces, OpenSSH sk-api middleware,
+ PIV smart card virtual reader integration, and WebAuthn Native Messaging.

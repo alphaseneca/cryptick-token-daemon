@@ -1,0 +1,481 @@
+#!/usr/bin/env bash
+# Cryptick Token Unified CLI & Diagnostics Tool
+set -eo pipefail
+
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RED="\033[31m"
+CYAN="\033[36m"
+DIM="\033[2m"
+RESET="\033[0m"
+
+SOCKET_PATH="$HOME/Library/Application Support/cryptick/daemon.sock"
+
+function show_header() {
+    echo -e "${BOLD}${CYAN}❖ Cryptick Token Unified Manager${RESET} ${DIM}(v0.1.0)${RESET}"
+    echo -e "${DIM}------------------------------------------------${RESET}"
+}
+
+function check_status() {
+    show_header
+
+    # 1. Daemon service
+    DAEMON_PID=$(pgrep -f "cryptick-daemon run" || true)
+    if [ -n "$DAEMON_PID" ]; then
+        echo -e "  ${BOLD}Host Service${RESET}    : ${GREEN}Active${RESET} (PID ${DAEMON_PID})"
+    else
+        echo -e "  ${BOLD}Host Service${RESET}    : ${RED}Stopped${RESET} (run 'cryptick fix' to restart)"
+    fi
+
+    # 2. IPC Socket
+    if [ -S "$SOCKET_PATH" ]; then
+        echo -e "  ${BOLD}IPC Socket${RESET}      : ${GREEN}Ready${RESET} (${DIM}${SOCKET_PATH}${RESET})"
+    else
+        echo -e "  ${BOLD}IPC Socket${RESET}      : ${YELLOW}Missing${RESET}"
+    fi
+
+    # 3. USB Hardware
+    USB_FOUND=false
+    if ls /dev/cu.usbmodem* 1>/dev/null 2>&1; then
+        USB_PORT=$(ls /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+        echo -e "  ${BOLD}USB Hardware${RESET}    : ${GREEN}Connected${RESET} (${CYAN}${USB_PORT}${RESET})"
+        USB_FOUND=true
+    else
+        echo -e "  ${BOLD}USB Hardware${RESET}    : ${DIM}Not plugged in${RESET}"
+    fi
+
+    # 4. Bluetooth status via cryptick-daemon
+    if command -v cryptick-daemon &>/dev/null; then
+        CHECK_OUT=$(cryptick-daemon info 2>/dev/null || true)
+        if echo "$CHECK_OUT" | grep -q "In Range         : true"; then
+            echo -e "  ${BOLD}Bluetooth Link${RESET}  : ${GREEN}Connected & In Range${RESET}"
+        else
+            echo -e "  ${BOLD}Bluetooth Link${RESET}  : ${YELLOW}Searching / Sleeping${RESET}"
+        fi
+    fi
+
+    # 5. OpenSSH Middleware
+    if [ -f "$HOME/.local/lib/libsk_blebridge.dylib" ]; then
+        echo -e "  ${BOLD}OpenSSH Library${RESET} : ${GREEN}Installed${RESET} (${DIM}~/.local/lib/libsk_blebridge.dylib${RESET})"
+    else
+        echo -e "  ${BOLD}OpenSSH Library${RESET} : ${YELLOW}Not found${RESET}"
+    fi
+
+    # 6. WebAuthn Native Host
+    if [ -f "$HOME/.local/bin/cryptick-webauthn-host" ]; then
+        echo -e "  ${BOLD}Browser Bridge${RESET}  : ${GREEN}Installed${RESET} (${DIM}~/.local/bin/cryptick-webauthn-host${RESET})"
+    else
+        echo -e "  ${BOLD}Browser Bridge${RESET}  : ${YELLOW}Not found${RESET}"
+    fi
+
+    echo -e "${DIM}------------------------------------------------${RESET}"
+
+    if [ "$USB_FOUND" = "false" ]; then
+        echo -e "${BOLD}Hardware Note:${RESET}"
+        echo -e "  • ${CYAN}Plug into USB${RESET} for direct wired passkeys + CDC console."
+        echo -e "  • ${CYAN}Click knob on token${RESET} to wake Bluetooth advertising on battery."
+    fi
+}
+
+function run_self_test() {
+    show_header
+    echo -e "${BOLD}Running End-to-End Diagnostics...${RESET}\n"
+
+    # Test 1: Daemon binary
+    echo -n "  [1/5] Checking daemon binary... "
+    if command -v cryptick-daemon &>/dev/null; then
+        echo -e "${GREEN}OK${RESET}"
+    else
+        echo -e "${RED}FAIL${RESET} (cryptick-daemon not found in PATH)"
+    fi
+
+    # Test 2: Launchd Service
+    echo -n "  [2/5] Checking background launchd service... "
+    if launchctl list | grep -q "com.cryptick.daemon"; then
+        echo -e "${GREEN}OK${RESET}"
+    else
+        echo -e "${YELLOW}NOT LOADED${RESET} (run 'cryptick fix')"
+    fi
+
+    # Test 3: Native Messaging Manifests
+    echo -n "  [3/5] Checking browser extension manifests... "
+    MANIFEST_FOUND=0
+    for p in \
+        "$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.cryptick.webauthn.json" \
+        "$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.cryptick.webauthn.json" \
+        "$HOME/Library/Application Support/Chromium/NativeMessagingHosts/com.cryptick.webauthn.json" \
+        "$HOME/Library/Application Support/Mozilla/NativeMessagingHosts/com.cryptick.webauthn.json"; do
+        if [ -f "$p" ]; then
+            MANIFEST_FOUND=$((MANIFEST_FOUND + 1))
+        fi
+    done
+    if [ "$MANIFEST_FOUND" -gt 0 ]; then
+        echo -e "${GREEN}OK${RESET} (${MANIFEST_FOUND} browsers configured)"
+    else
+        echo -e "${YELLOW}MISSING${RESET} (re-run install script)"
+    fi
+
+    # Test 4: WebAuthn Host IPC Ping
+    echo -n "  [4/5] Testing WebAuthn host IPC ping... "
+    if command -v cryptick-webauthn-host &>/dev/null; then
+        PING_RES=$(python3 -c "
+import subprocess, struct, json
+p = subprocess.Popen(['cryptick-webauthn-host'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+msg = json.dumps({'action':'ping'}).encode('utf-8')
+p.stdin.write(struct.pack('<I', len(msg)) + msg)
+p.stdin.flush()
+raw_len = p.stdout.read(4)
+if len(raw_len) == 4:
+    l = struct.unpack('<I', raw_len)[0]
+    data = p.stdout.read(l)
+    res = json.loads(data.decode('utf-8'))
+    if res.get('status') == 'ok':
+        print('OK')
+p.kill()
+" 2>/dev/null || echo "FAIL")
+        if [ "$PING_RES" = "OK" ]; then
+            echo -e "${GREEN}OK${RESET}"
+        else
+            echo -e "${YELLOW}UNRESPONSIVE${RESET}"
+        fi
+    else
+        echo -e "${RED}NOT INSTALLED${RESET}"
+    fi
+
+    # Test 5: Hardware Scan
+    echo -n "  [5/5] Scanning for Cryptick Token hardware... "
+    if ls /dev/cu.usbmodem* 1>/dev/null 2>&1; then
+        echo -e "${GREEN}FOUND via USB${RESET}"
+    else
+        echo -e "${YELLOW}BLE SCANNING (Wake token if on battery)${RESET}"
+    fi
+
+    echo -e "\n${BOLD}${GREEN}✔ Diagnostics completed.${RESET}"
+}
+
+function run_fix() {
+    show_header
+    echo -e "${BOLD}Auto-healing Cryptick Daemon & Sockets...${RESET}\n"
+
+    echo -n "  • Stopping old instances... "
+    pkill -f "cryptick-daemon" 2>/dev/null || true
+    echo -e "${GREEN}DONE${RESET}"
+
+    echo -n "  • Cleaning stale sockets... "
+    rm -f "$SOCKET_PATH" 2>/dev/null || true
+    echo -e "${GREEN}DONE${RESET}"
+
+    echo -n "  • Re-registering launchd service... "
+    launchctl kickstart -k gui/$(id -u)/com.cryptick.daemon 2>/dev/null || \
+    launchctl start com.cryptick.daemon 2>/dev/null || true
+    sleep 1
+    echo -e "${GREEN}DONE${RESET}"
+
+    echo -e "\n${BOLD}${GREEN}✔ Daemon service refreshed and running cleanly!${RESET}"
+    check_status
+}
+
+function run_login() {
+    local SUB_CMD="${1:-status}"
+    shift 1 2>/dev/null || true
+
+    local DAEMON_BIN=""
+    for p in "$(dirname "$0")/../target/release/cryptick-daemon" "$(dirname "$0")/../target/debug/cryptick-daemon" "$HOME/.local/bin/cryptick-daemon" "cryptick-daemon"; do
+        if [ -x "$p" ]; then
+            DAEMON_BIN="$p"
+            break
+        elif command -v "$p" &>/dev/null; then
+            DAEMON_BIN="$(command -v "$p")"
+            break
+        fi
+    done
+
+    case "$SUB_CMD" in
+        status)
+            if [ -n "$DAEMON_BIN" ]; then
+                show_header
+                "$DAEMON_BIN" login status "$@"
+                return $?
+            fi
+
+            show_header
+            echo -e "${BOLD}Checking Computer Login & Smart Card Status...${RESET}\n"
+            case "$(uname -s)" in
+                Darwin)
+                    echo -e "  ${BOLD}Platform${RESET}          : macOS (CryptoTokenKit & PC/SC)"
+                    if [ -d "/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle" ]; then
+                        echo -e "  ${BOLD}Virtual Reader${RESET}    : ${GREEN}Installed${RESET} (/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle)"
+                    else
+                        echo -e "  ${BOLD}Virtual Reader${RESET}    : ${YELLOW}Not installed${RESET} (needed for BLE PIV login)"
+                    fi
+
+                    echo -e "\n  ${BOLD}Paired SmartCard Identities for $USER:${RESET}"
+                    PAIRED_OUT=$(sc_auth list -u "$USER" 2>&1 || true)
+                    if [ -n "$PAIRED_OUT" ] && ! echo "$PAIRED_OUT" | grep -qi "no.*identit"; then
+                        echo -e "${GREEN}${PAIRED_OUT}${RESET}"
+                    else
+                        echo -e "  ${DIM}No paired smartcard identity found for user $USER.${RESET}"
+                    fi
+
+                    echo -e "\n  ${BOLD}Detected SmartCard Tokens on Host:${RESET}"
+                    SC_IDENT=$(sc_auth identities 2>&1 || true)
+                    if [ -n "$SC_IDENT" ] && ! echo "$SC_IDENT" | grep -qi "no.*identit"; then
+                        echo -e "${CYAN}${SC_IDENT}${RESET}"
+                    else
+                        echo -e "  ${YELLOW}No smart card tokens currently inserted or connected.${RESET}"
+                    fi
+                    ;;
+                Linux)
+                    echo -e "  ${BOLD}Platform${RESET}          : Linux (PAM / PC/SC)"
+                    if command -v pcscd &>/dev/null; then
+                        echo -e "  ${BOLD}PC/SC Service${RESET}     : ${GREEN}Installed${RESET}"
+                    else
+                        echo -e "  ${BOLD}PC/SC Service${RESET}     : ${YELLOW}pcscd not found${RESET}"
+                    fi
+                    ;;
+                *)
+                    echo -e "  ${BOLD}Platform${RESET}          : $(uname -s) (Unsupported automated pairing)"
+                    ;;
+            esac
+            ;;
+
+        remove|unpair)
+            show_header
+            echo -e "${BOLD}Unpairing Cryptick Token from Computer Login...${RESET}\n"
+            case "$(uname -s)" in
+                Darwin)
+                    echo -e "Running: ${CYAN}sc_auth unpair -u \"$USER\"${RESET}"
+                    if sc_auth unpair -u "$USER"; then
+                        echo -e "\n${BOLD}${GREEN}✔ Successfully unpaired smartcard credentials for $USER.${RESET}"
+                    else
+                        echo -e "\n${RED}Failed or no identities paired.${RESET}"
+                    fi
+                    ;;
+                Linux)
+                    echo -e "Remove the Cryptick configuration line from /etc/pam.d/sudo or /etc/pam.d/common-auth."
+                    ;;
+                *)
+                    echo -e "Manual removal required on $(uname -s)."
+                    ;;
+            esac
+            ;;
+
+        setup|install|*)
+            if [ -n "$DAEMON_BIN" ]; then
+                show_header
+                "$DAEMON_BIN" login setup "$@"
+                return $?
+            fi
+
+            show_header
+            echo -e "${BOLD}Setting up SmartCard & PIV Computer Login...${RESET}\n"
+
+            # 1. Locate cryptick-piv
+            PIV_BIN=""
+            for p in "cryptick-piv" "$HOME/.local/bin/cryptick-piv" "$(dirname "$0")/../target/release/cryptick-piv"; do
+                if command -v "$p" &>/dev/null; then
+                    PIV_BIN="$(command -v "$p")"
+                    break
+                elif [ -x "$p" ]; then
+                    PIV_BIN="$p"
+                    break
+                fi
+            done
+
+            if [ -z "$PIV_BIN" ]; then
+                echo -e "  ${RED}✖ 'cryptick-piv' tool not found.${RESET}"
+                echo -e "  Please build or install it first: ${CYAN}cargo build --release -p piv${RESET}\n"
+                exit 1
+            fi
+            echo -e "  [1/4] Found PIV provisioning tool : ${GREEN}${PIV_BIN}${RESET}"
+
+            # 2. Check Virtual PCD Driver on macOS
+            case "$(uname -s)" in
+                Darwin)
+                    echo -n "  [2/4] Checking SmartCard Virtual Reader (VPCD)... "
+                    if [ -d "/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle" ]; then
+                        echo -e "${GREEN}INSTALLED${RESET}"
+                    else
+                        echo -e "${YELLOW}NOT INSTALLED${RESET}"
+                        SCRIPT_VPCD="$(dirname "$0")/../scripts/install_vpcd.sh"
+                        if [ -f "$SCRIPT_VPCD" ]; then
+                            echo -e "        ${CYAN}Notice:${RESET} For wireless BLE smart card login, run: ${BOLD}sudo ./scripts/install_vpcd.sh${RESET}"
+                        fi
+                    fi
+
+                    # 3. Provision Certificate on Token
+                    echo -e "\n  [3/4] Provisioning EC P-256 PIV Authentication certificate (Slot 9A)..."
+                    echo -e "        Subject CN: ${CYAN}${USER} (Cryptick Login)${RESET}"
+                    "$PIV_BIN" provision --slot 9A --cn "$USER (Cryptick Login)" "$@"
+
+                    # 4. macOS sc_auth Pairing
+                    echo -e "\n  [4/4] Configuring macOS SmartCard Pairing..."
+                    IDENT_OUT=$(sc_auth identities 2>/dev/null || true)
+                    HASH=$(echo "$IDENT_OUT" | grep -B 1 "$USER" | grep -oE '[0-9A-Fa-f]{40}' | head -n 1 || true)
+                    if [ -z "$HASH" ]; then
+                        HASH=$(echo "$IDENT_OUT" | grep -oE '[0-9A-Fa-f]{40}' | head -n 1 || true)
+                    fi
+
+                    if [ -n "$HASH" ]; then
+                        echo -e "        Found Certificate Hash: ${CYAN}${HASH}${RESET}"
+                        echo -e "        Pairing identity to user account '${BOLD}${USER}${RESET}'..."
+                        if sc_auth pair -u "$USER" -h "$HASH" 2>/dev/null; then
+                            echo -e "        ${BOLD}${GREEN}✔ Token successfully paired with $USER!${RESET}"
+                        else
+                            echo -e "        ${YELLOW}Automatic pairing exited. You can pair manually with:${RESET}"
+                            echo -e "        ${CYAN}sc_auth pair -u \"$USER\" -h \"$HASH\"${RESET}"
+                        fi
+                    else
+                        echo -e "        ${DIM}Device waiting for host CCID connection. To pair once plugged in:${RESET}"
+                        echo -e "        ${CYAN}sc_auth identities${RESET} (find your hash)"
+                        echo -e "        ${CYAN}sc_auth pair -u \"$USER\" -h <HASH>${RESET}"
+                    fi
+
+                    echo -e "\n${BOLD}${GREEN}✔ Computer Login Setup Completed!${RESET}"
+                    echo -e "\n${BOLD}How to use your Cryptick Token for Login:${RESET}"
+                    echo -e "  • ${BOLD}Lock Screen${RESET}  : Press ${CYAN}Cmd + Ctrl + Q${RESET}. Tap the fingerprint sensor or knob to unlock."
+                    echo -e "  • ${BOLD}Terminal Sudo${RESET}: Run ${CYAN}sudo <command>${RESET} — authenticate with your Cryptick Token."
+                    echo -e "  • ${BOLD}Status Check${RESET} : Run ${CYAN}cryptick login status${RESET} anytime."
+                    ;;
+
+                Linux)
+                    echo -n "  [2/4] Checking Linux SmartCard subsystem... "
+                    if command -v pcscd &>/dev/null; then
+                        echo -e "${GREEN}pcscd available${RESET}"
+                    else
+                        echo -e "${YELLOW}pcscd not installed (apt install pcscd libpam-pkcs11)${RESET}"
+                    fi
+
+                    echo -e "\n  [3/4] Provisioning EC P-256 PIV Authentication certificate (Slot 9A)..."
+                    "$PIV_BIN" provision --slot 9A --cn "$USER (Cryptick Login)" "$@"
+
+                    echo -e "\n  [4/4] Linux PAM Setup Instructions:"
+                    echo -e "        1. Install PAM PKCS#11: ${CYAN}sudo apt install libpam-pkcs11 pcscd${RESET}"
+                    echo -e "        2. Add to ${BOLD}/etc/pam.d/common-auth${RESET}:"
+                    echo -e "           ${CYAN}auth [success=1 default=ignore] pam_pkcs11.so${RESET}"
+                    echo -e "\n${BOLD}${GREEN}✔ Provisioning complete for Linux PAM login.${RESET}"
+                    ;;
+
+                *)
+                    echo -e "  Platform $(uname -s) is not directly automated. Please refer to docs/COMPUTER_LOGIN.md."
+                    ;;
+            esac
+            ;;
+    esac
+}
+
+function find_ykman() {
+    for p in "cryptick-ykman" "$HOME/.local/bin/cryptick-ykman" "$(dirname "$0")/../target/release/cryptick-ykman" "$(dirname "$0")/../target/debug/cryptick-ykman" "ykman"; do
+        if command -v "$p" &>/dev/null; then
+            command -v "$p"
+            return 0
+        elif [ -x "$p" ]; then
+            echo "$p"
+            return 0
+        fi
+    done
+    return 1
+}
+
+function run_logs() {
+    show_header
+    echo -e "${BOLD}Streaming Cryptick background service logs...${RESET}\n"
+    case "$(uname -s)" in
+        Darwin)
+            log stream --predicate 'process == "cryptick-daemon"' --info
+            ;;
+        Linux)
+            journalctl --user -u cryptick-daemon -f
+            ;;
+        *)
+            echo "Log streaming not supported on $(uname -s)."
+            ;;
+    esac
+}
+
+case "${1:-status}" in
+    status)
+        check_status
+        ;;
+    test)
+        run_self_test
+        ;;
+    fix|restart)
+        run_fix
+        ;;
+    pair)
+        cryptick-daemon pair "${@:2}"
+        ;;
+    devices)
+        cryptick-daemon devices
+        ;;
+    login)
+        run_login "${@:2}"
+        ;;
+    logs|log)
+        run_logs
+        ;;
+    oath)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" oath "${@:2}"
+        else
+            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            exit 1
+        fi
+        ;;
+    accounts)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" oath accounts "${@:2}"
+        else
+            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            exit 1
+        fi
+        ;;
+    config)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" config "${@:2}"
+        else
+            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            exit 1
+        fi
+        ;;
+    apdu)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" apdu "${@:2}"
+        else
+            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            exit 1
+        fi
+        ;;
+    ykman)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" "${@:2}"
+        else
+            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            exit 1
+        fi
+        ;;
+    info)
+        YKMAN_BIN=$(find_ykman || true)
+        if [ -n "$YKMAN_BIN" ]; then
+            "$YKMAN_BIN" info "${@:2}"
+        else
+            cryptick-daemon info
+        fi
+        ;;
+    *)
+        echo "Usage: cryptick [status | test | fix | pair | devices | login | log | oath | config | apdu | info | ykman]"
+        exit 1
+        ;;
+esac

@@ -1,8 +1,22 @@
 [workspace]
 resolver = "2"
-members = ["crates/ble-framing", "crates/ipc", "crates/ctap", "crates/ctaphid", "crates/ctap-client", "crates/daemon", "crates/transport-ble", "crates/sk-middleware", "crates/piv", "crates/vpcd"]
+members = [
+    "crates/ble-framing",
+    "crates/ipc",
+    "crates/ctap",
+    "crates/ctaphid",
+    "crates/ctap-client",
+    "crates/daemon",
+    "crates/transport-ble",
+    "crates/sk-middleware",
+    "crates/piv",
+    "crates/vpcd",
+    "crates/webauthn-host",
+    "crates/token-manager",
+]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/alphaseneca/cryptick-token-daemon"
@@ -37,4 +51,12 @@ ctaphid = { path = "crates/ctaphid" }
 daemon = { path = "crates/daemon" }
 ipc = { path = "crates/ipc" }
 piv = { path = "crates/piv" }
+transport-ble = { path = "crates/transport-ble" }
 vpcd = { path = "crates/vpcd" }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = false

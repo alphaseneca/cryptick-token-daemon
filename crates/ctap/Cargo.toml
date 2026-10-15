@@ -1,6 +1,6 @@
 [package]
 name = "ctap"
-version = "0.1.0"
+version.workspace = true
 description = "CTAP2 command and status codes, and request/response framing"
 edition.workspace = true
 license.workspace = true

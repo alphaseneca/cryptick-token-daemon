@@ -1,13 +1,19 @@
 [package]
 name = "piv"
-version = "0.1.0"
+version.workspace = true
 description = "PIV card-edge: ISO 7816 APDUs, BER-TLV, and the SP 800-73-5 command set"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "cryptick-piv"
+path = "src/bin/cryptick-piv.rs"
+
 [dependencies]
 thiserror.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+

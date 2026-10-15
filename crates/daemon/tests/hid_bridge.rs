@@ -4,7 +4,7 @@
 use ble_framing::{FragmentSize, KeepAliveStatus};
 use ctap::{Response, StatusCode};
 use ctaphid::{
-    ChannelId, Cmd, ErrorCode, Message, Packet, PacketKind, CAPABILITY_CBOR, CAPABILITY_NMSG,
+    ChannelId, Cmd, ErrorCode, Message, Packet, PacketKind, CAPABILITY_CBOR, CAPABILITY_WINK,
 };
 use daemon::{
     fake::{FakeDevice, Reply as DeviceReply},
@@ -120,7 +120,7 @@ async fn init_allocates_a_channel_and_echoes_the_nonce() {
     assert!(allocated.is_assignable());
     assert_eq!(reply.payload[12], 2, "CTAPHID protocol version");
     assert_eq!(&reply.payload[13..16], &[1, 2, 3], "our version");
-    assert_eq!(reply.payload[16], CAPABILITY_CBOR | CAPABILITY_NMSG);
+    assert_eq!(reply.payload[16], CAPABILITY_CBOR | CAPABILITY_WINK);
 
     // The token knows nothing about channels; this never left the daemon.
     assert!(h.device.lock().unwrap().received.is_empty());
@@ -183,14 +183,18 @@ async fn ping_is_answered_locally_including_across_packets() {
 #[tokio::test(start_paused = true)]
 async fn unsupported_commands_are_refused_consistently_with_our_capabilities() {
     let mut h = Harness::new(FakeDevice::always(size(64), DeviceReply::Silent));
-    // We advertise NMSG, so refusing MSG is the honest answer rather than
-    // relaying U2F APDUs the BLE protocol may not carry.
-    for cmd in [Cmd::Msg, Cmd::Wink, Cmd::Lock] {
+    for cmd in [Cmd::Msg, Cmd::Lock] {
         h.feed_message(&Message::new(ChannelId(3), cmd, vec![0u8; 4]));
         let reply = h.next().await;
         assert_eq!(reply.command, Cmd::Error, "{cmd:?}");
         assert_eq!(reply.payload[0], ErrorCode::InvalidCmd.as_u8(), "{cmd:?}");
     }
+
+    // Wink is supported and answered locally with an empty reply
+    h.feed_message(&Message::new(ChannelId(3), Cmd::Wink, Vec::new()));
+    let reply = h.next().await;
+    assert_eq!(reply.command, Cmd::Wink);
+    assert!(reply.payload.is_empty());
 }
 
 #[tokio::test(start_paused = true)]

@@ -110,7 +110,7 @@ mod tests {
 
     #[test]
     fn the_maximum_message_matches_the_sequence_space() {
-        // 57 + 128 * 59. The Solo-derived firmware uses the same constant for
+        // 57 + 128 * 59. The Cryptick token firmware uses the same constant for
         // its CTAPHID buffer, which is a useful independent confirmation.
         assert_eq!(MAX_MESSAGE_LEN, 7609);
     }

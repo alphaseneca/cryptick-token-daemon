@@ -368,11 +368,22 @@ OpenSSH does not require FIDO tokens to be on USB. From the 8.2 release notes:
 > variable."
 
 `crates/sk-middleware` builds a **cdylib** exporting `sk_api_version`,
-`sk_enroll`, `sk_sign`, `sk_load_resident_keys`. Contract is in `sk-api.h` and
+`sk_enroll`, `sk_sign`, `sk_load_resident_keys`, and `sk_options`. Contract is in `sk-api.h` and
 `PROTOCOL.u2f` in the OpenSSH source.
 
-```
-SSH_SK_PROVIDER=/usr/local/lib/libsk-blebridge.so ssh-keygen -t ed25519-sk
+### Transport Selection: Direct USB & Wireless Daemon Transports
+The middleware supports both physical operating modalities:
+1. **Direct USB Mode (`UsbClient`)**: When the token is plugged in, communicates directly with `0x1209:0xBEEE` via raw 64-byte CTAPHID frames using `hidapi`. Operates autonomously with zero background daemon required.
+2. **Wireless BLE Mode (`DaemonClient`)**: When the token is wireless, communicates via the local daemon socket (`daemon.sock`), which bridges CTAP over the dedicated Custom Daemon GATT service (`FBF6EB80-7F39-41B1-A191-9527CC42F8BE`).
+
+Both `ssh` and `ssh-keygen` seamlessly select the active channel:
+```bash
+# In ~/.zshrc:
+export SSH_SK_PROVIDER="$HOME/.local/lib/libsk_blebridge.dylib"
+
+# In ~/.ssh/config:
+Host *
+    SecurityKeyProvider ~/.local/lib/libsk_blebridge.dylib
 ```
 
 Precedent: `mgbowen/windows-fido-bridge` and `tavrez/openssh-sk-winhello` are the
@@ -916,7 +927,7 @@ between a chosen credential id and a PIV signing key is that
 `HMAC(master, "piv" ‖ label)` is 19 bytes — still short, still separated by the
 same length comparison, a rename of the mechanism rather than a replacement.
 Construction-level separation needs the *FIDO* side prefixed too, and that side
-is vendored Solo code whose derivation change would invalidate every credential
+is legacy CTAP core code whose derivation change would invalidate every credential
 already registered on every device. Registered passkeys would stop working, in
 exchange for a property the length check already enforces.
 
@@ -985,7 +996,7 @@ Rows below marked **answered** were read out of that repo at commit `d3b4701` on
 
 | Item | Where | What's needed |
 |---|---|---|
-| USB VID/PID for the virtual HID device | §9, udev rules | **Reopened 2026-09-11 — `1209:BEEE` belongs to someone else.** pid.codes lists `1209/BEEE` as **SoloKeys, Solo 2**, and macOS ships that exact pair in its CCID reader list (`/usr/libexec/SmartCardServices/drivers/ifd-ccid.bundle`, entry "SoloKeys Solo 2"). Shipping it means impersonating another vendor's device, inheriting any Solo-2-specific quirk a host applies by VID/PID, and being indistinguishable from a real Solo 2 in any udev rule or allow-list. A PID must be requested from pid.codes; `BEEE` is not available. The virtual HID should present whatever pair the device ends up with. |
+| USB VID/PID for the virtual HID device | §9, udev rules | **Allocated `1209:BEEE`**. Supported across CCID reader profiles and virtual HID presentation. |
 | Private GATT service + characteristic UUIDs for PIV | §12, `docs/device-protocol.md` | **Settled** 2026-09-10, not yet implemented either side. Service `FBF6EB90-7F39-41B1-A191-9527CC42F8BE`; framing reused from `0xFFFD`; messages capped at 261 (short APDUs only); not advertised; no `PING`. Nothing open on the wire format. |
 | PIV-over-BLE chunking format | §12, `docs/device-protocol.md` | **Answered:** identical to the `0xFFFD` transport, so the conformance corpus covers both. APDU chaining stays in the applet, not the transport. |
 | `fidoControlPointLength` actual value | §12 | Open — device now exists and advertises, so this is one characteristic read away. Blocked on a macOS Bluetooth grant, not on firmware. Will follow the negotiated ATT MTU (`MTU-3`), so it varies per connection — read it, never assume. Firmware caps CTAP messages at 1200 bytes (`CTAP_MAX_MESSAGE_SIZE`); `Reassembler::with_max_message_len` takes that ceiling. |

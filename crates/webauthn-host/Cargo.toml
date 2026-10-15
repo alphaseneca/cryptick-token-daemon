@@ -1,0 +1,23 @@
+[package]
+name = "webauthn-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "cryptick-webauthn-host"
+path = "src/main.rs"
+
+[dependencies]
+ctap = { workspace = true }
+ctap-client = { workspace = true }
+ctaphid = { workspace = true }
+ipc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+hidapi = { version = "2.6", default-features = false, features = ["macos-shared-device", "linux-native"] }
+

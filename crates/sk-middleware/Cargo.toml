@@ -1,6 +1,6 @@
 [package]
 name = "sk-middleware"
-version = "0.1.0"
+version.workspace = true
 description = "OpenSSH SecurityKeyProvider middleware for the Cryptick token"
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ctap.workspace = true
 ctap-client.workspace = true
+ctaphid.workspace = true
 ipc.workspace = true
 libc.workspace = true
 thiserror.workspace = true
+hidapi = { version = "2.6", default-features = false, features = ["macos-shared-device", "linux-native"] }

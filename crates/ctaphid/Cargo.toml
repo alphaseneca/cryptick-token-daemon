@@ -1,6 +1,6 @@
 [package]
 name = "ctaphid"
-version = "0.1.0"
+version.workspace = true
 description = "CTAPHID framing: 64-byte packets, channels, and message reassembly"
 edition.workspace = true
 license.workspace = true

@@ -65,7 +65,15 @@ impl<T: FragmentTransport> Session<T> {
         cancel: &mut CancelToken,
     ) -> Result<ctap::Response, DaemonError> {
         // Fail closed before anything touches the wire (PROJECT.md §15.2, §15.8).
-        let link = self.transport.link();
+        let mut link = self.transport.link();
+        if !link.connected {
+            // Give auto-reconnect a brief window to re-establish the BLE link if temporarily dropped
+            let wait_deadline = Instant::now() + Duration::from_secs(4);
+            while Instant::now() < wait_deadline && !link.connected {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                link = self.transport.link();
+            }
+        }
         if !link.connected {
             return Err(DaemonError::NotConnected);
         }
