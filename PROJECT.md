@@ -958,7 +958,7 @@ as little as possible.
    ecosystem still speaks `0xFFFD` to check ourselves against for free.
 
    **Replacement: a commercial BLE FIDO key as a reference device.** Drive one
-   (Feitian ships them) with our own daemon first. A daemon that works against
+   with our own daemon first. A daemon that works against
    somebody else's spec-compliant key is itself proven; the firmware can then be
    validated against the proven daemon. Without this, daemon and firmware are only
    ever tested against each other, and a shared misreading of the spec stays
