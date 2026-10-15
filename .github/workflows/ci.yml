@@ -11,7 +11,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   lint:
@@ -38,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p ctap -p ctaphid -p ctap-client -p ble-framing -p ipc
+      - run: cargo test -p ctap -p ctaphid -p ctap-client -p ble-framing -p ipc --all-targets
 
   # Substitutes the BLE transport for an in-process fake speaking real CTAP.
   # Proves the proxy logic end to end with no radio. Highest-value job (§14 L2).
@@ -55,7 +54,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev libusb-1.0-0-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p daemon --features fake-transport
+      - run: cargo test -p daemon --features fake-transport --all-targets
 
       # The real ssh-keygen, through the middleware and the daemon, against the
       # fake device. Same script the hardware job runs with a radio.

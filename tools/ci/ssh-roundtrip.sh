@@ -68,8 +68,15 @@ done
 connectable "$SOCKET" || { echo "daemon never became connectable"; exit 1; }
 echo "socket: $SOCKET"
 
+ASKPASS="$WORK/askpass.sh"
+cat << 'EOF' > "$ASKPASS"
+#!/bin/sh
+exit 0
+EOF
+chmod +x "$ASKPASS"
+
 echo "enrolling"
-SSH_SK_PROVIDER="$PROVIDER" ssh-keygen -t ed25519-sk \
+SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$ASKPASS" SSH_SK_PROVIDER="$PROVIDER" ssh-keygen -t ed25519-sk \
     -f "$WORK/id_sk" -N '' -C ssh-roundtrip </dev/null
 
 grep -q '^sk-ssh-ed25519@openssh.com ' "$WORK/id_sk.pub" \
@@ -78,7 +85,7 @@ echo "enrolled: $(cut -d' ' -f1 <"$WORK/id_sk.pub")"
 
 echo "signing"
 echo "ssh-roundtrip" > "$WORK/msg"
-SSH_SK_PROVIDER="$PROVIDER" ssh-keygen -Y sign \
+SSH_ASKPASS_REQUIRE=force SSH_ASKPASS="$ASKPASS" SSH_SK_PROVIDER="$PROVIDER" ssh-keygen -Y sign \
     -f "$WORK/id_sk" -n roundtrip "$WORK/msg" </dev/null
 
 grep -q 'BEGIN SSH SIGNATURE' "$WORK/msg.sig" \
