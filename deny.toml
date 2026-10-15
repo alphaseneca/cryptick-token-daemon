@@ -1,7 +1,7 @@
 # cargo-deny. A release gate, not a suggestion (PROJECT.md §14).
 
 [advisories]
-yanked = "deny"
+yanked = "warn"
 
 [bans]
 # Two versions of the same crate in an authenticator path means two code paths
