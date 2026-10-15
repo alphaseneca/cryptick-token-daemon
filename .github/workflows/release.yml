@@ -1,0 +1,97 @@
+name: Release Daemon & Tools
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: cryptick-daemon-macos-arm64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: cryptick-daemon-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: cryptick-daemon-windows-x86_64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo Dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux build dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libudev-dev pkg-config libusb-1.0-0-dev
+
+      - name: Build Release Binaries
+        run: |
+          cargo build --release --workspace --target ${{ matrix.target }}
+
+      - name: Package Release Assets (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          PKG_NAME="${{ matrix.artifact_name }}-${TAG_NAME}"
+          mkdir -p "${PKG_NAME}"
+          
+          # Copy compiled binaries if present
+          find target/${{ matrix.target }}/release -maxdepth 1 -type f -perm +111 -exec cp {} "${PKG_NAME}/" \; 2>/dev/null || true
+          
+          # Copy libraries (dylib / so)
+          find target/${{ matrix.target }}/release -maxdepth 1 -name "*.dylib" -o -name "*.so" | xargs -I {} cp {} "${PKG_NAME}/" 2>/dev/null || true
+
+          # Include license, packaging helpers & documentation
+          cp LICENSE README.md "${PKG_NAME}/" 2>/dev/null || true
+          cp -r tools/ "${PKG_NAME}/tools" 2>/dev/null || true
+
+          tar -czvf "${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          zip -r "${PKG_NAME}.zip" "${PKG_NAME}"
+
+      - name: Package Release Assets (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          TAG_NAME="${GITHUB_REF_NAME}"
+          PKG_NAME="${{ matrix.artifact_name }}-${TAG_NAME}"
+          mkdir -p "${PKG_NAME}"
+          
+          cp target/${{ matrix.target }}/release/*.exe "${PKG_NAME}/" 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/*.dll "${PKG_NAME}/" 2>/dev/null || true
+          cp LICENSE README.md "${PKG_NAME}/" 2>/dev/null || true
+
+          7z a "${PKG_NAME}.zip" "${PKG_NAME}"
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Cryptick Token Suite ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          files: |
+            cryptick-daemon-*.tar.gz
+            cryptick-daemon-*.zip
