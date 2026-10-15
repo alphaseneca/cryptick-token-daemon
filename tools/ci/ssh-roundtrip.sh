@@ -38,8 +38,10 @@ test -f "$PROVIDER" || { echo "no middleware at $PROVIDER"; exit 1; }
 
 if [ "$(uname -s)" = "Darwin" ]; then
     SOCKET="${HOME}/Library/Application Support/cryptick/daemon.sock"
+elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
+    SOCKET="${XDG_RUNTIME_DIR}/cryptick/daemon.sock"
 else
-    SOCKET="${XDG_RUNTIME_DIR:-$HOME/.cryptick}/daemon.sock"
+    SOCKET="${HOME}/.cryptick/daemon.sock"
 fi
 
 # A daemon killed by a signal never runs its Drop, so a dead socket file can be

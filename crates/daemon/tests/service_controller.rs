@@ -67,12 +67,12 @@ fn test_generate_launchd_plist_structure() {
     assert!(plist.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
     assert!(plist.contains("<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\""));
     assert!(plist.contains("<key>Label</key>\n    <string>com.cryptick.daemon</string>"));
-    assert!(plist.contains("<string>/Applications/Cryptick.app/Contents/MacOS/cryptick-daemon</string>"));
+    assert!(plist.contains(&format!("<string>{}</string>", exec.display())));
     assert!(plist.contains("<string>run</string>"));
     assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
     assert!(plist.contains("<key>KeepAlive</key>\n    <true/>"));
-    assert!(plist.contains("<string>/Users/tester/Library/Logs/cryptick-daemon.log</string>"));
-    assert!(plist.contains("<string>/Users/tester/Library/Logs/cryptick-daemon.err.log</string>"));
+    assert!(plist.contains(&format!("<string>{}</string>", log_dir.join("cryptick-daemon.log").display())));
+    assert!(plist.contains(&format!("<string>{}</string>", log_dir.join("cryptick-daemon.err.log").display())));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn test_generate_launchd_plist_extra_args() {
     let log_dir = Path::new("/var/log");
     let plist = generate_launchd_plist(exec, label, log_dir, &["run", "--fake"]);
 
-    assert!(plist.contains("<string>/usr/local/bin/cryptick-daemon</string>"));
+    assert!(plist.contains(&format!("<string>{}</string>", exec.display())));
     assert!(plist.contains("<string>run</string>"));
     assert!(plist.contains("<string>--fake</string>"));
 }
