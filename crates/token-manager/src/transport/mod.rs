@@ -60,17 +60,17 @@ impl DualTransport {
         // 2. Try BLE Daemon Fallback
         match DaemonTransport::connect(Duration::from_secs(3)) {
             Ok(daemon) => {
-                return Ok(Self {
+                Ok(Self {
                     active: Box::new(daemon),
-                });
+                })
             }
             Err(e) => {
-                return Err(format!(
+                Err(format!(
                     "Cryptick Token (0x1209:0xBEEE) was not found on USB, and BLE Daemon is unavailable.\n\
                      - To connect via USB: plug the Cryptick Token into a USB-C port.\n\
                      - To connect via Bluetooth: ensure 'cryptick-daemon' is running and the token is powered on.\n\
                      Details: {e}"
-                ));
+                ))
             }
         }
     }

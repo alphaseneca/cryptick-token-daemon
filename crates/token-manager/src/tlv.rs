@@ -129,12 +129,12 @@ impl Tlv {
     }
 
     /// Finds the first TLV with matching tag.
-    pub fn find<'a>(tlvs: &'a [Tlv], tag: u8) -> Option<&'a Tlv> {
+    pub fn find(tlvs: &[Tlv], tag: u8) -> Option<&Tlv> {
         tlvs.iter().find(|t| t.tag == tag)
     }
 
     /// Finds all TLVs with matching tag.
-    pub fn find_all<'a>(tlvs: &'a [Tlv], tag: u8) -> Vec<&'a Tlv> {
+    pub fn find_all(tlvs: &[Tlv], tag: u8) -> Vec<&Tlv> {
         tlvs.iter().filter(|t| t.tag == tag).collect()
     }
 }

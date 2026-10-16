@@ -317,7 +317,7 @@ pub fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
 
     let clean = clean.trim_start_matches("0x").trim_start_matches("0X");
 
-    if clean.len() % 2 != 0 {
+    if !clean.len().is_multiple_of(2) {
         return Err(format!(
             "Hex string has odd length ({} digits)",
             clean.len()
