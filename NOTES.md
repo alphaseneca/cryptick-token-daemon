@@ -1,3 +1,495 @@
+# Agent pass — real credential management + basic multi-device
+
+Branch: `feature/credential-management-and-multidevice`, off `main`. Implements
+items 1 and 2 of `docs/research/multi-device-and-credential-sync.md` as
+approved. Item 3 (hardware-to-hardware clone) was explicitly out of scope and
+not touched. No physical device or BLE central was available in this sandbox
+— see "What still needs real hardware" at the end. `cargo build`,
+`cargo test`, and `cargo fmt --all` (via the toolchain binary directly —
+neither `cargo fmt` nor `cargo clippy` nor `cargo deny` were on `PATH`; see
+"Tooling gaps hit in this sandbox") are clean across the whole workspace.
+
+## 0. The §21/§8 question the brief asked me to get right or flag
+
+The brief's own framing was: PIN-protocol work in the daemon looks like it
+reopens PROJECT.md §21's "don't implement CTAP PIN/UV protocols in the
+daemon" and §8's "the daemon pipes payloads; it does not understand them" —
+get the boundary right or say so, don't paper over it.
+
+Read literally against `crates/ctap`'s own module doc before writing anything:
+
+> "This crate does not parse CBOR... The daemon is a relay: it does not
+> build client data, make origin decisions, or implement the PIN/UV
+> protocols... (PROJECT.md §13, §21)."
+
+That reads as a flat ban. But `crates/ctap-client` already exists, already
+builds `authenticatorMakeCredential`/`GetAssertion` CBOR and parses COSE keys
+out of attestation objects — exactly the shape of work item 1 needs — and its
+own module doc states the actual boundary precisely:
+
+> "It is a **client**, not a relay: it lives in `sk-middleware`, on the far
+> side of the daemon's IPC boundary, and the daemon never links it."
+
+Confirmed structurally, not just by the comment: `crates/daemon/Cargo.toml`
+depends on `ctap-client` only behind the `fake-transport` **test** feature,
+for response fixtures, with a comment saying why; `crates/daemon/tests/
+relay_stays_opaque.rs` exists specifically to fail the build if the real
+relay path ever depends on client-side protocol logic (today enforced for
+`piv`, same principle). So the boundary §21/§8 actually draws is "daemon" the
+process/crate, not "anything that speaks CTAP2 client-side protocol
+anywhere in the repo" — and the project already has a working, tested,
+precedented place for exactly this class of work.
+
+**What I built lives in `ctap-client` (new `pin_protocol.rs`, `cred_mgmt.rs`
+modules), consumed only by `webauthn-host`. `crates/daemon` was not given a
+new dependency on either, and `relay_stays_opaque.rs` still passes.** I
+consider this a correct application of the existing, settled boundary rather
+than a reopening of it — but flagging it explicitly per the brief's own
+instruction, since this is exactly the kind of judgment call §19/§21 exist to
+protect and I'd rather the product owner see the reasoning than just the
+result.
+
+## 1. Mid-task pivot: PIN entry → on-device fingerprint (UV token)
+
+Partway through implementing the originally-specified PIN-entry contract, the
+product owner reversed course: credential management must be gated by the
+fingerprint sensor, the same ceremony as everyday sign-in, never a typed PIN.
+I re-verified the firmware claim behind that redirect myself rather than
+taking it on faith: `ctap_client_pin()`'s `switch` (`core/fido2/ctap.c`)
+handles subcommands `0x01`–`0x05` only and falls through to `default` (returns
+`CTAP1_ERR_OTHER`) for anything else, confirming no UV-token path exists in
+today's firmware. `CP_cmdGetPinToken` does unconditionally require
+`ctap_is_pin_set()`. Both match what I was told.
+
+**What survived the pivot:** the ECDH P-256 key-agreement and AES-256-CBC
+token-decryption mechanics in `pin_protocol.rs` — identical on the wire
+whether the token comes back via a PIN ceremony or a UV ceremony; only the
+*request* differs.
+
+**What changed:** no `pin` field anywhere in the `list_credentials`/
+`delete_credential` contract any more. The daemon-side flow now is: `getKeyAgreement`
+→ request a `pinUvAuthToken` scoped to the credential-management permission
+(`getPinUvAuthTokenUsingUvWithPermissions`, CTAP2.1 clientPin subcommand
+`0x06`) → the device's own fingerprint prompt gates that call, nothing
+rendered by the daemon or the extension → decrypt the token → proceed with
+credential management using it.
+
+**Firmware readiness, stated plainly:** subcommand `0x06` is not implemented
+in `core/fido2/ctap.c` as of this writing (confirmed above) — a parallel
+firmware task is adding it. I built `cred_mgmt::client_pin_subcommand::
+GET_PIN_UV_AUTH_TOKEN_USING_UV_WITH_PERMISSIONS = 0x06` and the full request/
+response shape against the CTAP2.1 spec's numbering (chosen because this
+firmware's existing `0x01`–`0x05` already match that spec's numbering exactly,
+so `0x06` is the documented next value, not a guess with no anchor) and
+against `permissions`/`rpId` per CTAP2.1 §6.5.5.7.2. **This is marked
+provisional in code** (`cred_mgmt.rs`'s doc comment on that constant) and
+`webauthn-host` handles the *current*, pre-firmware-update answer
+(`CTAP1_ERR_OTHER`) as a distinct, first-class outcome
+(`{"status":"uv_token_unsupported"}`) rather than a generic failure, so
+nothing breaks or looks broken against today's firmware — it just reports
+honestly that the device doesn't support it yet. Once the real subcommand
+number/shape is confirmed, the fix is contained to that one constant and
+anything genuinely different about the response shape; everything else
+(ECDH, AES, pinAuth, credential-management requests/responses) does not
+depend on it.
+
+## 2. Item 1 — credential listing and deletion
+
+### Where the code lives
+
+- `crates/ctap-client/src/pin_protocol.rs` (new): `PlatformKeyAgreement`
+  (ephemeral P-256 keypair, COSE-key encode, ECDH shared-secret derivation —
+  `SHA-256(ECDH x-coordinate)`, not HKDF, matching `ctap_add_pin_if_verified`
+  in `core/fido2/ctap.c` exactly rather than the CTAP2.1-Protocol-Two HKDF
+  construction the algorithm's own name (`ECDH-ES+HKDF-256`) would suggest),
+  `DeviceKeyAgreement` (parses the device's key-agreement COSE key — the
+  `-25` alg, deliberately *not* reusing `cose::CoseKey`, which documents
+  itself as narrowed to the two credential-key algorithms SSH uses), AES-256-
+  CBC with a zero IV implemented by hand over the `aes` crate's raw block
+  cipher (every payload this protocol ever encrypts is already block-aligned,
+  so there's no padding scheme to get wrong), and `pin_auth()` (HMAC-SHA256
+  truncated to 16 bytes — this device's `PIN_TOKEN_SIZE` is **16 bytes**, not
+  the CTAP2.0-spec-typical 32, confirmed in `core/fido2/ctap.h`).
+- `crates/ctap-client/src/cred_mgmt.rs` (new): request builders and response
+  parsers for `authenticatorCredentialManagement` (vendor `0x41`,
+  `CTAP_CBOR_CRED_MGMT_PRE` — this firmware implements the pre-standardisation
+  FIDO_2_1_PRE vendor shape, confirmed by `ctap_get_info`'s own comment "Not
+  FIDO_2_1_PRE: stay on CTAP2.0 built-in UV" and by `CTAP_CBOR_CRED_MGMT`
+  (`0x0a`, the real standardised command) not being dispatched to anything in
+  `core/fido2/ctap.c`) and the `authenticatorClientPIN` subcommands it needs.
+  Every field tag was read directly out of `ctap_parse_cred_mgmt`,
+  `ctap_cred_mgmt`, `ctap_cred_rp`, `ctap_cred_rk`, `ctap_cred_metadata`,
+  `parse_credential_descriptor`, `parse_cose_key`, `ctap_add_cose_key` — not
+  assumed from a spec reading, per the brief's own instruction and PROJECT.md
+  §20's "verify constants against the specification, not against the other
+  side's code" (which here meant verifying against the actual firmware
+  parser, since this is the PRE shape the spec itself doesn't fully specify).
+- `crates/webauthn-host/src/main.rs`: new `HostRequest::ListCredentials`/
+  `DeleteCredential`, `obtain_uv_token()` (the shared key-agreement +
+  UV-token ceremony, including writing an immediate `touch_required` message
+  before the call that blocks on the fingerprint), `handle_list_credentials`/
+  `handle_delete_credential`, and `uv_token_failure()` (the one place that
+  maps a device status to `timeout`/`cancelled`/`uv_token_unsupported`/generic
+  error, so the two actions can't quietly drift apart on how they classify
+  the same outcome).
+- `crates/webauthn-host/src/{daemon,usb}.rs`: both `DaemonClient` and
+  `UsbClient` gained a `transact_preserving_status` sibling to their existing
+  `transact`, because credential management needs the *real* CTAP status byte
+  back (to tell `timeout` from `cancelled` from "not supported yet") where
+  every existing caller (`create`/`get`/`totp_code`) was fine losing it to a
+  formatted error string.
+
+### Exact final IPC contract (webauthn-host ↔ extension), as it now stands
+
+This **drifted from the spec given at the start of the task**, per the
+mid-task pivot above. The extension side needs to reconcile against this,
+not the original spec:
+
+```jsonc
+// Request — no `pin` field any more.
+{"action": "list_credentials"}
+{"action": "delete_credential", "credentialId": "<base64url>", "rpId": "..."}
+
+// Interim message, written immediately before the device's own fingerprint
+// prompt blocks the call — the extension should keep listening for a second
+// message after this one, not treat it as final.
+{"status": "touch_required"}
+
+// Success (list_credentials).
+{
+  "status": "ok",
+  "relyingParties": [
+    {
+      "rpId": "...",
+      "rpName": "...",   // see the firmware-quirk note below
+      "credentials": [
+        {"credentialId": "<base64url>", "userName": "...", "userDisplayName": "..."}
+      ]
+    }
+  ],
+  "totalCredentials": N,     // device-wide resident-credential count (CM_cmdMetadata)
+  "remainingSlots": N        // maxPossibleRemaining, always present when metadata succeeds
+}
+
+// Success (delete_credential).
+{"status": "ok"}
+
+// The device has no UV-token support yet (today's real firmware answer —
+// see §1 above). Distinct from a generic error on purpose.
+{"status": "uv_token_unsupported"}
+
+// The user did not touch the sensor in time. Mirrors what
+// ctap2_user_presence_test() actually returns (CTAP2_ERR_ACTION_TIMEOUT,
+// 0x3a) rather than an invented value — see the StatusCode bug fix below for
+// why this couldn't have been gotten right without first fixing that.
+{"status": "timeout"}
+
+// The ceremony was cancelled (CTAP2_ERR_KEEPALIVE_CANCEL).
+{"status": "cancelled"}
+
+// Anything else: a real, undifferentiated error.
+{"status": "error", "message": "..."}
+```
+
+Dropped entirely from the original spec: `pin_not_set`, `pin_required`,
+`pin_invalid`/`retriesLeft`. There is no PIN concept left in this flow.
+
+**Firmware quirk surfaced, not hidden:** `rpName` in a `list_credentials`
+response is whatever `ctap_cred_rp` happens to encode, which is the *user*
+entity's name field of whichever resident key the enumeration scan landed on
+(`core/fido2/ctap.c`) — this firmware has no separate per-RP display-name
+storage. For an RP with multiple accounts this can be any one of them. Noted
+in `cred_mgmt::RpEntry`'s doc comment and passed through as-is rather than
+papered over.
+
+### What's stubbed vs. real
+
+- **Real, unit-tested against byte layouts read from the firmware source**:
+  ECDH key agreement, AES decrypt, pinAuth, all credential-management request/
+  response shapes, the `webauthn-host` wiring including the `touch_required`
+  signal and status classification. 80 new/updated tests across
+  `ctap-client`, `webauthn-host`, `ipc`, `daemon` — see "Testing performed."
+- **Provisional, clearly marked**: the `0x06` subcommand's exact wire shape,
+  pending the parallel firmware work (§1 above).
+- **Not attempted**: `set_pin`/`change_pin` (item 1's explicitly optional
+  deliverable). Given the pivot away from PIN-gated credential management,
+  this dropped further in priority; skipped rather than half-wired, per the
+  brief's own permission to skip it.
+- **Not attempted**: deletion's `rpId` parameter is accepted (contract
+  compliance) but unused on the wire — `CM_cmdRKDelete` matches on the full
+  opaque credential ID alone (`credentialId_to_rk_index`, `core/fido2/
+  ctap.c` — the RP is already encoded inside that ID), so there was nothing
+  for it to do.
+
+## 3. A real bug found and fixed along the way: `ctap::StatusCode`
+
+While building the status-classification logic above, cross-checking this
+device's firmware error codes (`core/fido2/ctap_errors.h`) against the
+constants already in `crates/ctap::StatusCode` turned up a genuine,
+pre-existing bug, independent of anything in this task's brief — the exact
+failure mode PROJECT.md §20 already has a cautionary tale about
+(`ble-framing`'s `0x06`/`ERR_BUSY` mistake):
+
+| Constant | This crate had | Actually (verified against CTAP2.1 §8.2.3 / Yubico's `python-fido2` reference / this firmware's own `ctap_errors.h`) | What was really at that byte |
+|---|---|---|---|
+| `KEEPALIVE_CANCEL` | `0x2e` | `0x2d` | `0x2e` is `CTAP2_ERR_NO_CREDENTIALS` |
+| `USER_ACTION_TIMEOUT` | `0x30` | `0x2f` | `0x30` is `CTAP2_ERR_NOT_ALLOWED` |
+| `UP_REQUIRED` | `0x3c` | `0x3b` | `0x3c` is `CTAP2_ERR_UV_BLOCKED` |
+
+Fixed all three, added `ACTION_TIMEOUT` (`0x3a` — the one this firmware's
+`ctap2_user_presence_test()` wrapper actually returns for a touch timeout,
+distinct from `USER_ACTION_TIMEOUT`), `NO_CREDENTIALS`, `NOT_ALLOWED`,
+`PIN_NOT_SET`, `PIN_INVALID`, `PIN_AUTH_INVALID`, `MISSING_PARAMETER`, each
+cited against the same cross-check. New test
+`corrected_status_codes_match_the_ctap2_1_spec`.
+
+**This was not cosmetic.** `crates/daemon/src/hid.rs`'s virtual-HID bridge
+already emits `ctap::StatusCode::KEEPALIVE_CANCEL` to the OS/browser on a
+cancelled transaction — with the old wrong value, a cancelled transaction was
+being reported to the browser as `CTAP2_ERR_NO_CREDENTIALS` instead of
+"cancelled." `crates/daemon/tests/hid_bridge.rs`'s existing test asserted the
+(wrong) byte symbolically and therefore didn't catch it. Both sides now agree
+on the corrected value.
+
+## 4. A real bug found and fixed: false "disconnected" during a slow OATH ceremony
+
+Separately investigated per request: does the daemon's own status-polling
+treat "the device is legitimately busy for several seconds" as a
+disconnection?
+
+**The daemon itself does not.** `crates/daemon/src/server.rs`'s
+`DeviceStatus` handling reads `Bridge::link()` directly — no lock shared with
+an in-flight transaction (`Bridge::transact` takes its own `tokio::sync::Mutex`
+only around the session, never touched by `link()`), confirmed by reading
+`bridge.rs`/`server.rs`/`transport.rs` end to end. `ReconnectingBleTransport::
+link()` is lock-free in the common case (`try_read`, falling back to cached
+atomics). Nothing on the daemon/BLE side serialises a status check behind a
+slow transaction.
+
+**The root cause was `webauthn-host`'s own request loop.** Before this pass,
+`main()` was a single blocking loop: it did not call `read_native_message`
+again until the in-flight request's handler had fully returned. A `status`
+request sent by the extension while a fingerprint-gated `totp_code` call was
+outstanding (or `create`/`get`, or now `list_credentials`/`delete_credential`)
+simply sat unread in the stdin pipe for the whole wait — up to 29 s
+(`CTAP2_UP_DELAY_MS`, `core/fido2/ctap.h`). The extension's own status-poll
+timeout (seconds) would fire first and read as "device disconnected" while
+the device was mid-ceremony and perfectly healthy.
+
+**Fixed**: `crates/webauthn-host/src/main.rs`'s `main()` now spawns a thread
+per incoming native-messaging request (`handle_request` extracted as a plain
+function), with writes to stdout serialised through a `Mutex<()>`
+(`write_response`) so two threads' responses can never interleave mid-frame.
+A concurrent `status` request is now answered immediately regardless of what
+else is in flight. Documented in `main`'s own doc comment so the reasoning
+doesn't get lost again.
+
+Residual, lower-risk than the bug fixed: two threads can now each open their
+own `UsbClient`/HID handle to the same physical USB device concurrently
+(previously impossible, since everything was serialised). CTAPHID's spec
+allows concurrent channels, but this specific firmware's behaviour under a
+concurrent broadcast `CTAPHID_INIT` while another channel is mid-transaction
+is not verified here — flagged under "what still needs real hardware."
+
+## 5. Item 2 — basic multi-device management
+
+### Device identity — the honest answer, checked directly in firmware
+
+**There is no stable, firmware-populated identity for this hardware, full
+stop — and the BLE side is worse than "just missing," it's actively
+randomized by design:**
+
+- **USB**: grepped `platformio.ini`, `core/`, `include/`, `variants/` for
+  `iSerialNumber`/`SERIAL_NUMBER`/`setSerial`/`usb_serial` — nothing. No USB
+  serial-number descriptor exists anywhere in this firmware. `hidapi`'s
+  `serial_number()` returns `None` for this device today.
+- **BLE**: `ble_fido_gatt_init` (`core/ble_fido/ble_gatt_esp32.cpp`) calls
+  `NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM)` — a random/resolvable
+  private address, not the controller's real static MAC — and derives the
+  *advertised name* by XORing part of the real MAC with a stored "epoch" byte
+  that increments across bonding cycles, specifically so it differs next
+  time. `device_read_aaguid` (`core/fido2/hal_esp32.cpp`) returns a fixed
+  constant (`kCryptickTokenAaguid`) shared by every unit of this product, so
+  it can't distinguish two tokens either.
+
+This is a firmware gap for a separate task, and I did not invent an identity
+scheme to paper over it. What I built tracks the one signal the daemon
+already depends on for reconnection — `transport::paired_device_path()`'s
+persisted BLE address — as a **best-effort recognition key**, documented as
+exactly that (not a guaranteed-stable hardware serial) everywhere it's used.
+A real fix needs the firmware to populate an actual serial number (USB) and/or
+stop rotating the BLE identity signal across epochs.
+
+### What's built
+
+- `crates/daemon/src/devices.rs` (new): `DeviceStore` — a small JSON file
+  (`known_devices.json`, sibling to the existing `paired_device_path()`),
+  upsert-by-id with `last_seen`/name/transport, one `active_id`, fail-soft on
+  a missing/corrupt file (bookkeeping must never stop the daemon from serving
+  CTAP requests). `seed_from_paired_target()` backfills from the existing
+  single-BLE-target config so a device paired before this store existed still
+  shows up. 11 unit tests.
+- **Why this only ever sees BLE**: the daemon has no USB code path at all —
+  by design (PROJECT.md §1/§4, `docs/ARCHITECTURE.md` Mechanism 1: "Daemon
+  Required? No"). A USB-only user may not be running the daemon at all, so a
+  daemon-only store could never show a USB device regardless of identity.
+  `webauthn-host`'s `list_devices` handler accounts for this by unioning the
+  daemon's BLE list with its own live USB scan (`UsbClient::try_connect`)
+  rather than pretending the daemon can see something it structurally can't.
+  `cryptick-manager devices` does the identical union for CLI/GUI parity.
+- `crates/ipc`: new `ClientMessage::ListDevices`/`SelectDevice{id}` (wire key
+  `deviceId`, not `id` — colliding with `Envelope`'s own correlation `id`
+  under `#[serde(flatten)]` was the first thing tried, and
+  `client_messages_round_trip` caught it immediately with "duplicate field
+  `id`"), `DaemonMessage::DeviceList`/`Ack`, new shared `DeviceInfo` type.
+  **`PROTOCOL_VERSION` bumped 1 → 2** per PROJECT.md §20 (`feat(ipc)!:`); an
+  old v1 client now gets a clean `UnsupportedVersion`, verified by a new test.
+- `crates/daemon/src/server.rs`: `ListDevices`/`SelectDevice` handling,
+  threaded alongside `Bridge` through `serve_connection` (now takes an
+  `Arc<Mutex<DeviceStore>>`). `ListDevices` piggybacks a real `last_seen`
+  bump onto its own read when the link is actually connected — not invented,
+  just reusing the already-non-blocking `Bridge::link()`.
+- `crates/webauthn-host/src/{daemon,main}.rs`: `DaemonClient::list_devices`/
+  `select_device`, `HostRequest::ListDevices`/`SelectDevice`,
+  `handle_list_devices`/`handle_select_device` (USB's `"usb"` id is a local
+  no-op on select — nothing to switch to, and must not require a daemon that
+  may not be running).
+- `crates/token-manager`: `DaemonTransport::list_devices`/`select_device`,
+  new `cryptick-manager devices [list|select <id>]` subcommand
+  (`cli/devices_cli.rs`), dispatched alongside `list`/`script` in
+  `cli/mod.rs` as not needing an active hardware connection. Same union logic
+  as `webauthn-host`, kept in sync deliberately rather than each inventing
+  its own merge rule.
+
+### What "active" currently guarantees — read before assuming more
+
+`select_device` updates the store's `active_id` immediately (and persists
+it), and `ListDevices`/`cryptick-manager devices list` reflect that right
+away. For a BLE id, it does **not** hot-retarget an already-open
+`ReconnectingBleTransport` connection live — that struct's `target_device` is
+captured once at `spawn()` time. A live switch takes effect on the daemon's
+next reconnect cycle naturally (if the currently-held device disconnects) or
+needs a daemon restart (the same pattern `run_pair` already uses: stop,
+retarget, start). Implementing genuine live hot-retargeting of a running
+`ReconnectingBleTransport` was in scope for "basic" multi-device management
+only if cheap; it touches the one background task this daemon depends on
+staying stable with zero hardware to test against, so I left it as "the
+bookkeeping and the persisted target are real; the live hand-off is a
+follow-up," rather than guessing at a change to that loop I couldn't verify.
+
+## 6. New dependencies (PROJECT.md §20 — flagged for discussion)
+
+`p256 = "=0.13.2"` (ECDH P-256, `ecdh` feature), `aes = "=0.8.4"` (raw AES-256
+block ops — CBC chaining implemented by hand rather than also pulling in the
+`cbc` crate, since every payload here is already block-aligned), `hmac =
+"=0.12.1"` (already pulled in transitively by `p256`/`ecdsa`'s RFC 6979
+nonces, so depending on it directly adds no new supply-chain surface — just
+names a crate that was already in the lockfile). All exact-pinned per §7/§20.
+
+Confirmed before adding: nothing already in this workspace provides ECC —
+`btleplug`'s bonding is handled by the OS Bluetooth stack, not a Rust crypto
+crate, which is why the brief's assumption ("probably already in the
+dependency tree for BLE transport encryption") turned out not to hold; said
+so rather than papering over it.
+
+`cargo-deny` is not installed in this sandbox, so I checked licenses by hand
+instead of skipping the check: every new and transitively-pulled crate
+(`p256`, `aes`, `hmac`, `elliptic-curve`, `crypto-bigint`, `ecdsa`,
+`primeorder`, `ff`, `group`, `sec1`, `der`, `pkcs8`, `spki`, `const-oid`,
+`base64ct`, `pem-rfc7468`, `signature`, `rfc6979`, `zeroize`, `subtle`,
+`cpufeatures`, `inout`, `hkdf`, `generic-array`, `crypto-common`, `digest`,
+`block-buffer`, `cipher`) is `MIT OR Apache-2.0` except `subtle`
+(`BSD-3-Clause`) and `generic-array` (`MIT`) — every one already on
+`deny.toml`'s allow-list, read directly from each crate's own `Cargo.toml` in
+`~/.cargo/registry/src/...`. One pre-existing-pattern note, not from this
+change: `rand_core` now resolves to two versions (`0.6.4` pulled by `p256`'s
+ecosystem, `0.9.5` already present) — `deny.toml`'s `multiple-versions =
+"warn"`, not deny, so this doesn't fail the gate, but worth running the real
+`cargo deny check` once it's installed in CI.
+
+## 7. Tooling gaps hit in this sandbox
+
+None of these are code issues; noted so they don't get mistaken for "not
+checked":
+
+- **No `rustdoc`** on `PATH` or in the toolchain dir — `cargo test --doc`
+  fails to even launch, on `main` as much as this branch. Doc-tests were not
+  run anywhere in this pass as a result (there are none of substance in the
+  touched files regardless).
+- **No `cargo-clippy`** installed — clippy was not run at all. Everything
+  else (`cargo build --workspace --all-targets`, `cargo test --workspace
+  --features fake-transport --lib --bins --tests`) is clean.
+- **No `cargo-deny`** installed — see §6 for the manual license check done
+  instead.
+- **`cargo fmt`/`rustfmt` not on `PATH`**, but present under
+  `~/.rustup/toolchains/.../bin/` — invoked directly from there
+  (`cargo-fmt fmt --all`); the whole workspace is clean against it now.
+
+## Testing performed (all without hardware)
+
+- `crates/ctap`: existing 7 tests + 1 new (`corrected_status_codes_match_the_
+  ctap2_1_spec`) — 8 total, all passing.
+- `crates/ctap-client`: 80 tests (up from ~63), covering `pin_protocol.rs`
+  (ECDH agreement symmetry between two independently-generated keypairs, AES
+  CBC chaining verified to actually chain — not silently degrade to ECB,
+  encrypt/decrypt round trips, HMAC pinAuth checked against an independently
+  computed value) and `cred_mgmt.rs` (every request's exact signed-byte
+  input verified against what `ctap_cred_mgmt_pinauth` actually hashes, every
+  response parser checked against hand-built CBOR matching the firmware
+  encoder's exact field layout, the RP-name firmware quirk pinned down rather
+  than assumed away).
+- `crates/ipc`: 22 tests (up from ~17), including the `deviceId`/`id`
+  collision catch, the v1→v2 version-rejection tests, and `DeviceList`/`Ack`
+  round trips.
+- `crates/daemon`: full existing suite (fake-device L2 harness, hid_bridge,
+  vpcd relay/adversarial, `relay_stays_opaque`, service controller, unix
+  socket) still green, plus 11 new `devices.rs` unit tests and 4 new
+  `ipc_server.rs` integration tests exercising `ListDevices`/`SelectDevice`
+  through the real server dispatch (pre-seeded store, active-flag switching,
+  unknown-id refusal).
+- `crates/webauthn-host`: 11 tests (up from 5) — request/response shape
+  tests for the new actions, the `uv_token_failure` status-mapping matrix,
+  confirmation that a stray `pin` field from an old contract is harmlessly
+  ignored rather than rejected.
+- `crates/token-manager`: 3 new `devices_cli` tests.
+- Full workspace: `cargo build --workspace --all-targets` and `cargo test
+  --workspace --features fake-transport --lib --bins --tests` both clean,
+  39 test binaries, zero failures, run twice (before and after `cargo fmt`).
+
+## What still needs real hardware to confirm
+
+- **Everything in §2** (credential listing/deletion): the exact CBOR byte
+  layouts were read from the firmware parser/encoder functions directly and
+  unit-tested against hand-built CBOR matching them, but **nothing here has
+  been exchanged with a real device**. In particular: the provisional `0x06`
+  subcommand's real shape once the parallel firmware work lands (§1); whether
+  the device's actual UV-token response is encrypted identically to
+  `CP_cmdGetPinToken`'s (assumed, not observed); real credential enumeration
+  against a device with more than a handful of resident keys/RPs (the
+  `*Next` continuation logic is unit-tested against synthetic responses, not
+  a real multi-credential device).
+- **The disconnect-report fix (§4)**: the root-cause analysis (single-
+  threaded request loop) is confirmed by reading the code, and the fix is
+  unit-tested for correctness of the framing/locking, but the original
+  symptom itself (extension showing "disconnected" during a real OATH
+  ceremony) was never reproduced here — there's no browser extension or
+  device in this sandbox to reproduce it against.
+- **The residual USB concurrency question (§4)**: whether this specific
+  firmware's CTAPHID layer correctly answers a broadcast `CTAPHID_INIT` while
+  another channel has a transaction in flight.
+- **Device identity (§5)**: the BLE address-rotation behaviour (the "epoch"
+  mechanism) was read from source, not observed across an actual bonding
+  cycle — how often it actually rotates in practice (every boot? every
+  bond?) is unconfirmed.
+- **Live device switching (§5)**: `select_device` against a daemon actually
+  holding two devices' worth of history and switching between two *real*
+  physical tokens.
+- **Everything PROJECT.md §14 already lists as needing L4**: golden
+  transcripts, bonding/pairing behaviour, power/reconnect timing — unchanged
+  by this pass, still applies.
+
+---
+
 # Agent pass — BLE/PIV hardening, encryption audit, cross-platform parity
 
 Branch: `agent/ble-piv-crossplatform`. Scope was the six priorities below, in
@@ -215,6 +707,11 @@ subtly wrong with zero hardware to test against), and per PROJECT.md §20 any
 IPC message shape change needs `feat(ipc)!:` + a `PROTOCOL_VERSION` bump —
 not something to do speculatively. This is a real list for whoever builds
 the GUI next, not a set of bugs; flagging it is the deliverable here.
+
+(Note from the later `feature/credential-management-and-multidevice` pass
+above: items 1 and 2 of this list are now partially addressed — device
+listing/selection gained a real IPC surface, `PROTOCOL_VERSION` bumped to 2
+accordingly. Rich pairing/forget/login-setup remain CLI-process-local.)
 
 ## 6. Time sync sanity check
 
