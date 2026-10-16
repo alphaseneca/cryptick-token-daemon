@@ -82,7 +82,13 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// The IPC protocol version. Bump on any message shape change.
-pub const PROTOCOL_VERSION: u32 = 1;
+///
+/// Bumped to 2 for the `list_devices`/`select_device` actions and their
+/// `DaemonMessage::DeviceList`/`DaemonMessage::Ack` replies (PROJECT.md §20:
+/// "An IPC message shape change is a breaking change"). An old client
+/// speaking v1 gets a clean [`IpcError::UnsupportedVersion`], never a
+/// misparse — `check_version` runs before the body is touched either way.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Something went wrong encoding, decoding or validating an IPC message.
 #[derive(Debug, Error)]
@@ -177,6 +183,52 @@ pub enum ClientMessage {
     /// Ask for the device's current status.
     #[serde(rename = "device.status")]
     DeviceStatus,
+
+    /// List every device the daemon knows about (PROJECT.md §20 bump —
+    /// v2). Bookkeeping, not a CTAP transaction: answered instantly from
+    /// the known-devices store, never queued behind an in-flight transfer.
+    #[serde(rename = "devices.list")]
+    ListDevices,
+
+    /// Make `id` the active device. The daemon's own connection does not
+    /// necessarily retarget immediately — see
+    /// `crates/daemon/src/devices.rs`'s module doc and `NOTES.md` for what
+    /// "active" currently guarantees.
+    #[serde(rename = "devices.select")]
+    SelectDevice {
+        /// The device id, as `devices.list` reported it.
+        ///
+        /// Named `deviceId` on the wire, not `id` — `ClientMessage` is
+        /// flattened into [`Envelope`], which already owns an `id` field
+        /// (the request/response correlation id), and a second field also
+        /// named `id` on this variant would collide with it the moment both
+        /// serialise into the same flattened JSON object. Caught by
+        /// `client_messages_round_trip` the first time this was tried: it
+        /// failed with "duplicate field `id`" on decode, not a silent
+        /// shadowing — `#[serde(flatten)]` is strict about this, which is
+        /// exactly why the round-trip test exists.
+        #[serde(rename = "deviceId")]
+        id: String,
+    },
+}
+
+/// One entry in a `devices.list` reply.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceInfo {
+    /// Best-effort recognition key — see `crates/daemon/src/devices.rs`'s
+    /// module doc for why this is not a guaranteed-stable hardware serial.
+    pub id: String,
+    /// A friendly name.
+    pub name: String,
+    /// `"ble"` on this wire today — the daemon has no USB code path (see
+    /// the same module doc).
+    pub transport: String,
+    /// Unix timestamp, seconds, of the last time this device was confirmed
+    /// as the daemon's target or seen connected.
+    #[serde(rename = "lastSeen")]
+    pub last_seen: u64,
+    /// Whether this is the currently-selected device.
+    pub active: bool,
 }
 
 /// A message from the daemon to a client.
@@ -223,6 +275,18 @@ pub enum DaemonMessage {
         /// payload contents (PROJECT.md §15.5).
         message: String,
     },
+
+    /// Reply to `devices.list`.
+    #[serde(rename = "devices.listed")]
+    DeviceList {
+        /// Every known device, newest-seen first.
+        devices: Vec<DeviceInfo>,
+    },
+
+    /// A bare success acknowledgement, carrying no payload. Reply to
+    /// `devices.select`.
+    #[serde(rename = "ack")]
+    Ack,
 }
 
 /// Why the device sent a keepalive.
@@ -318,6 +382,8 @@ mod tests {
         });
         round_trip_client(ClientMessage::CtapCancel);
         round_trip_client(ClientMessage::DeviceStatus);
+        round_trip_client(ClientMessage::ListDevices);
+        round_trip_client(ClientMessage::SelectDevice { id: "abc".into() });
     }
 
     #[test]
@@ -338,6 +404,16 @@ mod tests {
                 code: ErrorCode::NotBonded,
                 message: "link is not bonded".into(),
             },
+            DaemonMessage::DeviceList {
+                devices: vec![DeviceInfo {
+                    id: "AA:BB".into(),
+                    name: "My Token".into(),
+                    transport: "ble".into(),
+                    last_seen: 12345,
+                    active: true,
+                }],
+            },
+            DaemonMessage::Ack,
         ] {
             let env = Envelope::new("x", body);
             let frame = encode(&env).unwrap();
@@ -361,7 +437,7 @@ mod tests {
         );
         let json: serde_json::Value =
             serde_json::from_slice(&serde_json::to_vec(&env).unwrap()).unwrap();
-        assert_eq!(json["v"], 1);
+        assert_eq!(json["v"], PROTOCOL_VERSION);
         assert_eq!(json["id"], "7f3");
         assert_eq!(json["type"], "ctap.request");
         assert_eq!(json["cbor"], "BA");
@@ -382,14 +458,27 @@ mod tests {
 
     #[test]
     fn a_future_version_is_reported_as_a_version_error() {
-        let json = br#"{"v":2,"id":"x","type":"ctap.cancel"}"#;
+        let json = br#"{"v":3,"id":"x","type":"ctap.cancel"}"#;
         match decode_client(json) {
             Err(IpcError::UnsupportedVersion {
-                got: 2,
-                expected: 1,
+                got: 3,
+                expected: PROTOCOL_VERSION,
             }) => {}
             other => panic!("expected a version error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_old_v1_client_is_reported_as_a_version_error_not_a_misparse() {
+        // The whole point of versioning this at all: a client built against
+        // v1 (no devices.list/devices.select, no DeviceList/Ack) must be
+        // told its version is wrong, not get a confusing field-level failure
+        // on a v1 message this v2 decoder would otherwise accept.
+        let json = br#"{"v":1,"id":"x","type":"ctap.cancel"}"#;
+        assert!(matches!(
+            decode_client(json),
+            Err(IpcError::UnsupportedVersion { got: 1, .. })
+        ));
     }
 
     #[test]
@@ -406,14 +495,30 @@ mod tests {
 
     #[test]
     fn unknown_message_types_are_rejected() {
-        let json = br#"{"v":1,"id":"x","type":"ctap.somethingElse"}"#;
-        assert!(matches!(decode_client(json), Err(IpcError::Malformed(_))));
+        let json = format!(r#"{{"v":{PROTOCOL_VERSION},"id":"x","type":"ctap.somethingElse"}}"#);
+        assert!(matches!(
+            decode_client(json.as_bytes()),
+            Err(IpcError::Malformed(_))
+        ));
     }
 
     #[test]
     fn bad_base64_is_rejected() {
-        let json = br#"{"v":1,"id":"x","type":"ctap.request","cbor":"!!!!","timeoutMs":1}"#;
-        assert!(decode_client(json).is_err());
+        let json = format!(
+            r#"{{"v":{PROTOCOL_VERSION},"id":"x","type":"ctap.request","cbor":"!!!!","timeoutMs":1}}"#
+        );
+        // Must fail on the base64, not merely happen to also fail on a
+        // version mismatch — using the real current version is what makes
+        // this test actually exercise that path. The custom `b64` deserialiser
+        // reports a bad base64 string through `serde::de::Error::custom`
+        // (see the `b64` module below), which `serde_json` surfaces as a
+        // plain deserialisation error — `Malformed`, not the dedicated
+        // `InvalidBase64` variant (that one is for `IpcError::from`'s own
+        // `#[from] base64::DecodeError` conversion, a different call path).
+        assert!(matches!(
+            decode_client(json.as_bytes()),
+            Err(IpcError::Malformed(_))
+        ));
     }
 
     #[test]
