@@ -198,6 +198,7 @@ dependencies = [
  "ctaphid",
  "hidapi",
  "ipc",
+ "piv",
  "proptest",
  "serde",
  "serde_json",
