@@ -176,7 +176,7 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
         if let Some(handle) = self
             .in_flight
             .lock()
-            .expect("in-flight lock")
+            .unwrap_or_else(|e| e.into_inner())
             .remove(&channel)
         {
             handle.cancel();
@@ -194,7 +194,7 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
 
         let (handle, mut token) = cancel_pair();
         {
-            let mut slots = self.in_flight.lock().expect("in-flight lock");
+            let mut slots = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
             if slots.contains_key(&channel) {
                 send(out, Packet::error(channel, ErrorCode::ChannelBusy));
                 return;
@@ -259,7 +259,10 @@ impl<T: FragmentTransport + Clone + Send + Sync + 'static> HidBridge<T> {
                 Err(_) => send(&out, Packet::error(channel, ErrorCode::Other)),
             }
 
-            in_flight.lock().expect("in-flight lock").remove(&channel);
+            in_flight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&channel);
         });
     }
 }

@@ -114,7 +114,13 @@ impl ReconnectingBleTransport {
                             }
                         }
                     }
-                    let adapter_ref = opt_adapter.as_ref().unwrap();
+                    // `opt_adapter` was just populated above if it was empty, so this
+                    // is always `Some` — but §20 forbids `.unwrap()` here even so,
+                    // and failing closed by retrying the loop costs nothing.
+                    let Some(adapter_ref) = opt_adapter.as_ref() else {
+                        tokio::time::sleep(Duration::from_millis(1500)).await;
+                        continue;
+                    };
 
                     connecting_clone.store(true, Ordering::SeqCst);
                     let find_res = match transport_ble::find_device_with_target(

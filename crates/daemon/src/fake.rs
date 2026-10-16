@@ -133,14 +133,14 @@ impl FakeDevice {
     pub fn with_response_fragment_size(self, size: FragmentSize) -> Self {
         self.state
             .lock()
-            .expect("fake state")
+            .unwrap_or_else(|e| e.into_inner())
             .response_fragment_size = size;
         self
     }
 
     /// Overrides the link state, for the bonding checks in §15.2.
     pub fn with_link(self, link: LinkState) -> Self {
-        self.state.lock().expect("fake state").link = link;
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).link = link;
         self
     }
 
@@ -242,11 +242,15 @@ fn render(
 #[async_trait::async_trait]
 impl FragmentTransport for FakeDevice {
     async fn fragment_size(&mut self) -> Result<FragmentSize, TransportError> {
-        Ok(self.state.lock().expect("fake state").fragment_size)
+        Ok(self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .fragment_size)
     }
 
     async fn write_fragment(&mut self, fragment: &[u8]) -> Result<(), TransportError> {
-        let mut state = self.state.lock().expect("fake state");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
 
         // A real device would reject this at the ATT layer.
         if fragment.len() > state.fragment_size.get() as usize {
@@ -291,7 +295,7 @@ impl FragmentTransport for FakeDevice {
     async fn next_notification(&mut self) -> Result<Vec<u8>, TransportError> {
         loop {
             let repeated = {
-                let mut state = self.state.lock().expect("fake state");
+                let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(fragment) = state.outbox.pop_front() {
                     return Ok(fragment);
                 }
@@ -310,6 +314,6 @@ impl FragmentTransport for FakeDevice {
     }
 
     fn link(&self) -> LinkState {
-        self.state.lock().expect("fake state").link
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).link
     }
 }

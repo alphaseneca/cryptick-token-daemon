@@ -237,9 +237,12 @@ fn check_linux_status(user: &str) -> LoginStatusReport {
     // Check user's u2f_keys
     let home = std::env::var("HOME").unwrap_or_else(|_| format!("/home/{user}"));
     let cryptick_u2f_path = Path::new(&home).join(".config/cryptick/u2f_keys");
+    // `pam_u2f`'s own documented default authfile directory, unrelated to any
+    // particular hardware vendor — checked purely for interop with existing
+    // PAM U2F setups that pre-date Cryptick's own `~/.config/cryptick` path.
     let fallback_u2f_path = Path::new(&home)
         .join(".config")
-        .join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap())
+        .join("Yubico")
         .join("u2f_keys");
     let u2f_keys_configured = cryptick_u2f_path.exists() || fallback_u2f_path.exists();
 
@@ -703,9 +706,9 @@ fn run_linux_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
     let home = std::env::var("HOME").unwrap_or_else(|_| format!("/home/{user}"));
     let cryptick_dir = Path::new(&home).join(".config/cryptick");
     let u2f_keys_file = cryptick_dir.join("u2f_keys");
-    let fallback_dir = Path::new(&home)
-        .join(".config")
-        .join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap());
+    // See the comment on the equivalent macOS path above: `pam_u2f`'s own
+    // documented default authfile directory, checked for interop only.
+    let fallback_dir = Path::new(&home).join(".config").join("Yubico");
     let fallback_keys_file = fallback_dir.join("u2f_keys");
 
     println!("        ✓ Target user: {user}");
