@@ -274,7 +274,68 @@ impl DaemonClient {
         }
     }
 
+    /// Every device the daemon knows about (PROJECT.md §13's shape,
+    /// extended for item 2 of `docs/research/multi-device-and-credential-sync.md`).
+    /// Answered instantly by the daemon regardless of any in-flight CTAP
+    /// transaction — see `crates/daemon/src/server.rs`'s `ListDevices` arm.
+    pub fn list_devices(&mut self) -> Result<Vec<ipc::DeviceInfo>, HostError> {
+        let id = self.take_id();
+        self.send(&id, ClientMessage::ListDevices)?;
+        match self.recv(&id, Instant::now() + Duration::from_millis(500))? {
+            DaemonMessage::DeviceList { devices } => Ok(devices),
+            DaemonMessage::Error { code, .. } => Err(HostError::Refused { code }),
+            _ => Err(HostError::Protocol(IpcError::Malformed(
+                serde_json::Error::io(std::io::Error::other("unexpected reply")),
+            ))),
+        }
+    }
+
+    /// Makes `id` the daemon's active device. See
+    /// `crates/daemon/src/devices.rs`'s module doc for what "active"
+    /// currently guarantees — today this is bookkeeping plus (for a BLE id)
+    /// retargeting the daemon's persisted reconnect address, not necessarily
+    /// an instantaneous live hand-off of an already-open connection.
+    pub fn select_device(&mut self, id: &str) -> Result<(), HostError> {
+        let request_id = self.take_id();
+        self.send(
+            &request_id,
+            ClientMessage::SelectDevice { id: id.to_string() },
+        )?;
+        match self.recv(&request_id, Instant::now() + Duration::from_millis(500))? {
+            DaemonMessage::Ack => Ok(()),
+            DaemonMessage::Error { code, .. } => Err(HostError::Refused { code }),
+            _ => Err(HostError::Protocol(IpcError::Malformed(
+                serde_json::Error::io(std::io::Error::other("unexpected reply")),
+            ))),
+        }
+    }
+
     pub fn transact(
+        &mut self,
+        request: &Request,
+        timeout: Duration,
+    ) -> Result<Response, HostError> {
+        let response = self.transact_preserving_status(request, timeout)?;
+        if !response.status.is_ok() {
+            return Err(HostError::Ctap {
+                status: response.status,
+                code: response.status.as_u8(),
+            });
+        }
+        Ok(response)
+    }
+
+    /// Same as [`Self::transact`], but a non-OK CTAP status is returned as
+    /// `Ok` rather than collapsed into `Err(HostError::Ctap)`.
+    ///
+    /// `transact` is right for most callers (`create`/`get`/`totp_code`): a
+    /// non-OK status is simply a failure, and the error message is enough.
+    /// Credential management is different — `touch_required`/`timeout`/
+    /// `cancelled` are first-class, distinguishable outcomes the extension
+    /// needs the real status byte for (PROJECT.md §15.8's "fail closed" cuts
+    /// both ways: a caller that needs to tell two failure *kinds* apart must
+    /// not have them pre-merged into one string).
+    pub fn transact_preserving_status(
         &mut self,
         request: &Request,
         timeout: Duration,
@@ -292,14 +353,7 @@ impl DaemonClient {
 
             match self.recv(&id, Instant::now() + timeout)? {
                 DaemonMessage::CtapResponse { status, cbor } => {
-                    let status_code = StatusCode(status);
-                    if !status_code.is_ok() {
-                        return Err(HostError::Ctap {
-                            status: status_code,
-                            code: status,
-                        });
-                    }
-                    return Ok(Response::new(status_code, cbor));
+                    return Ok(Response::new(StatusCode(status), cbor));
                 }
                 DaemonMessage::Error {
                     code: ErrorCode::NotConnected,

@@ -199,15 +199,34 @@ impl UsbClient {
         request: &ctap::Request,
         timeout: Duration,
     ) -> Result<ctap::Response, String> {
+        let response = self.transact_preserving_status(request, timeout)?;
+        if !response.status.is_ok() {
+            return Err(format!(
+                "CTAP error {:?} ({:#x})",
+                response.status,
+                response.status.as_u8()
+            ));
+        }
+        Ok(response)
+    }
+
+    /// Same as [`Self::transact`], but a non-OK CTAP status is returned as
+    /// `Ok` rather than collapsed into a formatted `Err(String)` that throws
+    /// the status byte away. See the identical note on
+    /// `DaemonClient::transact_preserving_status` (`crates/webauthn-host/src/daemon.rs`)
+    /// for why credential management needs this and `create`/`get`/`totp_code`
+    /// do not.
+    pub fn transact_preserving_status(
+        &mut self,
+        request: &ctap::Request,
+        timeout: Duration,
+    ) -> Result<ctap::Response, String> {
         let payload = request.encode();
         let body = self.transact_raw(0x10, &payload, timeout)?;
         if body.is_empty() {
             return Err("Empty CTAP response".into());
         }
         let status = ctap::StatusCode(body[0]);
-        if !status.is_ok() {
-            return Err(format!("CTAP error {:?} ({:#x})", status, body[0]));
-        }
         Ok(ctap::Response::new(status, body[1..].to_vec()))
     }
 
