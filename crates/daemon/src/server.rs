@@ -2,7 +2,8 @@
 //!
 //! The connection handler is generic over any byte stream, so the protocol is
 //! tested with no filesystem at all and the same code serves a Unix domain
-//! socket today and a Windows named pipe later (PROJECT.md §13).
+//! socket (`unix::IpcListener`) and a Windows named pipe (`windows::IpcListener`)
+//! alike (PROJECT.md §13).
 //!
 //! **There is no TCP anywhere in this module, and there must never be.** On
 //! Windows any local process can connect to a listening localhost port, so a
@@ -107,7 +108,7 @@ where
     }
 
     // The client is gone; nothing can satisfy a pending user-presence prompt.
-    if let Some((_, handle)) = in_flight.lock().expect("in-flight lock").take() {
+    if let Some((_, handle)) = in_flight.lock().unwrap_or_else(|e| e.into_inner()).take() {
         handle.cancel();
     }
     drop(out);
@@ -154,7 +155,7 @@ where
         }
 
         ClientMessage::CtapCancel => {
-            let taken = in_flight.lock().expect("in-flight lock").take();
+            let taken = in_flight.lock().unwrap_or_else(|e| e.into_inner()).take();
             match taken {
                 Some((_, handle)) => handle.cancel(),
                 None => send_error(
@@ -177,7 +178,7 @@ where
 
             let (handle, token) = cancel_pair();
             {
-                let mut slot = in_flight.lock().expect("in-flight lock");
+                let mut slot = in_flight.lock().unwrap_or_else(|e| e.into_inner());
                 if slot.is_some() {
                     send_error(
                         out,
@@ -258,7 +259,7 @@ async fn run_transaction<T>(
 
     // Only clear the slot if it is still ours: a cancel may already have taken
     // it, and a later request may already have claimed it.
-    let mut slot = in_flight.lock().expect("in-flight lock");
+    let mut slot = in_flight.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().is_some_and(|(slot_id, _)| slot_id == &id) {
         *slot = None;
     }
@@ -377,6 +378,105 @@ pub mod unix {
     impl Drop for IpcListener {
         fn drop(&mut self) {
             let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    pub use ipc::default_socket_path;
+}
+
+#[cfg(windows)]
+pub mod windows {
+    //! Binding the IPC endpoint to a Windows named pipe (PROJECT.md §13).
+    //!
+    //! `NamedPipeServer` already implements `AsyncRead + AsyncWrite`, so
+    //! [`serve_connection`](super::serve_connection) runs unmodified once a
+    //! client has connected — the whole point of keeping that function generic
+    //! over the stream type.
+    //!
+    //! **Known gap, not yet hardware-verified (PROJECT.md §17 applies in
+    //! spirit even though this isn't `[HW]`):** §15.7 asks for a restrictive
+    //! DACL and peer-credential validation equivalent to Unix's
+    //! `SO_PEERCRED`/`peer_cred()` check (there, "validate the connecting
+    //! UID equals the socket owner"; here, the Windows analogue is
+    //! `GetNamedPipeClientProcessId` plus a token/SID comparison). Neither is
+    //! implemented yet — this listener currently relies only on
+    //! [`reject_remote_clients`](ServerOptions::reject_remote_clients), which
+    //! blocks the pipe from being reached over SMB from another host but does
+    //! **not** restrict which *local* user can open a client handle. Do not
+    //! assume parity with the Unix listener's owner-only guarantee until this
+    //! is closed and verified against a real Windows session.
+    use std::{
+        io,
+        path::{Path, PathBuf},
+    };
+    use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
+
+    /// A listener bound to a Windows named pipe.
+    #[derive(Debug)]
+    pub struct IpcListener {
+        pipe_name: String,
+        display_path: PathBuf,
+        // The next waiting instance, created ahead of time so a second client
+        // is never refused while the first is being handed off to a task.
+        next: Option<NamedPipeServer>,
+    }
+
+    fn new_instance(pipe_name: &str, first: bool) -> io::Result<NamedPipeServer> {
+        ServerOptions::new()
+            .pipe_mode(PipeMode::Byte)
+            .first_pipe_instance(first)
+            // Named pipes are reachable over SMB from a remote host unless
+            // this is set; PROJECT.md §5/§15.6 forbid any non-local reach.
+            .reject_remote_clients(true)
+            .create(pipe_name)
+    }
+
+    impl IpcListener {
+        /// Creates the first instance of the named pipe at `path` (typically
+        /// `ipc::WINDOWS_NAMED_PIPE`, e.g. `\\.\pipe\cryptick-daemon`).
+        ///
+        /// `first_pipe_instance(true)` makes this fail if another process
+        /// already owns the name, which is the Windows equivalent of the
+        /// Unix listener refusing to bind over another live daemon. Unlike a
+        /// Unix socket file, a named pipe leaves nothing behind for a crashed
+        /// daemon to clean up: the kernel destroys the object once every
+        /// handle to it is closed, so there is no stale-path removal step.
+        pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
+            let display_path = path.as_ref().to_path_buf();
+            let pipe_name = display_path.to_string_lossy().into_owned();
+            let server = new_instance(&pipe_name, true)?;
+            Ok(Self {
+                pipe_name,
+                display_path,
+                next: Some(server),
+            })
+        }
+
+        /// The pipe path this listener is bound to.
+        pub fn path(&self) -> &Path {
+            &self.display_path
+        }
+
+        /// Waits for one client to connect and returns the connected instance.
+        ///
+        /// Returns `Ok(None)` for a transient accept failure so the caller can
+        /// keep serving, mirroring `unix::IpcListener::accept`'s shape even
+        /// though named pipes have no peer-credential check to fail here yet.
+        pub async fn accept(&mut self) -> io::Result<Option<NamedPipeServer>> {
+            let server = match self.next.take() {
+                Some(server) => server,
+                None => new_instance(&self.pipe_name, false)?,
+            };
+
+            if let Err(err) = server.connect().await {
+                // Queue a fresh instance before surfacing the error so one
+                // bad connection attempt cannot wedge every later one.
+                self.next = new_instance(&self.pipe_name, false).ok();
+                return Err(err);
+            }
+
+            self.next = Some(new_instance(&self.pipe_name, false)?);
+            Ok(Some(server))
         }
     }
 

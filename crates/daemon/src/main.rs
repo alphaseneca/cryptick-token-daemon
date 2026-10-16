@@ -23,9 +23,16 @@ mod fake_main {
     };
     use std::sync::Arc;
 
+    // Evaluated at compile time: a bad literal fails the build rather than
+    // panicking at runtime (PROJECT.md §20 forbids unwrap()/expect() here).
+    const FAKE_FRAGMENT_SIZE: FragmentSize = match FragmentSize::new(64) {
+        Ok(size) => size,
+        Err(_) => panic!("64 must be within FragmentSize's valid 20..=512 range"),
+    };
+
     pub async fn run(socket: std::path::PathBuf) -> std::io::Result<()> {
         let device = FakeDevice::always(
-            FragmentSize::new(64).expect("64 is in range"),
+            FAKE_FRAGMENT_SIZE,
             Reply::ByCtapCommand {
                 make_credential: ctap_client::fixtures::make_credential_response(),
                 get_assertion: ctap_client::fixtures::get_assertion_response(),
@@ -49,7 +56,48 @@ mod fake_main {
 }
 
 #[cfg(feature = "fake-transport")]
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod fake_main {
+    use ble_framing::FragmentSize;
+    use daemon::{
+        fake::{FakeDevice, Reply},
+        server::{serve_connection, windows::IpcListener},
+        Bridge,
+    };
+    use std::sync::Arc;
+
+    const FAKE_FRAGMENT_SIZE: FragmentSize = match FragmentSize::new(64) {
+        Ok(size) => size,
+        Err(_) => panic!("64 must be within FragmentSize's valid 20..=512 range"),
+    };
+
+    pub async fn run(socket: std::path::PathBuf) -> std::io::Result<()> {
+        let device = FakeDevice::always(
+            FAKE_FRAGMENT_SIZE,
+            Reply::ByCtapCommand {
+                make_credential: ctap_client::fixtures::make_credential_response(),
+                get_assertion: ctap_client::fixtures::get_assertion_response(),
+            },
+        );
+        let bridge = Arc::new(Bridge::new(device));
+        let mut listener = IpcListener::bind(&socket)?;
+        eprintln!("listening on {}", listener.path().display());
+        eprintln!("fake device, no radio — PROJECT.md §14 L2");
+
+        loop {
+            match listener.accept().await {
+                Ok(Some(stream)) => {
+                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                }
+                Ok(None) => eprintln!("refused a connection from another user"),
+                Err(e) => eprintln!("accept failed: {e}"),
+            }
+        }
+    }
+}
+
+#[cfg(feature = "fake-transport")]
+#[cfg(not(any(unix, windows)))]
 mod fake_main {
     pub async fn run(_socket: std::path::PathBuf) -> std::io::Result<()> {
         Err(std::io::Error::new(
@@ -352,7 +400,9 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
                 "No Cryptick Tokens found advertising",
             ));
         } else if devices.len() == 1 {
-            devices.into_iter().next().unwrap()
+            devices.into_iter().next().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "device list became empty")
+            })?
         } else {
             println!("\nMultiple Cryptick Tokens detected nearby:");
             for (idx, dev) in devices.iter().enumerate() {
@@ -376,7 +426,9 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
             } else {
                 0
             };
-            devices.into_iter().nth(idx).unwrap()
+            devices.into_iter().nth(idx).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "selected index out of range")
+            })?
         }
     };
 
@@ -785,7 +837,36 @@ mod live_main {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+mod live_main {
+    use daemon::{
+        server::{serve_connection, windows::IpcListener},
+        Bridge, ReconnectingBleTransport,
+    };
+    use std::sync::Arc;
+
+    pub async fn run(socket: std::path::PathBuf) -> std::io::Result<()> {
+        let mut listener = IpcListener::bind(&socket)?;
+        eprintln!("listening on {}", listener.path().display());
+
+        eprintln!("Starting auto-reconnecting BLE transport (monitoring Cryptick Token)...");
+        let (transport, _reconnect_handle) = ReconnectingBleTransport::spawn(None, None).await;
+
+        let bridge = Arc::new(Bridge::new(transport));
+
+        loop {
+            match listener.accept().await {
+                Ok(Some(stream)) => {
+                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("accept failed: {e}"),
+            }
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 mod live_main {
     pub async fn run(_socket: std::path::PathBuf) -> std::io::Result<()> {
         Err(std::io::Error::new(
