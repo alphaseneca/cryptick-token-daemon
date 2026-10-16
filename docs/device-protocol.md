@@ -1,7 +1,16 @@
 # PIV over BLE — wire protocol
 
-Status: **specification, not yet implemented on either side.** Written for the
-firmware to implement against. Version 1.
+Status: **implemented on the daemon side** — `crates/transport-ble` (`PivBleTransport`),
+`crates/ble-framing` (shared framing/reassembly), `crates/vpcd`, and
+`crates/daemon` (`vpcd_relay`, wired into `ReconnectingBleTransport::spawn`)
+relay opaque APDUs over this service exactly as specified below: `pivControlPointLength`
+is read from the device (20–512, never assumed), the reassembler bounds inbound
+fragments by the transport ceiling rather than that characteristic, and `CANCEL`
+is delivered on its first fragment and never reassembled or answered. Firmware-side
+implementation status is **unconfirmed from this repo** — verify against
+`alphaseneca/cryptick-token-code` before relying on interop; this document was
+written for the firmware to implement against, and nothing here has been
+exercised against real hardware (PROJECT.md §14 L4). Version 1.
 
 This is the private GATT service PROJECT.md §4 and §12 refer to. It carries
 ISO 7816 APDUs between the daemon's virtual smart card reader and the PIV
