@@ -3,6 +3,7 @@
 pub mod apdu_cli;
 pub mod base_cli;
 pub mod config_cli;
+pub mod devices_cli;
 pub mod fido_cli;
 pub mod oath_cli;
 pub mod piv_cli;
@@ -63,6 +64,13 @@ pub fn dispatch(args: &[String]) -> Result<(), String> {
         "script" => {
             return base_cli::run_base_script(sub_args, dispatch);
         }
+        "devices" => {
+            // Listing/selecting known devices needs no active CTAP/APDU
+            // connection to the currently-targeted token — it is daemon
+            // bookkeeping plus a USB presence check, the same split `list`
+            // above already makes.
+            return devices_cli::handle_devices_command(sub_args);
+        }
         _ => {}
     }
 
@@ -89,6 +97,7 @@ pub fn print_main_help() {
          Commands:\n\
            info          Show information about the connected token\n\
            list          List connected tokens\n\
+           devices       List or select among known Cryptick Tokens\n\
            fido          Manage FIDO2 passkeys, PINs, and on-chip biometric fingerprints\n\
            piv           Manage PIV smart card application, slots, keys, and certificates\n\
            oath          Manage OATH (TOTP / HOTP) authentication accounts\n\

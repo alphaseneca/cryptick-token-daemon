@@ -243,6 +243,47 @@ impl DaemonTransport {
         Err("Daemon IPC transport is not supported on this platform".to_string())
     }
 
+    /// Every device the daemon knows about. See
+    /// `crates/daemon/src/devices.rs`'s module doc for what identity means
+    /// here (no firmware-populated serial number exists for this hardware,
+    /// so this is a best-effort recognition key, not a guaranteed-stable
+    /// one) and why the daemon only ever reports BLE devices.
+    #[cfg(any(unix, windows))]
+    pub fn list_devices(&mut self) -> Result<Vec<ipc::DeviceInfo>, String> {
+        let id = self.take_id();
+        self.send(&id, ClientMessage::ListDevices)?;
+        match self.recv(&id, Instant::now() + Duration::from_millis(500))? {
+            DaemonMessage::DeviceList { devices } => Ok(devices),
+            DaemonMessage::Error { message, .. } => Err(format!("Daemon error: {message}")),
+            _ => Err("Unexpected reply to ListDevices".to_string()),
+        }
+    }
+
+    /// Makes `id` the daemon's active device.
+    #[cfg(any(unix, windows))]
+    pub fn select_device(&mut self, id: &str) -> Result<(), String> {
+        let request_id = self.take_id();
+        self.send(
+            &request_id,
+            ClientMessage::SelectDevice { id: id.to_string() },
+        )?;
+        match self.recv(&request_id, Instant::now() + Duration::from_millis(500))? {
+            DaemonMessage::Ack => Ok(()),
+            DaemonMessage::Error { message, .. } => Err(format!("Daemon error: {message}")),
+            _ => Err("Unexpected reply to SelectDevice".to_string()),
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn list_devices(&mut self) -> Result<Vec<ipc::DeviceInfo>, String> {
+        Err("Daemon IPC transport is not supported on this platform".to_string())
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn select_device(&mut self, _id: &str) -> Result<(), String> {
+        Err("Daemon IPC transport is not supported on this platform".to_string())
+    }
+
     /// Queries the daemon for connected token link status (in_range, bonded).
     #[cfg(any(unix, windows))]
     pub fn device_status(&mut self) -> Result<(bool, bool), String> {
