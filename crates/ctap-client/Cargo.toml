@@ -10,6 +10,12 @@ repository.workspace = true
 ctap.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+# ECDH P-256 key agreement and AES-256 block operations for the CTAP2.0 PIN
+# Protocol One (`pin_protocol.rs`) — see the workspace manifest's comments on
+# these two for why they were added and why nothing else was.
+p256.workspace = true
+aes.workspace = true
+hmac.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

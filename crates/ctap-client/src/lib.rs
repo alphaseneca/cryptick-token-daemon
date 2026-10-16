@@ -26,8 +26,10 @@
 pub mod authdata;
 pub mod cbor;
 pub mod cose;
+pub mod cred_mgmt;
 pub mod der;
 pub mod fixtures;
+pub mod pin_protocol;
 pub mod request;
 pub mod response;
 

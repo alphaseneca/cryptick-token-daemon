@@ -42,6 +42,30 @@ sha2 = "0.10"
 btleplug = "0.13"
 futures = "0.3"
 uuid = "1"
+# New as of the credential-management work (PROJECT.md §20 — flagged for
+# discussion, not a quiet addition). `ctap-client` needs CTAP2.0 PIN Protocol
+# One's ECDH P-256 key agreement to obtain a pinUvAuthToken; nothing already
+# in this tree provides elliptic-curve math (confirmed by inspection of
+# Cargo.lock before adding this — btleplug's bonding is handled by the OS
+# Bluetooth stack, not a Rust crypto crate, so there was nothing to reuse).
+# Pinned exactly, matching §7's rule for security-sensitive new surface.
+# RustCrypto's `p256`, widely used and audited-by-usage, not a from-scratch
+# implementation.
+p256 = { version = "=0.13.2", features = ["ecdh"] }
+# AES-256 raw block operations for the same PIN protocol (the device encrypts
+# pinHashEnc/pinUvAuthToken under AES-256-CBC with a zero IV; see
+# `ctap-client/src/pin_protocol.rs`). CBC itself is implemented by hand over
+# this crate's block primitive — one or two 16-byte blocks, zero IV, no
+# padding — rather than pulling in the `cbc` crate as well, to keep this new
+# surface to the minimum that was actually missing.
+aes = "=0.8.4"
+# HMAC-SHA256 for pinAuth. Already pulled in transitively by `p256`/`ecdsa`
+# (RFC 6979 deterministic nonces use it), so depending on it directly adds no
+# new supply-chain surface — it's the same crate already in the lockfile,
+# just named instead of hidden, and safer than hand-rolling HMAC a second
+# time in this codebase (`crates/token-manager/src/access.rs` already does
+# once, for OATH, with its own from-scratch SHA-1/HMAC).
+hmac = "=0.12.1"
 
 # Local crates
 ble-framing = { path = "crates/ble-framing" }
