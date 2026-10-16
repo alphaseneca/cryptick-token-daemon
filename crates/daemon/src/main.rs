@@ -17,11 +17,12 @@ use std::sync::Arc;
 mod fake_main {
     use ble_framing::FragmentSize;
     use daemon::{
+        devices::DeviceStore,
         fake::{FakeDevice, Reply},
         server::{serve_connection, unix::IpcListener},
         Bridge,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     // Evaluated at compile time: a bad literal fails the build rather than
     // panicking at runtime (PROJECT.md §20 forbids unwrap()/expect() here).
@@ -39,6 +40,7 @@ mod fake_main {
             },
         );
         let bridge = Arc::new(Bridge::new(device));
+        let devices = Arc::new(Mutex::new(DeviceStore::load()));
         let listener = IpcListener::bind(&socket)?;
         eprintln!("listening on {}", listener.path().display());
         eprintln!("fake device, no radio — PROJECT.md §14 L2");
@@ -46,7 +48,11 @@ mod fake_main {
         loop {
             match listener.accept().await {
                 Ok(Some(stream)) => {
-                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                    tokio::spawn(serve_connection(
+                        stream,
+                        Arc::clone(&bridge),
+                        Arc::clone(&devices),
+                    ));
                 }
                 Ok(None) => eprintln!("refused a connection from another user"),
                 Err(e) => eprintln!("accept failed: {e}"),
@@ -60,11 +66,12 @@ mod fake_main {
 mod fake_main {
     use ble_framing::FragmentSize;
     use daemon::{
+        devices::DeviceStore,
         fake::{FakeDevice, Reply},
         server::{serve_connection, windows::IpcListener},
         Bridge,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     const FAKE_FRAGMENT_SIZE: FragmentSize = match FragmentSize::new(64) {
         Ok(size) => size,
@@ -80,6 +87,7 @@ mod fake_main {
             },
         );
         let bridge = Arc::new(Bridge::new(device));
+        let devices = Arc::new(Mutex::new(DeviceStore::load()));
         let mut listener = IpcListener::bind(&socket)?;
         eprintln!("listening on {}", listener.path().display());
         eprintln!("fake device, no radio — PROJECT.md §14 L2");
@@ -87,7 +95,11 @@ mod fake_main {
         loop {
             match listener.accept().await {
                 Ok(Some(stream)) => {
-                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                    tokio::spawn(serve_connection(
+                        stream,
+                        Arc::clone(&bridge),
+                        Arc::clone(&devices),
+                    ));
                 }
                 Ok(None) => eprintln!("refused a connection from another user"),
                 Err(e) => eprintln!("accept failed: {e}"),
@@ -811,10 +823,11 @@ async fn run_info() -> std::io::Result<()> {
 #[cfg(unix)]
 mod live_main {
     use daemon::{
+        devices::DeviceStore,
         server::{serve_connection, unix::IpcListener},
         Bridge, ReconnectingBleTransport,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     pub async fn run(socket: std::path::PathBuf) -> std::io::Result<()> {
         let listener = IpcListener::bind(&socket)?;
@@ -823,12 +836,20 @@ mod live_main {
         eprintln!("Starting auto-reconnecting BLE transport (monitoring Cryptick Token)...");
         let (transport, _reconnect_handle) = ReconnectingBleTransport::spawn(None, None).await;
 
+        let mut device_store = DeviceStore::load();
+        device_store.seed_from_paired_target(transport.target_device());
+        let devices = Arc::new(Mutex::new(device_store));
+
         let bridge = Arc::new(Bridge::new(transport));
 
         loop {
             match listener.accept().await {
                 Ok(Some(stream)) => {
-                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                    tokio::spawn(serve_connection(
+                        stream,
+                        Arc::clone(&bridge),
+                        Arc::clone(&devices),
+                    ));
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("accept failed: {e}"),
@@ -840,10 +861,11 @@ mod live_main {
 #[cfg(windows)]
 mod live_main {
     use daemon::{
+        devices::DeviceStore,
         server::{serve_connection, windows::IpcListener},
         Bridge, ReconnectingBleTransport,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     pub async fn run(socket: std::path::PathBuf) -> std::io::Result<()> {
         let mut listener = IpcListener::bind(&socket)?;
@@ -852,12 +874,20 @@ mod live_main {
         eprintln!("Starting auto-reconnecting BLE transport (monitoring Cryptick Token)...");
         let (transport, _reconnect_handle) = ReconnectingBleTransport::spawn(None, None).await;
 
+        let mut device_store = DeviceStore::load();
+        device_store.seed_from_paired_target(transport.target_device());
+        let devices = Arc::new(Mutex::new(device_store));
+
         let bridge = Arc::new(Bridge::new(transport));
 
         loop {
             match listener.accept().await {
                 Ok(Some(stream)) => {
-                    tokio::spawn(serve_connection(stream, Arc::clone(&bridge)));
+                    tokio::spawn(serve_connection(
+                        stream,
+                        Arc::clone(&bridge),
+                        Arc::clone(&devices),
+                    ));
                 }
                 Ok(None) => {}
                 Err(e) => eprintln!("accept failed: {e}"),

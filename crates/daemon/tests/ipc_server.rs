@@ -4,12 +4,13 @@
 use ble_framing::{FragmentSize, KeepAliveStatus};
 use ctap::{Response, StatusCode};
 use daemon::{
+    devices::DeviceStore,
     fake::{FakeDevice, Reply},
     server::serve_connection,
     Bridge,
 };
 use ipc::{ClientMessage, DaemonMessage, Envelope, ErrorCode, FrameDecoder, KeepaliveReason};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
 fn size(n: u16) -> FragmentSize {
@@ -59,9 +60,14 @@ impl Client {
 }
 
 fn start(device: FakeDevice) -> Client {
+    start_with_devices(device, DeviceStore::in_memory())
+}
+
+fn start_with_devices(device: FakeDevice, devices: DeviceStore) -> Client {
     let (server_side, client_side) = tokio::io::duplex(64 * 1024);
     let bridge = Arc::new(Bridge::new(device));
-    tokio::spawn(serve_connection(server_side, bridge));
+    let devices = Arc::new(Mutex::new(devices));
+    tokio::spawn(serve_connection(server_side, bridge, devices));
     Client {
         stream: client_side,
         decoder: FrameDecoder::new(),
@@ -399,4 +405,91 @@ async fn a_client_that_disappears_cancels_its_transaction() {
             .contains(&ble_framing::Command::Cancel),
         "the device must be released when the client goes away"
     );
+}
+
+#[tokio::test]
+async fn list_devices_on_an_empty_store_is_an_empty_list() {
+    let mut client = start(FakeDevice::always(
+        size(64),
+        Reply::Ctap(Response::new(StatusCode::OK, vec![])),
+    ));
+    client.send("x", ClientMessage::ListDevices).await;
+    match client.recv().await.body {
+        DaemonMessage::DeviceList { devices } => assert!(devices.is_empty()),
+        other => panic!("expected DeviceList, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn select_device_on_an_unknown_id_is_refused() {
+    let mut client = start(FakeDevice::always(
+        size(64),
+        Reply::Ctap(Response::new(StatusCode::OK, vec![])),
+    ));
+    client
+        .send(
+            "x",
+            ClientMessage::SelectDevice {
+                id: "never-seen".into(),
+            },
+        )
+        .await;
+    match client.recv().await.body {
+        DaemonMessage::Error { code, .. } => assert_eq!(code, ErrorCode::BadRequest),
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn list_devices_reports_a_pre_seeded_device_as_active() {
+    let mut store = DeviceStore::in_memory();
+    store.record_seen("AA:BB:CC", Some("My Token"), "ble");
+    let mut client = start_with_devices(
+        FakeDevice::always(size(64), Reply::Ctap(Response::new(StatusCode::OK, vec![]))),
+        store,
+    );
+
+    client.send("x", ClientMessage::ListDevices).await;
+    match client.recv().await.body {
+        DaemonMessage::DeviceList { devices } => {
+            assert_eq!(devices.len(), 1);
+            assert_eq!(devices[0].id, "AA:BB:CC");
+            assert_eq!(devices[0].name, "My Token");
+            assert_eq!(devices[0].transport, "ble");
+            assert!(devices[0].active);
+        }
+        other => panic!("expected DeviceList, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn select_device_then_list_devices_reflects_the_new_active_id() {
+    let mut store = DeviceStore::in_memory();
+    store.record_seen("first", Some("First"), "ble");
+    store.record_seen("second", Some("Second"), "ble");
+    let mut client = start_with_devices(
+        FakeDevice::always(size(64), Reply::Ctap(Response::new(StatusCode::OK, vec![]))),
+        store,
+    );
+
+    client
+        .send(
+            "sel",
+            ClientMessage::SelectDevice {
+                id: "second".into(),
+            },
+        )
+        .await;
+    assert!(matches!(client.recv().await.body, DaemonMessage::Ack));
+
+    client.send("list", ClientMessage::ListDevices).await;
+    match client.recv().await.body {
+        DaemonMessage::DeviceList { devices } => {
+            let first = devices.iter().find(|d| d.id == "first").unwrap();
+            let second = devices.iter().find(|d| d.id == "second").unwrap();
+            assert!(!first.active);
+            assert!(second.active);
+        }
+        other => panic!("expected DeviceList, got {other:?}"),
+    }
 }

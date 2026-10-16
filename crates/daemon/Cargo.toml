@@ -21,6 +21,9 @@ ctaphid.workspace = true
 ctap-client = { workspace = true, optional = true }
 ipc.workspace = true
 serde.workspace = true
+# The known-devices store (devices.rs) persists its JSON file directly;
+# nothing else in this crate needed serde_json before now.
+serde_json.workspace = true
 thiserror.workspace = true
 async-trait.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "net", "io-util"] }

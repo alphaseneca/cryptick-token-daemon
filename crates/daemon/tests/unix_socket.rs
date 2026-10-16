@@ -5,6 +5,7 @@
 use ble_framing::FragmentSize;
 use ctap::{Response, StatusCode};
 use daemon::{
+    devices::DeviceStore,
     fake::{FakeDevice, Reply},
     server::{serve_connection, unix::IpcListener},
     Bridge,
@@ -15,7 +16,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU32, Ordering},
-        Arc,
+        Arc, Mutex,
     },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -72,7 +73,8 @@ async fn a_request_round_trips_over_a_real_socket() {
     tokio::spawn(async move {
         // Our own uid, so the credential check must let this through.
         let stream = listener.accept().await.expect("accept").expect("own uid");
-        serve_connection(stream, bridge).await;
+        let devices = Arc::new(Mutex::new(DeviceStore::in_memory()));
+        serve_connection(stream, bridge, devices).await;
     });
 
     let mut client = tokio::net::UnixStream::connect(&path)

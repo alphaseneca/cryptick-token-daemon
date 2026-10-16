@@ -12,10 +12,11 @@
 use crate::{
     bridge::Bridge,
     cancel::{cancel_pair, CancelHandle},
+    devices::DeviceStore,
     error::DaemonError,
     transport::FragmentTransport,
 };
-use ipc::{ClientMessage, DaemonMessage, Envelope, ErrorCode, IpcError};
+use ipc::{ClientMessage, DaemonMessage, DeviceInfo, Envelope, ErrorCode, IpcError};
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -64,8 +65,11 @@ fn send_error(out: &Outbox, id: &str, code: ErrorCode, message: &str) {
 type InFlight = Arc<Mutex<Option<(String, CancelHandle)>>>;
 
 /// Serves one client connection until it closes or misbehaves.
-pub async fn serve_connection<S, T>(stream: S, bridge: Arc<Bridge<T>>)
-where
+pub async fn serve_connection<S, T>(
+    stream: S,
+    bridge: Arc<Bridge<T>>,
+    devices: Arc<Mutex<DeviceStore>>,
+) where
     S: AsyncRead + AsyncWrite + Send + 'static,
     T: FragmentTransport + Clone + Send + Sync + 'static,
 {
@@ -94,7 +98,7 @@ where
         loop {
             match decoder.next_frame() {
                 Ok(Some(frame)) => {
-                    handle_frame(&frame, &out, &bridge, &in_flight);
+                    handle_frame(&frame, &out, &bridge, &in_flight, &devices);
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -115,8 +119,13 @@ where
     let _ = writer_task.await;
 }
 
-fn handle_frame<T>(frame: &[u8], out: &Outbox, bridge: &Arc<Bridge<T>>, in_flight: &InFlight)
-where
+fn handle_frame<T>(
+    frame: &[u8],
+    out: &Outbox,
+    bridge: &Arc<Bridge<T>>,
+    in_flight: &InFlight,
+    devices: &Arc<Mutex<DeviceStore>>,
+) where
     T: FragmentTransport + Clone + Send + Sync + 'static,
 {
     let envelope = match ipc::decode_client(frame) {
@@ -152,6 +161,49 @@ where
                     },
                 ),
             );
+        }
+
+        ClientMessage::ListDevices => {
+            // Bookkeeping, not a CTAP transaction (crate::devices's module
+            // doc) — answered straight from the store, never queued behind
+            // `in_flight`. Piggybacks a `last_seen` bump onto this read: if
+            // the link is connected right now and the store already has an
+            // active entry, that is real evidence the active device is
+            // still reachable, not merely assumed.
+            let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
+            if bridge.link().connected {
+                if let Some(active_id) = store.active_id().map(str::to_string) {
+                    store.record_seen(&active_id, None, "ble");
+                }
+            }
+            let list = store
+                .list()
+                .into_iter()
+                .map(|d| DeviceInfo {
+                    id: d.id,
+                    name: d.name,
+                    transport: d.transport,
+                    last_seen: d.last_seen,
+                    active: d.active,
+                })
+                .collect();
+            send(
+                out,
+                &Envelope::new(id, DaemonMessage::DeviceList { devices: list }),
+            );
+        }
+
+        ClientMessage::SelectDevice { id: device_id } => {
+            let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
+            match store.set_active(&device_id) {
+                Ok(()) => send(out, &Envelope::new(id, DaemonMessage::Ack)),
+                Err(_) => send_error(
+                    out,
+                    &id,
+                    ErrorCode::BadRequest,
+                    &format!("no known device with id {device_id:?}"),
+                ),
+            }
         }
 
         ClientMessage::CtapCancel => {
