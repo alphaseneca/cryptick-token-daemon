@@ -13,18 +13,10 @@
 use std::{fs, path::Path};
 
 /// Forbidden across every file in `crates/daemon/src/` with no exceptions.
-const GLOBALLY_FORBIDDEN: &[&str] = &[
-    "TcpListener",
-    "UdpSocket",
-    "SocketAddrV6",
-    "0.0.0.0",
-];
+const GLOBALLY_FORBIDDEN: &[&str] = &["TcpListener", "UdpSocket", "SocketAddrV6", "0.0.0.0"];
 
 /// Forbidden in all daemon files except `vpcd_relay.rs` (the loopback TCP client).
-const FORBIDDEN_OUTSIDE_VPCD: &[&str] = &[
-    "TcpStream",
-    "SocketAddrV4",
-];
+const FORBIDDEN_OUTSIDE_VPCD: &[&str] = &["TcpStream", "SocketAddrV4"];
 
 fn walk(dir: &Path, found: &mut Vec<String>) {
     for entry in fs::read_dir(dir).expect("readable source directory") {

@@ -71,8 +71,14 @@ fn test_generate_launchd_plist_structure() {
     assert!(plist.contains("<string>run</string>"));
     assert!(plist.contains("<key>RunAtLoad</key>\n    <true/>"));
     assert!(plist.contains("<key>KeepAlive</key>\n    <true/>"));
-    assert!(plist.contains(&format!("<string>{}</string>", log_dir.join("cryptick-daemon.log").display())));
-    assert!(plist.contains(&format!("<string>{}</string>", log_dir.join("cryptick-daemon.err.log").display())));
+    assert!(plist.contains(&format!(
+        "<string>{}</string>",
+        log_dir.join("cryptick-daemon.log").display()
+    )));
+    assert!(plist.contains(&format!(
+        "<string>{}</string>",
+        log_dir.join("cryptick-daemon.err.log").display()
+    )));
 }
 
 #[test]
@@ -213,7 +219,10 @@ fn test_cli_parsing() {
     assert_eq!(parse_args(["--version"]).unwrap(), CliCommand::Version);
     assert_eq!(parse_args(["-V"]).unwrap(), CliCommand::Version);
     assert_eq!(parse_args(["version"]).unwrap(), CliCommand::Version);
-    assert_eq!(parse_args(["run", "--version"]).unwrap(), CliCommand::Version);
+    assert_eq!(
+        parse_args(["run", "--version"]).unwrap(),
+        CliCommand::Version
+    );
     assert_eq!(parse_args(["run", "-V"]).unwrap(), CliCommand::Version);
 
     // Errors
@@ -230,7 +239,9 @@ fn test_cli_parsing() {
 #[test]
 fn test_service_status_query_runs_without_panic() {
     let manager = current_service_manager();
-    let status = manager.status().expect("status query should not error or panic");
+    let status = manager
+        .status()
+        .expect("status query should not error or panic");
     assert!(!status.platform.is_empty());
     assert!(!status.endpoint.is_empty());
 
@@ -271,7 +282,9 @@ fn test_service_status_mock_states() {
         ..healthy.clone()
     };
     assert!(!not_installed.is_healthy());
-    assert!(not_installed.display_summary().contains("Overall: NOT_INSTALLED"));
+    assert!(not_installed
+        .display_summary()
+        .contains("Overall: NOT_INSTALLED"));
 
     let degraded = ServiceStatus {
         unit_exists: true,

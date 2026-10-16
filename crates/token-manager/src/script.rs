@@ -68,11 +68,7 @@ pub fn substitute_args(line: &str, args: &[String]) -> String {
 pub fn read_script_lines(path: &str) -> Result<Vec<String>, String> {
     if path == "-" {
         let stdin = io::stdin();
-        let lines: Vec<String> = stdin
-            .lock()
-            .lines()
-            .filter_map(|l| l.ok())
-            .collect();
+        let lines: Vec<String> = stdin.lock().lines().filter_map(|l| l.ok()).collect();
         Ok(lines)
     } else {
         let content = fs::read_to_string(path)

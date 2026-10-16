@@ -122,7 +122,8 @@ impl ReconnectingBleTransport {
                         current_target.as_deref(),
                         Duration::from_secs(3),
                     )
-                    .await {
+                    .await
+                    {
                         Ok(p) => Ok(p),
                         Err(_) if current_target.is_some() => {
                             // Pinned device not found; fallback to any advertising Cryptick Token
@@ -141,7 +142,12 @@ impl ReconnectingBleTransport {
                                 }
                             }
                             eprintln!("Discovered Cryptick Token [{addr}], connecting via Daemon Bridge GATT...");
-                            match tokio::time::timeout(Duration::from_secs(15), BleTransport::connect_daemon(&peripheral)).await {
+                            match tokio::time::timeout(
+                                Duration::from_secs(15),
+                                BleTransport::connect_daemon(&peripheral),
+                            )
+                            .await
+                            {
                                 Ok(Ok(new_transport)) => {
                                     eprintln!("Connected to Cryptick Token [{addr}]!");
                                     let mut w = inner_clone.write().await;
@@ -152,11 +158,18 @@ impl ReconnectingBleTransport {
                                     connecting_clone.store(false, Ordering::SeqCst);
 
                                     // Attempt PIV connection if exposed
-                                    match tokio::time::timeout(Duration::from_secs(12), transport_ble::PivBleTransport::connect(&peripheral)).await {
+                                    match tokio::time::timeout(
+                                        Duration::from_secs(12),
+                                        transport_ble::PivBleTransport::connect(&peripheral),
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(piv_t)) => {
                                             eprintln!("Connected to PIV service (spawning vpcd relay on 127.0.0.1:35963)");
                                             tokio::spawn(async move {
-                                                let _ = crate::vpcd_relay::run_vpcd_relay(piv_t, None).await;
+                                                let _ =
+                                                    crate::vpcd_relay::run_vpcd_relay(piv_t, None)
+                                                        .await;
                                             });
                                         }
                                         Ok(Err(e)) => {

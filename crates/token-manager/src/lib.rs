@@ -15,6 +15,8 @@ pub mod tlv;
 pub mod transport;
 
 pub use apdu::{aid, CommandApdu, ResponseApdu, StatusWord};
-pub use oath::{calculate_code, list_accounts, put_account, select_oath, CalculatedCode, OathAccountSummary};
+pub use oath::{
+    calculate_code, list_accounts, put_account, select_oath, CalculatedCode, OathAccountSummary,
+};
 pub use otpauth::{decode_base32, encode_base32, HashAlgorithm, OathType, OtpAuthUri};
 pub use transport::{DualTransport, TokenTransport};

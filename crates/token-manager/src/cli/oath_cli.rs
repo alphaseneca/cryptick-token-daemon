@@ -11,7 +11,10 @@ use std::fs;
 use std::io::{self, Write};
 
 /// Handles all `ykman oath ...` subcommands.
-pub fn handle_oath_command(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+pub fn handle_oath_command(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), String> {
     if args.is_empty() {
         print_oath_help();
         return Ok(());
@@ -61,12 +64,22 @@ fn run_oath_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result
     );
     println!(
         "Password protected: {}",
-        if applet.password_protected { "Yes" } else { "No" }
+        if applet.password_protected {
+            "Yes"
+        } else {
+            "No"
+        }
     );
     if let Ok(accs) = accounts_res {
         println!("Enrolled accounts: {}", accs.len());
-        let totp_count = accs.iter().filter(|a| a.oath_type == OathType::Totp).count();
-        let hotp_count = accs.iter().filter(|a| a.oath_type == OathType::Hotp).count();
+        let totp_count = accs
+            .iter()
+            .filter(|a| a.oath_type == OathType::Totp)
+            .count();
+        let hotp_count = accs
+            .iter()
+            .filter(|a| a.oath_type == OathType::Hotp)
+            .count();
         let touch_count = accs.iter().filter(|a| a.touch_required).count();
         println!("  TOTP accounts  : {}", totp_count);
         println!("  HOTP accounts  : {}", hotp_count);
@@ -94,7 +107,9 @@ fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result
         print!("WARNING: This will delete all stored OATH accounts and reset the password! Proceed? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         let trimmed = input.trim().to_ascii_lowercase();
         if trimmed != "y" && trimmed != "yes" {
             println!("Reset cancelled.");
@@ -334,7 +349,10 @@ fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Res
             println!("{}", acc.name);
         } else {
             let touch_str = if acc.touch_required { " [Touch]" } else { "" };
-            println!("{} ({}, {}){}", acc.name, acc.oath_type, acc.algorithm, touch_str);
+            println!(
+                "{} ({}, {}){}",
+                acc.name, acc.oath_type, acc.algorithm, touch_str
+            );
         }
     }
 
@@ -544,7 +562,9 @@ fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> R
         print!("Delete account '{target}' from token? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         let trimmed = input.trim().to_ascii_lowercase();
         if trimmed != "y" && trimmed != "yes" {
             println!("Delete cancelled.");

@@ -14,7 +14,7 @@ pub struct UsbClient {
 impl UsbClient {
     pub fn try_connect() -> Option<Self> {
         let api = HidApi::new().ok()?;
-        
+
         // Find all candidate HID devices matching Cryptick VID/PID on USB bus.
         let mut candidates: Vec<_> = api
             .device_list()

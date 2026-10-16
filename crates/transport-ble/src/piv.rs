@@ -21,8 +21,8 @@ use tokio::sync::{mpsc, Mutex};
 use uuid::Uuid;
 
 use crate::{
-    classify_att, BleError, MockWriteError, PIV_ATR, PIV_CONTROL_POINT,
-    PIV_CONTROL_POINT_LENGTH, PIV_STATUS,
+    classify_att, BleError, MockWriteError, PIV_ATR, PIV_CONTROL_POINT, PIV_CONTROL_POINT_LENGTH,
+    PIV_STATUS,
 };
 
 /// The default fragment size (252 bytes) when `pivControlPointLength` is absent
@@ -127,12 +127,9 @@ impl MockPivBleHandle {
 
     /// Sends a KeepAlive frame (`0x82`) with the specified status.
     pub fn send_keepalive(&self, status: KeepAliveStatus) {
-        let _ = self.notification_tx.send(vec![
-            Command::KeepAlive.as_u8(),
-            0x00,
-            0x01,
-            status.as_u8(),
-        ]);
+        let _ =
+            self.notification_tx
+                .send(vec![Command::KeepAlive.as_u8(), 0x00, 0x01, status.as_u8()]);
     }
 
     /// Sends an Error frame (`0xBF`) with the specified error code.
@@ -338,16 +335,20 @@ impl PivBleTransport {
                 find(&characteristics, PIV_STATUS),
                 find(&characteristics, PIV_ATR),
             ) {
-                (cp, st, atr, find(&characteristics, PIV_CONTROL_POINT_LENGTH))
+                (
+                    cp,
+                    st,
+                    atr,
+                    find(&characteristics, PIV_CONTROL_POINT_LENGTH),
+                )
             } else {
                 let _ = peripheral.discover_services().await;
                 let fresh = peripheral.characteristics();
                 let cp = find(&fresh, PIV_CONTROL_POINT)
                     .ok_or(BleError::MissingCharacteristic(PIV_CONTROL_POINT))?;
-                let st = find(&fresh, PIV_STATUS)
-                    .ok_or(BleError::MissingCharacteristic(PIV_STATUS))?;
-                let atr = find(&fresh, PIV_ATR)
-                    .ok_or(BleError::MissingCharacteristic(PIV_ATR))?;
+                let st =
+                    find(&fresh, PIV_STATUS).ok_or(BleError::MissingCharacteristic(PIV_STATUS))?;
+                let atr = find(&fresh, PIV_ATR).ok_or(BleError::MissingCharacteristic(PIV_ATR))?;
                 let cpl = find(&fresh, PIV_CONTROL_POINT_LENGTH);
                 (cp, st, atr, cpl)
             };
@@ -685,9 +686,7 @@ mod tests {
         let expected_resp: Vec<u8> = (0..45).map(|b| b ^ 0xFF).collect();
 
         let resp_clone = expected_resp.clone();
-        handle
-            .set_auto_responder(move |_| resp_clone.clone())
-            .await;
+        handle.set_auto_responder(move |_| resp_clone.clone()).await;
 
         let res = transport.transceive(&long_apdu).await.unwrap();
         assert_eq!(res, expected_resp);

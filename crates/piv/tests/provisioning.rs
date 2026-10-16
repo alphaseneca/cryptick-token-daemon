@@ -15,7 +15,6 @@ use piv::objects::{self, Slot};
 use piv::provision::{provision_slot, SimulatedCard};
 use piv::tlv;
 
-
 fn sample_p256_point() -> [u8; 65] {
     let mut point = [0x42u8; 65];
     point[0] = 0x04; // uncompressed EC point
@@ -47,7 +46,12 @@ fn key_generation_apdu_and_public_key_parsing() {
     let pubkey_template = tlv::encode_to_vec(objects::TAG_PUBLIC_KEY, &point_tlv);
 
     let parsed = parse_public_key(&pubkey_template).unwrap();
-    assert_eq!(parsed, PublicKey::Ec { point: point.to_vec() });
+    assert_eq!(
+        parsed,
+        PublicKey::Ec {
+            point: point.to_vec()
+        }
+    );
 
     // 4. Compressed points must be rejected (0x02 or 0x03)
     let mut compressed = vec![0x02];
@@ -241,7 +245,10 @@ fn simulated_card_end_to_end_provisioning() {
     assert!(report_9d.chained_apdus_count >= 2);
 
     // Verify stored certificates in the simulated card
-    let cert_9a = card.get_certificate(Slot::PivAuthentication).unwrap().unwrap();
+    let cert_9a = card
+        .get_certificate(Slot::PivAuthentication)
+        .unwrap()
+        .unwrap();
     assert_eq!(cert_9a, report_9a.certificate_der);
     let parsed_9a = parse_certificate(&cert_9a).unwrap();
     assert_eq!(parsed_9a.common_name, "E2E Auth Cert");
@@ -261,29 +268,42 @@ fn simulated_card_end_to_end_provisioning_all_four_slots() {
 
     // Provision all 4 slots: 9A, 9C, 9D, 9E
     let slots_to_test = [
-        (Slot::PivAuthentication, "Slot 9A Auth", tlv::Tag::new(0x5F_C105)),
-        (Slot::DigitalSignature, "Slot 9C Signature", tlv::Tag::new(0x5F_C10A)),
-        (Slot::KeyManagement, "Slot 9D KeyMgmt", tlv::Tag::new(0x5F_C10B)),
-        (Slot::CardAuthentication, "Slot 9E CardAuth", tlv::Tag::new(0x5F_C101)),
+        (
+            Slot::PivAuthentication,
+            "Slot 9A Auth",
+            tlv::Tag::new(0x5F_C105),
+        ),
+        (
+            Slot::DigitalSignature,
+            "Slot 9C Signature",
+            tlv::Tag::new(0x5F_C10A),
+        ),
+        (
+            Slot::KeyManagement,
+            "Slot 9D KeyMgmt",
+            tlv::Tag::new(0x5F_C10B),
+        ),
+        (
+            Slot::CardAuthentication,
+            "Slot 9E CardAuth",
+            tlv::Tag::new(0x5F_C101),
+        ),
     ];
 
     for (slot, cn, expected_tag) in slots_to_test {
         assert_eq!(slot.certificate_tag(), expected_tag);
 
-        let report = provision_slot(
-            &mut card,
-            slot,
-            Some(b"123456"),
-            Some(cn),
-        )
-        .unwrap();
+        let report = provision_slot(&mut card, slot, Some(b"123456"), Some(cn)).unwrap();
 
         assert_eq!(report.slot, slot);
         assert_eq!(report.public_key.len(), 65);
         assert!(report.chained_apdus_count >= 1);
 
         // Verify stored certificate in simulated card
-        let cert_der = card.get_certificate(slot).unwrap().expect("stored cert exists");
+        let cert_der = card
+            .get_certificate(slot)
+            .unwrap()
+            .expect("stored cert exists");
         assert_eq!(cert_der, report.certificate_der);
 
         let parsed = parse_certificate(&cert_der).unwrap();
@@ -319,15 +339,14 @@ fn ecdsa_signature_encoding_positive_integers() {
     let s = [0x80u8; 32];
     let sig = encode_ecdsa_signature(&r, &s);
 
-
     assert_eq!(sig[0], 0x30); // SEQUENCE
     assert_eq!(sig[2], 0x02); // INTEGER
-    assert_eq!(sig[3], 33);   // 32 bytes + 1 padding byte
+    assert_eq!(sig[3], 33); // 32 bytes + 1 padding byte
     assert_eq!(sig[4], 0x00); // padding byte
     assert_eq!(&sig[5..37], &r);
 
     assert_eq!(sig[37], 0x02); // INTEGER
-    assert_eq!(sig[38], 33);   // 32 bytes + 1 padding byte
+    assert_eq!(sig[38], 33); // 32 bytes + 1 padding byte
     assert_eq!(sig[39], 0x00); // padding byte
     assert_eq!(&sig[40..72], &s);
 }
@@ -349,14 +368,37 @@ fn simulated_card_put_data_buffer_isolation() {
     let mut card = SimulatedCard::new();
 
     // Partial chained PUT DATA
-    let partial_apdu = vec![0x10, commands::INS_PUT_DATA, 0x3F, 0xFF, 0x03, 0xAA, 0xBB, 0xCC];
+    let partial_apdu = vec![
+        0x10,
+        commands::INS_PUT_DATA,
+        0x3F,
+        0xFF,
+        0x03,
+        0xAA,
+        0xBB,
+        0xCC,
+    ];
     card.transceive(&partial_apdu).unwrap();
     assert_eq!(card.put_data_buffer, vec![0xAA, 0xBB, 0xCC]);
 
     // Interrupted by an unrelated command (e.g. GET DATA)
-    let get_apdu = vec![0x00, commands::INS_GET_DATA, 0x3F, 0xFF, 0x05, 0x5C, 0x03, 0x5F, 0xC1, 0x05];
+    let get_apdu = vec![
+        0x00,
+        commands::INS_GET_DATA,
+        0x3F,
+        0xFF,
+        0x05,
+        0x5C,
+        0x03,
+        0x5F,
+        0xC1,
+        0x05,
+    ];
     let _ = card.transceive(&get_apdu);
-    assert!(card.put_data_buffer.is_empty(), "buffer must be cleared on non-PUT-DATA command");
+    assert!(
+        card.put_data_buffer.is_empty(),
+        "buffer must be cleared on non-PUT-DATA command"
+    );
 
     // Partial chained PUT DATA again
     card.transceive(&partial_apdu).unwrap();
@@ -364,5 +406,8 @@ fn simulated_card_put_data_buffer_isolation() {
 
     // Interrupted by card reset
     card.reset();
-    assert!(card.put_data_buffer.is_empty(), "buffer must be cleared on reset");
+    assert!(
+        card.put_data_buffer.is_empty(),
+        "buffer must be cleared on reset"
+    );
 }

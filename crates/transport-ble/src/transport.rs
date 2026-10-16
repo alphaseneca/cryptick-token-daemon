@@ -52,13 +52,13 @@ impl MockWriteError {
             Self::InsufficientAuthentication => btleplug::Error::Other(Box::new(
                 std::io::Error::other("Insufficient authentication."),
             )),
-            Self::InsufficientEncryption => btleplug::Error::Other(Box::new(
-                std::io::Error::other("Insufficient encryption."),
-            )),
+            Self::InsufficientEncryption => {
+                btleplug::Error::Other(Box::new(std::io::Error::other("Insufficient encryption.")))
+            }
             Self::NotConnected => btleplug::Error::NotConnected,
-            Self::BluezNotPermitted => btleplug::Error::Other(Box::new(
-                std::io::Error::other("org.bluez.Error.NotPermitted: Write not permitted"),
-            )),
+            Self::BluezNotPermitted => btleplug::Error::Other(Box::new(std::io::Error::other(
+                "org.bluez.Error.NotPermitted: Write not permitted",
+            ))),
             Self::Custom(msg) => {
                 btleplug::Error::Other(Box::new(std::io::Error::other(msg.clone())))
             }
@@ -224,7 +224,9 @@ impl BleTransport {
         peripheral.discover_services().await?;
 
         let characteristics = peripheral.characteristics();
-        let has_daemon_cp = characteristics.iter().any(|c| c.uuid == DAEMON_CONTROL_POINT);
+        let has_daemon_cp = characteristics
+            .iter()
+            .any(|c| c.uuid == DAEMON_CONTROL_POINT);
 
         if has_daemon_cp {
             Self::connect_with_characteristics(
@@ -255,10 +257,8 @@ impl BleTransport {
         let characteristics = peripheral.characteristics();
         let find = |uuid: Uuid| characteristics.iter().find(|c| c.uuid == uuid).cloned();
 
-        let control_point = find(cp_uuid)
-            .ok_or(BleError::MissingCharacteristic(cp_uuid))?;
-        let status =
-            find(status_uuid).ok_or(BleError::MissingCharacteristic(status_uuid))?;
+        let control_point = find(cp_uuid).ok_or(BleError::MissingCharacteristic(cp_uuid))?;
+        let status = find(status_uuid).ok_or(BleError::MissingCharacteristic(status_uuid))?;
         let control_point_length = cpl_uuid.and_then(find);
 
         // Read control point length dynamically (20..=512, defaulting to 252)

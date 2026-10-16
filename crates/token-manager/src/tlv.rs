@@ -92,20 +92,26 @@ impl Tlv {
                 first_len as usize
             } else if first_len == 0x81 {
                 if data.is_empty() {
-                    return Err(format!("Unexpected end of data in length field for tag {tag:#04X}"));
+                    return Err(format!(
+                        "Unexpected end of data in length field for tag {tag:#04X}"
+                    ));
                 }
                 let l = data[0] as usize;
                 data = &data[1..];
                 l
             } else if first_len == 0x82 {
                 if data.len() < 2 {
-                    return Err(format!("Unexpected end of data in 2-byte length field for tag {tag:#04X}"));
+                    return Err(format!(
+                        "Unexpected end of data in 2-byte length field for tag {tag:#04X}"
+                    ));
                 }
                 let l = ((data[0] as usize) << 8) | (data[1] as usize);
                 data = &data[2..];
                 l
             } else {
-                return Err(format!("Unsupported BER-TLV length prefix {first_len:#04X}"));
+                return Err(format!(
+                    "Unsupported BER-TLV length prefix {first_len:#04X}"
+                ));
             };
 
             if data.len() < len {

@@ -71,17 +71,13 @@ async fn test_dynamic_length_adaptation_initial_and_refresh() {
     assert_eq!(transport.fragment_size_value().get(), 64);
 
     // Set mock response to 128 (0x0080 big-endian)
-    handle
-        .set_cpl_response(Some(Ok(vec![0x00, 0x80])))
-        .await;
+    handle.set_cpl_response(Some(Ok(vec![0x00, 0x80]))).await;
     let refreshed = transport.refresh_fragment_size().await.unwrap();
     assert_eq!(refreshed.get(), 128);
     assert_eq!(transport.fragment_size_value().get(), 128);
 
     // Set mock response to invalid clamp (10 -> 0x000A)
-    handle
-        .set_cpl_response(Some(Ok(vec![0x00, 0x0A])))
-        .await;
+    handle.set_cpl_response(Some(Ok(vec![0x00, 0x0A]))).await;
     let refreshed = transport.refresh_fragment_size().await.unwrap();
     assert_eq!(refreshed.get(), DEFAULT_FRAGMENT_SIZE);
 
@@ -103,7 +99,10 @@ async fn test_att_authentication_refusal_transitions_link_state() {
         .set_write_error(Some(MockWriteError::InsufficientAuthentication))
         .await;
 
-    let err = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err, TransportError::InsufficientAuthentication);
     assert!(err.is_bond_failure());
 
@@ -114,7 +113,10 @@ async fn test_att_authentication_refusal_transitions_link_state() {
     assert!(!state.is_usable());
 
     // Subsequent write attempts immediately fail without attempting hardware write
-    let err2 = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err2 = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err2, TransportError::InsufficientAuthentication);
 }
 
@@ -127,7 +129,10 @@ async fn test_att_encryption_refusal_transitions_link_state() {
         .set_write_error(Some(MockWriteError::InsufficientEncryption))
         .await;
 
-    let err = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err, TransportError::InsufficientEncryption);
     assert!(err.is_bond_failure());
 
@@ -146,7 +151,10 @@ async fn test_bluez_not_permitted_maps_to_insufficient_auth() {
         .set_write_error(Some(MockWriteError::BluezNotPermitted))
         .await;
 
-    let err = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err, TransportError::InsufficientAuthentication);
     assert!(err.is_bond_failure());
     assert!(!transport.link_state().is_usable());
@@ -158,10 +166,15 @@ async fn test_non_bond_gatt_error_preserves_authentication_state() {
     assert!(transport.link_state().is_usable());
 
     handle
-        .set_write_error(Some(MockWriteError::Custom("temporary radio congestion".into())))
+        .set_write_error(Some(MockWriteError::Custom(
+            "temporary radio congestion".into(),
+        )))
         .await;
 
-    let err = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert!(!err.is_bond_failure());
     assert!(matches!(err, TransportError::Gatt(_)));
 

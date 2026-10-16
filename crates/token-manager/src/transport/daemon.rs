@@ -130,7 +130,12 @@ impl DaemonTransport {
 
 impl TokenTransport for DaemonTransport {
     #[cfg(unix)]
-    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    fn transceive(
+        &mut self,
+        cmd: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         let cmd_byte = cmd | 0x80;
         let ctap_req = Request::new(Command(cmd_byte), payload.to_vec());
         let id = self.take_id();
@@ -161,7 +166,12 @@ impl TokenTransport for DaemonTransport {
     }
 
     #[cfg(not(unix))]
-    fn transceive(&mut self, _cmd: u8, _payload: &[u8], _timeout: Duration) -> Result<Vec<u8>, String> {
+    fn transceive(
+        &mut self,
+        _cmd: u8,
+        _payload: &[u8],
+        _timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         Err("Daemon transport not supported on non-unix".to_string())
     }
 

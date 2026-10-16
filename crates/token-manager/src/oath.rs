@@ -75,7 +75,8 @@ pub fn select_oath(transport: &mut dyn TokenTransport) -> Result<OathAppletInfo,
         .unwrap_or_else(|| b"cryptick-oath-default-id".to_vec());
 
     let challenge = Tlv::find(&tlvs, tags::TAG_CHALLENGE).map(|t| t.value.clone());
-    let algorithm = Tlv::find(&tlvs, tags::TAG_ALGORITHM).map(|t| t.value.first().copied().unwrap_or(0x01));
+    let algorithm =
+        Tlv::find(&tlvs, tags::TAG_ALGORITHM).map(|t| t.value.first().copied().unwrap_or(0x01));
     let password_protected = challenge.is_some();
 
     Ok(OathAppletInfo {
@@ -111,7 +112,10 @@ pub fn authenticate_session(
     let resp_hash = hmac_sha1(&key, challenge);
     let mut val_tlvs = Vec::new();
     // TAG_RESPONSE (0x75)
-    val_tlvs.push(Tlv::new(tags::TAG_RESPONSE, resp_hash[..8.min(resp_hash.len())].to_vec()));
+    val_tlvs.push(Tlv::new(
+        tags::TAG_RESPONSE,
+        resp_hash[..8.min(resp_hash.len())].to_vec(),
+    ));
     // TAG_CHALLENGE (0x74): 8 random host bytes for mutual auth
     let host_chal = [0x5A; 8];
     val_tlvs.push(Tlv::new(tags::TAG_CHALLENGE, host_chal.to_vec()));
@@ -123,7 +127,9 @@ pub fn authenticate_session(
     let resp = ResponseApdu::parse(&resp_bytes)?;
 
     if !resp.is_success() {
-        if resp.sw == StatusWord::SECURITY_STATUS_NOT_SATISFIED || resp.sw == StatusWord::DATA_INVALID {
+        if resp.sw == StatusWord::SECURITY_STATUS_NOT_SATISFIED
+            || resp.sw == StatusWord::DATA_INVALID
+        {
             return Err("Authentication failed: incorrect OATH access password.".to_string());
         }
         return Err(format!("OATH VALIDATE returned error {}", resp.sw));
@@ -163,13 +169,14 @@ pub fn list_accounts(
             }
             // First byte may be algorithm descriptor (e.g. 0x21, 0x11, 0x22), remainder is name string
             let first_byte = tlv.value[0];
-            let (oath_type, alg, name_str) = if let Some((ot, ha)) = HashAlgorithm::from_algo_byte(first_byte) {
-                let name = String::from_utf8_lossy(&tlv.value[1..]).to_string();
-                (ot, ha, name)
-            } else {
-                let name = String::from_utf8_lossy(&tlv.value).to_string();
-                (OathType::Totp, HashAlgorithm::Sha1, name)
-            };
+            let (oath_type, alg, name_str) =
+                if let Some((ot, ha)) = HashAlgorithm::from_algo_byte(first_byte) {
+                    let name = String::from_utf8_lossy(&tlv.value[1..]).to_string();
+                    (ot, ha, name)
+                } else {
+                    let name = String::from_utf8_lossy(&tlv.value).to_string();
+                    (OathType::Totp, HashAlgorithm::Sha1, name)
+                };
 
             // Touch property is indicated if high bits set or separate property tag
             let touch_required = (first_byte & 0x08) != 0;
@@ -247,12 +254,14 @@ pub fn calculate_code(
             if tlv.value.len() >= 5 {
                 // First byte is digits (e.g. 6 or 8), next 4 bytes is code integer
                 let digits = tlv.value[0] as usize;
-                let code_int = u32::from_be_bytes([tlv.value[1], tlv.value[2], tlv.value[3], tlv.value[4]]);
+                let code_int =
+                    u32::from_be_bytes([tlv.value[1], tlv.value[2], tlv.value[3], tlv.value[4]]);
                 let divisor = 10u32.pow(digits as u32);
                 let truncated = code_int % divisor;
                 code_str = Some(format!("{:0width$}", truncated, width = digits));
             } else if tlv.value.len() == 4 {
-                let code_int = u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
+                let code_int =
+                    u32::from_be_bytes([tlv.value[0], tlv.value[1], tlv.value[2], tlv.value[3]]);
                 let truncated = code_int % 1_000_000;
                 code_str = Some(format!("{:06}", truncated));
             }
@@ -441,7 +450,9 @@ pub fn set_access_password(
 
     if let Some(new_pwd) = new_pwd_opt {
         if new_pwd.is_empty() {
-            return Err("New password cannot be empty (use '--clear' to remove password)".to_string());
+            return Err(
+                "New password cannot be empty (use '--clear' to remove password)".to_string(),
+            );
         }
         let derived_key = derive_access_key(new_pwd, &applet.device_id);
         // TAG_KEY (0x73): 16-byte derived key

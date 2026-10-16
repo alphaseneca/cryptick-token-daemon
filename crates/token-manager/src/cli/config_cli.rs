@@ -71,14 +71,17 @@ fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
         i += 1;
     }
 
-    let m_str = mode_str.ok_or_else(|| "Missing target MODE (e.g. FIDO, CCID, ALL, FIDO+OATH+PIV)".to_string())?;
+    let m_str = mode_str
+        .ok_or_else(|| "Missing target MODE (e.g. FIDO, CCID, ALL, FIDO+OATH+PIV)".to_string())?;
     let parsed_mode = DeviceMode::parse(&m_str)?;
 
     if !force {
         print!("Set device connection mode to '{m_str}'? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         let trimmed = input.trim().to_ascii_lowercase();
         if trimmed != "y" && trimmed != "yes" {
             println!("Mode change cancelled.");
@@ -119,7 +122,9 @@ fn run_config_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
         print!("Reset device configuration to factory defaults? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         let trimmed = input.trim().to_ascii_lowercase();
         if trimmed != "y" && trimmed != "yes" {
             println!("Reset cancelled.");
@@ -233,9 +238,30 @@ fn run_config_usb(transport: &mut dyn TokenTransport, args: &[String]) -> Result
     if list || (enable.is_empty() && disable.is_empty()) {
         let status = get_config_status(transport)?;
         println!("=== Enabled USB Applications ===");
-        println!("FIDO2 / WebAuthn : {}", if status.usb_fido { "Enabled" } else { "Disabled" });
-        println!("OATH (TOTP/HOTP) : {}", if status.usb_oath { "Enabled" } else { "Disabled" });
-        println!("PIV (Smart Card) : {}", if status.usb_piv { "Enabled" } else { "Disabled" });
+        println!(
+            "FIDO2 / WebAuthn : {}",
+            if status.usb_fido {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+        println!(
+            "OATH (TOTP/HOTP) : {}",
+            if status.usb_oath {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
+        println!(
+            "PIV (Smart Card) : {}",
+            if status.usb_piv {
+                "Enabled"
+            } else {
+                "Disabled"
+            }
+        );
         println!("HSMAUTH          : Enabled");
         return Ok(());
     }

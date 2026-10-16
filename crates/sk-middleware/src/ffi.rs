@@ -145,7 +145,11 @@ pub enum ActiveTransport {
 /// Prioritizes USB HID when plugged in, falling back to BLE via the daemon.
 fn reachable_device() -> Result<ActiveTransport, i32> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log").ok();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/sk_debug.log")
+        .ok();
     if let Some(f) = &mut f {
         let _ = writeln!(f, "reachable_device called, checking USB first...");
     }
@@ -165,7 +169,10 @@ fn reachable_device() -> Result<ActiveTransport, i32> {
 
     // 2. Fall back to BLE via daemon bridge
     if let Some(f) = &mut f {
-        let _ = writeln!(f, "reachable_device: using BLE daemon bridge (force_ble={force_ble})...");
+        let _ = writeln!(
+            f,
+            "reachable_device: using BLE daemon bridge (force_ble={force_ble})..."
+        );
     }
     let mut client = match DaemonClient::connect(CONNECT_TIMEOUT) {
         Ok(c) => c,
@@ -186,7 +193,11 @@ fn reachable_device() -> Result<ActiveTransport, i32> {
         }
     };
     if let Some(f) = &mut f {
-        let _ = writeln!(f, "device_status: in_range={}, bonded={}", status.in_range, status.bonded);
+        let _ = writeln!(
+            f,
+            "device_status: in_range={}, bonded={}",
+            status.in_range, status.bonded
+        );
     }
     if !status.in_range || !status.bonded {
         return Err(SSH_SK_ERR_DEVICE_NOT_FOUND);
@@ -206,9 +217,17 @@ fn cose_alg(alg: u32) -> Option<i64> {
 /// Runs one CTAP transaction against the active transport (USB or BLE).
 fn transact(request: &ctap::Request) -> Result<ctap::Response, i32> {
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log").ok();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/sk_debug.log")
+        .ok();
     if let Some(f) = &mut f {
-        let _ = writeln!(f, "transact called with request len {}", request.encode().len());
+        let _ = writeln!(
+            f,
+            "transact called with request len {}",
+            request.encode().len()
+        );
     }
     let mut transport = reachable_device()?;
     let response = match &mut transport {
@@ -436,8 +455,18 @@ pub unsafe extern "C" fn sk_enroll(
             Ok(p) => p,
             Err(e) => {
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/sk_debug.log") {
-                    let _ = writeln!(f, "MakeCredentialResponse::parse failed: {:?}, data len={}, hex={:02x?}", e, response.data.len(), response.data);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/sk_debug.log")
+                {
+                    let _ = writeln!(
+                        f,
+                        "MakeCredentialResponse::parse failed: {:?}, data len={}, hex={:02x?}",
+                        e,
+                        response.data.len(),
+                        response.data
+                    );
                 }
                 return SSH_SK_ERR_GENERAL;
             }

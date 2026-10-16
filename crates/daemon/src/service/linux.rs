@@ -1,8 +1,6 @@
 //! Linux systemd user service management.
 
-use super::{
-    generator::generate_systemd_unit, is_ipc_connectable, ServiceManager, ServiceStatus,
-};
+use super::{generator::generate_systemd_unit, is_ipc_connectable, ServiceManager, ServiceStatus};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -33,7 +31,10 @@ impl ServiceManager for SystemdServiceManager {
                 .join("cryptick-daemon.service"));
         }
         let home = std::env::var_os("HOME").ok_or_else(|| {
-            io::Error::new(io::ErrorKind::NotFound, "neither XDG_CONFIG_HOME nor HOME is set")
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "neither XDG_CONFIG_HOME nor HOME is set",
+            )
         })?;
         Ok(PathBuf::from(home)
             .join(".config")
@@ -97,9 +98,9 @@ impl ServiceManager for SystemdServiceManager {
     }
 
     fn status(&self) -> io::Result<ServiceStatus> {
-        let unit_path = self.unit_path().unwrap_or_else(|_| {
-            PathBuf::from("~/.config/systemd/user/cryptick-daemon.service")
-        });
+        let unit_path = self
+            .unit_path()
+            .unwrap_or_else(|_| PathBuf::from("~/.config/systemd/user/cryptick-daemon.service"));
         let unit_exists = unit_path.is_file();
 
         let output = Command::new("systemctl")
@@ -116,9 +117,7 @@ impl ServiceManager for SystemdServiceManager {
         };
 
         let endpoint = ipc::IpcEndpoint::default_platform();
-        let endpoint_connectable = endpoint
-            .as_ref()
-            .is_some_and(is_ipc_connectable);
+        let endpoint_connectable = endpoint.as_ref().is_some_and(is_ipc_connectable);
         let endpoint_str = endpoint
             .map(|ep| ep.display_target())
             .unwrap_or_else(|| "none".to_string());

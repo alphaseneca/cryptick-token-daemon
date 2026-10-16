@@ -149,9 +149,7 @@ impl<T: PivCardTransport> VpcdRelay<T> {
 
             while let Some(msg) = decoder.next_message()? {
                 match msg {
-                    vpcd::Message::GetAtr
-                    | vpcd::Message::Reset
-                    | vpcd::Message::PowerOn => {
+                    vpcd::Message::GetAtr | vpcd::Message::Reset | vpcd::Message::PowerOn => {
                         let atr = self.transport.atr();
                         let framed = vpcd::frame(atr)?;
                         writer.write_all(&framed).await?;
@@ -235,7 +233,9 @@ mod tests {
     #[tokio::test]
     async fn relay_handles_atr_and_apdu_over_duplex_stream() {
         let atr = vec![0x3B, 0x80, 0x01, 0x81];
-        let cmd_apdu = vec![0x00, 0xA4, 0x04, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00];
+        let cmd_apdu = vec![
+            0x00, 0xA4, 0x04, 0x00, 0x07, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00,
+        ];
         let resp_apdu = vec![0x61, 0x05, 0x4F, 0x02, 0x00, 0x00, 0x90, 0x00];
 
         let mock_transport = Arc::new(MockCardTransport {

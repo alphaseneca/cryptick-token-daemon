@@ -4,9 +4,9 @@
 //! should communicate directly over USB HID rather than going through BLE.
 //! If USB is absent or unplugged, the caller falls back to the BLE daemon bridge.
 
-use std::time::{Duration, Instant};
 use ctaphid::{ChannelId, Cmd, Message, PACKET_SIZE};
 use hidapi::{HidApi, HidDevice};
+use std::time::{Duration, Instant};
 
 const CRYPTICK_VID: u16 = 0x1209;
 const CRYPTICK_PID: u16 = 0xBEEE;

@@ -16,7 +16,10 @@ use std::time::Duration;
 const FIDO_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Handles all `ykman fido ...` subcommands.
-pub fn handle_fido_command(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+pub fn handle_fido_command(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), String> {
     if args.is_empty() {
         print_fido_help();
         return Ok(());
@@ -55,9 +58,18 @@ pub fn print_fido_help() {
 fn run_fido_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), String> {
     // CTAP2 authenticatorGetInfo command is byte 0x04
     let get_info_cmd = [0x04];
-    let is_connected = transport.transceive(0x10, &get_info_cmd, FIDO_TIMEOUT).is_ok();
+    let is_connected = transport
+        .transceive(0x10, &get_info_cmd, FIDO_TIMEOUT)
+        .is_ok();
 
-    println!("PIN is set: {}", if is_connected { "Yes" } else { "Not configured" });
+    println!(
+        "PIN is set: {}",
+        if is_connected {
+            "Yes"
+        } else {
+            "Not configured"
+        }
+    );
     println!("PIN minimum length: 6");
     println!("PIN attempts remaining: 8");
     println!("Biometrics enrolled: Supported (Capacitive Touch / On-Chip Enclave)");
@@ -118,7 +130,10 @@ fn run_fido_access(_transport: &mut dyn TokenTransport, args: &[String]) -> Resu
 }
 
 /// Handles `ykman fido fingerprints [list|add|delete]`.
-fn run_fido_fingerprints(_transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_fido_fingerprints(
+    _transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), String> {
     if args.is_empty() {
         println!(
             "Usage: ykman fido fingerprints [COMMAND] [OPTIONS]\n\n\
@@ -175,14 +190,18 @@ fn run_fido_reset(_transport: &mut dyn TokenTransport, args: &[String]) -> Resul
         print!("WARNING: This will delete ALL stored FIDO2 passkeys and PIN! Proceed? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Reset cancelled.");
             return Ok(());
         }
     }
 
-    println!("Action required: Unplug and replug the token, then touch the sensor within 10 seconds.");
+    println!(
+        "Action required: Unplug and replug the token, then touch the sensor within 10 seconds."
+    );
     println!("✓ FIDO2 application reset. Token restored to unprovisioned state.");
     Ok(())
 }

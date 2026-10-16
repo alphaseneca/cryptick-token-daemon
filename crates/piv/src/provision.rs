@@ -9,11 +9,12 @@ use std::collections::HashMap;
 use crate::apdu::{ApduError, StatusWord, CLA_CHAIN};
 use crate::cert::{CertError, CertificateBuilder};
 use crate::chaining::{self, ChainError};
-use crate::commands::{self, parse_public_key, parse_signature, PinError, PublicKey, PublicKeyError};
+use crate::commands::{
+    self, parse_public_key, parse_signature, PinError, PublicKey, PublicKeyError,
+};
 use crate::objects::{self, ObjectError, Slot};
 use crate::tlv::{self, TlvError};
 use thiserror::Error;
-
 
 /// An error encountered during PIV provisioning.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -439,7 +440,10 @@ mod tests {
         assert!(report.chained_apdus_count > 1);
 
         // Verify stored object in card
-        let stored_cert = card.get_certificate(Slot::PivAuthentication).unwrap().unwrap();
+        let stored_cert = card
+            .get_certificate(Slot::PivAuthentication)
+            .unwrap()
+            .unwrap();
         assert_eq!(stored_cert, report.certificate_der);
 
         // Parse and verify stored certificate
@@ -503,14 +507,27 @@ mod tests {
     fn simulated_card_clears_put_data_buffer_on_non_put_data_command_or_reset() {
         let mut card = SimulatedCard::new();
         // Simulate partial PUT DATA chunk (chained with CLA = 0x10)
-        let partial_put = vec![0x10, commands::INS_PUT_DATA, 0x3F, 0xFF, 0x04, 0x01, 0x02, 0x03, 0x04];
+        let partial_put = vec![
+            0x10,
+            commands::INS_PUT_DATA,
+            0x3F,
+            0xFF,
+            0x04,
+            0x01,
+            0x02,
+            0x03,
+            0x04,
+        ];
         card.transceive(&partial_put).unwrap();
         assert_eq!(card.put_data_buffer, vec![0x01, 0x02, 0x03, 0x04]);
 
         // Send a non-PUT-DATA command (e.g. VERIFY retries check)
         let verify_cmd = vec![0x00, commands::INS_VERIFY, 0x00, 0x80];
         card.transceive(&verify_cmd).unwrap();
-        assert!(card.put_data_buffer.is_empty(), "buffer must be cleared on non-PUT-DATA");
+        assert!(
+            card.put_data_buffer.is_empty(),
+            "buffer must be cleared on non-PUT-DATA"
+        );
 
         // Simulate another partial PUT DATA chunk
         card.transceive(&partial_put).unwrap();
@@ -518,6 +535,9 @@ mod tests {
 
         // Call reset()
         card.reset();
-        assert!(card.put_data_buffer.is_empty(), "buffer must be cleared on reset");
+        assert!(
+            card.put_data_buffer.is_empty(),
+            "buffer must be cleared on reset"
+        );
     }
 }

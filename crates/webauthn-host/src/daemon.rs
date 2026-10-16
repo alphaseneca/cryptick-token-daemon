@@ -112,7 +112,11 @@ impl DaemonClient {
         }
     }
 
-    pub fn transact(&mut self, request: &Request, timeout: Duration) -> Result<Response, HostError> {
+    pub fn transact(
+        &mut self,
+        request: &Request,
+        timeout: Duration,
+    ) -> Result<Response, HostError> {
         let mut attempts = 0;
         loop {
             let id = self.take_id();

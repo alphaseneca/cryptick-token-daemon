@@ -159,7 +159,8 @@ pub fn load_remembered_keys() -> HashMap<String, String> {
 
 /// Saves remembered access keys to disk.
 pub fn save_remembered_keys(keys: &HashMap<String, String>) -> Result<(), String> {
-    let path = oath_keys_store_path().ok_or_else(|| "Could not determine config path".to_string())?;
+    let path =
+        oath_keys_store_path().ok_or_else(|| "Could not determine config path".to_string())?;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }

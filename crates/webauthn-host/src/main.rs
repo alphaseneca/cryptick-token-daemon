@@ -356,7 +356,8 @@ fn handle_totp_list() -> Result<Vec<String>, String> {
         .map_err(|e| format!("Token not on USB and Daemon unreachable: {e}"))?;
     let apdu = vec![0x00, 0xA1, 0x00, 0x00, 0x00];
     let req = ctap::Request::new(ctap::Command(0xE3), apdu);
-    let resp = client.transact(&req, Duration::from_secs(5))
+    let resp = client
+        .transact(&req, Duration::from_secs(5))
         .map_err(|e| format!("{e}"))?;
     parse_oath_list(&resp.data)
 }
@@ -370,7 +371,8 @@ fn handle_totp_code(name: &str, counter: u64) -> Result<String, String> {
         .map_err(|e| format!("Token not on USB and Daemon unreachable: {e}"))?;
     let apdu = build_oath_calculate_apdu(name, counter);
     let req = ctap::Request::new(ctap::Command(0xE3), apdu);
-    let resp = client.transact(&req, Duration::from_secs(25))
+    let resp = client
+        .transact(&req, Duration::from_secs(25))
         .map_err(|e| format!("{e}"))?;
     parse_oath_code(&resp.data)
 }
@@ -402,12 +404,11 @@ fn handle_sync_time(utc_secs: u64) -> Result<(), String> {
         .map_err(|e| format!("Token not on USB and Daemon unreachable: {e}"))?;
     let apdu = build_oath_set_time_apdu(utc_secs);
     let req = ctap::Request::new(ctap::Command(0xE3), apdu);
-    let resp = client.transact(&req, Duration::from_secs(5))
+    let resp = client
+        .transact(&req, Duration::from_secs(5))
         .map_err(|e| format!("{e}"))?;
     parse_oath_sw(&resp.data)
 }
-
-
 
 fn handle_create(req: CreateRequest) -> Result<HostResponse, String> {
     let client_data_hash = hash_client_data(&req.client_data_json)?;
@@ -473,9 +474,18 @@ fn handle_create(req: CreateRequest) -> Result<HostResponse, String> {
     let ctap_cbor = Value::decode(&resp.data)
         .map_err(|e| format!("Failed to decode MakeCredential CBOR: {e}"))?;
 
-    let fmt_val = ctap_cbor.get(1).cloned().unwrap_or_else(|| Value::Text(parsed.fmt.clone()));
-    let auth_data_val = ctap_cbor.get(2).cloned().unwrap_or_else(|| Value::Bytes(parsed.auth_data_raw.clone()));
-    let att_stmt_val = ctap_cbor.get(3).cloned().unwrap_or_else(|| Value::Map(vec![]));
+    let fmt_val = ctap_cbor
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| Value::Text(parsed.fmt.clone()));
+    let auth_data_val = ctap_cbor
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| Value::Bytes(parsed.auth_data_raw.clone()));
+    let att_stmt_val = ctap_cbor
+        .get(3)
+        .cloned()
+        .unwrap_or_else(|| Value::Map(vec![]));
 
     // W3C WebAuthn §6.5.1: attestationObject MUST be a CBOR map with text string keys:
     // "fmt" (text), "authData" (bytes), "attStmt" (map)
@@ -646,41 +656,48 @@ fn main() {
                     r
                 } else {
                     match DaemonClient::connect(Duration::from_millis(300)) {
-                        Ok(mut client) => match client.device_status() {
-                            Ok((in_range, bonded)) => {
-                                let elapsed = t0.elapsed().as_millis().max(1) as u64;
-                                let mut r = HostResponse::ok();
-                                r.in_range = Some(in_range);
-                                r.bonded = Some(bonded);
-                                r.usb = Some(false);
-                                r.daemon_running = Some(true);
-                                r.transport = Some(if in_range { "ble".into() } else { "none".into() });
-                                r.latency_ms = if in_range { Some(elapsed) } else { None };
-                                r.clock_utc = Some(now_utc);
-                                r.clock_synced = Some(in_range);
-                                r.time_offset_secs = Some(0);
-                                r.tz_offset_mins = Some(tz_mins);
-                                r.tz_offset_str = Some(tz_str);
-                                if usb_serial_present {
-                                    r.message = Some("USB device detected in bootloader mode (0x303A:0x1001)".into());
+                        Ok(mut client) => {
+                            match client.device_status() {
+                                Ok((in_range, bonded)) => {
+                                    let elapsed = t0.elapsed().as_millis().max(1) as u64;
+                                    let mut r = HostResponse::ok();
+                                    r.in_range = Some(in_range);
+                                    r.bonded = Some(bonded);
+                                    r.usb = Some(false);
+                                    r.daemon_running = Some(true);
+                                    r.transport = Some(if in_range {
+                                        "ble".into()
+                                    } else {
+                                        "none".into()
+                                    });
+                                    r.latency_ms = if in_range { Some(elapsed) } else { None };
+                                    r.clock_utc = Some(now_utc);
+                                    r.clock_synced = Some(in_range);
+                                    r.time_offset_secs = Some(0);
+                                    r.tz_offset_mins = Some(tz_mins);
+                                    r.tz_offset_str = Some(tz_str);
+                                    if usb_serial_present {
+                                        r.message = Some("USB device detected in bootloader mode (0x303A:0x1001)".into());
+                                    }
+                                    r
                                 }
-                                r
-                            }
-                            Err(e) => {
-                                let mut r = HostResponse::error(format!("Status query failed: {e}"));
-                                r.usb = Some(false);
-                                r.daemon_running = Some(true);
-                                r.transport = Some("none".into());
-                                r.clock_utc = Some(now_utc);
-                                r.time_offset_secs = Some(0);
-                                r.tz_offset_mins = Some(tz_mins);
-                                r.tz_offset_str = Some(tz_str);
-                                if usb_serial_present {
-                                    r.message = Some("USB device detected in bootloader mode (0x303A:0x1001)".into());
+                                Err(e) => {
+                                    let mut r =
+                                        HostResponse::error(format!("Status query failed: {e}"));
+                                    r.usb = Some(false);
+                                    r.daemon_running = Some(true);
+                                    r.transport = Some("none".into());
+                                    r.clock_utc = Some(now_utc);
+                                    r.time_offset_secs = Some(0);
+                                    r.tz_offset_mins = Some(tz_mins);
+                                    r.tz_offset_str = Some(tz_str);
+                                    if usb_serial_present {
+                                        r.message = Some("USB device detected in bootloader mode (0x303A:0x1001)".into());
+                                    }
+                                    r
                                 }
-                                r
                             }
-                        },
+                        }
                         Err(e) => {
                             let mut r = HostResponse::error(format!("Daemon unreachable: {e}"));
                             r.usb = Some(false);
@@ -691,7 +708,9 @@ fn main() {
                             r.tz_offset_mins = Some(tz_mins);
                             r.tz_offset_str = Some(tz_str);
                             if usb_serial_present {
-                                r.message = Some("USB device in bootloader mode and daemon unreachable".into());
+                                r.message = Some(
+                                    "USB device in bootloader mode and daemon unreachable".into(),
+                                );
                             }
                             r
                         }
@@ -702,7 +721,11 @@ fn main() {
                 #[cfg(target_os = "macos")]
                 {
                     let _ = std::process::Command::new("launchctl")
-                        .args(["kickstart", "-k", &format!("gui/{}/com.cryptick.daemon", unsafe { libc::getuid() })])
+                        .args([
+                            "kickstart",
+                            "-k",
+                            &format!("gui/{}/com.cryptick.daemon", unsafe { libc::getuid() }),
+                        ])
                         .output();
                 }
                 #[cfg(target_os = "linux")]
@@ -721,16 +744,14 @@ fn main() {
                 Ok(r) => r,
                 Err(e) => HostResponse::error(e),
             },
-            Ok(HostRequest::TotpList) => {
-                match handle_totp_list() {
-                    Ok(accs) => {
-                        let mut r = HostResponse::ok();
-                        r.accounts = Some(accs);
-                        r
-                    }
-                    Err(e) => HostResponse::error(format!("TOTP list failed: {e}")),
+            Ok(HostRequest::TotpList) => match handle_totp_list() {
+                Ok(accs) => {
+                    let mut r = HostResponse::ok();
+                    r.accounts = Some(accs);
+                    r
                 }
-            }
+                Err(e) => HostResponse::error(format!("TOTP list failed: {e}")),
+            },
             Ok(HostRequest::TotpCode(req)) => {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -762,7 +783,9 @@ fn main() {
                 match handle_sync_time(now) {
                     Ok(()) => {
                         let mut r = HostResponse::ok();
-                        r.message = Some(format!("Hardware RTC and soft clock synchronized to UTC {now} ({tz_str})"));
+                        r.message = Some(format!(
+                            "Hardware RTC and soft clock synchronized to UTC {now} ({tz_str})"
+                        ));
                         r.clock_utc = Some(now);
                         r.clock_synced = Some(true);
                         r.time_offset_secs = Some(0);
@@ -813,8 +836,6 @@ mod tests {
         assert_eq!(cbor_alg(-8), Value::Negative(7));
         assert_eq!(cbor_alg(1), Value::Unsigned(1));
     }
-
-
 
     #[test]
     fn test_native_message_framing() {

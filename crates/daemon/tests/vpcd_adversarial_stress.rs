@@ -99,9 +99,7 @@ async fn test_adversarial_oversized_apdu_fails_closed_before_buffering() {
     let transport = Arc::new(MockStressCardTransport::new(vec![0x3B, 0x80, 0x01, 0x81]));
     let relay = VpcdRelay::with_port(transport, port);
 
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (mut stream, _) = listener.accept().await.unwrap();
 
@@ -132,9 +130,7 @@ async fn test_adversarial_byte_by_byte_stream_fragmentation() {
     let transport = Arc::new(MockStressCardTransport::new(test_atr.clone()));
     let relay = VpcdRelay::with_port(transport, port);
 
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (mut stream, _) = listener.accept().await.unwrap();
 
@@ -182,9 +178,7 @@ async fn test_adversarial_card_disconnection_triggers_relay_exit() {
     let transport = Arc::new(MockStressCardTransport::new(vec![0x3B, 0x80, 0x01, 0x81]));
     let relay = VpcdRelay::with_port(transport.clone(), port);
 
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (mut stream, _) = listener.accept().await.unwrap();
 
@@ -193,12 +187,20 @@ async fn test_adversarial_card_disconnection_triggers_relay_exit() {
 
     // Send an APDU to the relay
     let cmd_apdu = vec![0x00, 0xA4, 0x04, 0x00, 0x00];
-    stream.write_all(&vpcd::frame(&cmd_apdu).unwrap()).await.unwrap();
+    stream
+        .write_all(&vpcd::frame(&cmd_apdu).unwrap())
+        .await
+        .unwrap();
 
     // The relay must exit with TransportError::Disconnected
     let res = relay_task.await.unwrap();
     assert!(
-        matches!(res, Err(RelayError::Transport(ble_framing::TransportError::Disconnected))),
+        matches!(
+            res,
+            Err(RelayError::Transport(
+                ble_framing::TransportError::Disconnected
+            ))
+        ),
         "Relay must exit immediately on card transport disconnection to notify PC/SC"
     );
 }

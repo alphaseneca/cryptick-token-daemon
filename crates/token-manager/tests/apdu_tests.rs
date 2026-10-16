@@ -23,7 +23,10 @@ fn test_status_words_and_descriptions() {
 
     let bad_param = StatusWord::INCORRECT_PARAMETERS;
     assert_eq!(bad_param.value(), 0x6A80);
-    assert_eq!(bad_param.description(), "Incorrect parameters (malformed TLV or bad payload)");
+    assert_eq!(
+        bad_param.description(),
+        "Incorrect parameters (malformed TLV or bad payload)"
+    );
 
     let not_found = StatusWord::NOT_FOUND;
     assert_eq!(not_found.value(), 0x6A82);

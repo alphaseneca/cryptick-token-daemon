@@ -70,12 +70,12 @@ fn test_device_mode_parsing() {
     assert_eq!(DeviceMode::parse("CCID").unwrap(), DeviceMode::Ccid);
     assert_eq!(DeviceMode::parse("piv").unwrap(), DeviceMode::Ccid);
     assert_eq!(DeviceMode::parse("OTP").unwrap(), DeviceMode::Otp);
-    assert_eq!(DeviceMode::parse("FIDO+CCID").unwrap(), DeviceMode::FidoCcid);
-    assert_eq!(DeviceMode::parse("ALL").unwrap(), DeviceMode::All);
     assert_eq!(
-        DeviceMode::parse("FIDO+OATH+PIV").unwrap(),
-        DeviceMode::All
+        DeviceMode::parse("FIDO+CCID").unwrap(),
+        DeviceMode::FidoCcid
     );
+    assert_eq!(DeviceMode::parse("ALL").unwrap(), DeviceMode::All);
+    assert_eq!(DeviceMode::parse("FIDO+OATH+PIV").unwrap(), DeviceMode::All);
 
     assert!(DeviceMode::parse("NON_EXISTENT_MODE").is_err());
 }
@@ -83,10 +83,7 @@ fn test_device_mode_parsing() {
 #[test]
 fn test_aid_resolution() {
     let oath_aid = resolve_aid("oath").expect("resolve oath");
-    assert_eq!(
-        oath_aid,
-        vec![0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01]
-    );
+    assert_eq!(oath_aid, vec![0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01]);
 
     let piv_aid = resolve_aid("piv").expect("resolve piv");
     assert_eq!(
@@ -95,7 +92,10 @@ fn test_aid_resolution() {
     );
 
     let fido_aid = resolve_aid("fido").expect("resolve fido");
-    assert_eq!(fido_aid, vec![0xA0, 0x00, 0x00, 0x06, 0x47, 0x2F, 0x00, 0x01]);
+    assert_eq!(
+        fido_aid,
+        vec![0xA0, 0x00, 0x00, 0x06, 0x47, 0x2F, 0x00, 0x01]
+    );
 
     let custom = resolve_aid("0011223344").expect("resolve hex");
     assert_eq!(custom, vec![0x00, 0x11, 0x22, 0x33, 0x44]);

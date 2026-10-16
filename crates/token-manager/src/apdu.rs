@@ -11,7 +11,9 @@ pub mod aid {
     pub const OATH: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x21, 0x01];
 
     /// PIV (Personal Identity Verification) Applet AID: `A0 00 00 03 08 00 00 10 00 01 00`
-    pub const PIV: &[u8] = &[0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00];
+    pub const PIV: &[u8] = &[
+        0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x01, 0x00,
+    ];
 
     /// Cryptick Device Management Applet AID: `A0 00 00 05 27 47 11 17`
     pub const MANAGEMENT: &[u8] = &[0xA0, 0x00, 0x00, 0x05, 0x27, 0x47, 0x11, 0x17];
@@ -316,7 +318,10 @@ pub fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
     let clean = clean.trim_start_matches("0x").trim_start_matches("0X");
 
     if clean.len() % 2 != 0 {
-        return Err(format!("Hex string has odd length ({} digits)", clean.len()));
+        return Err(format!(
+            "Hex string has odd length ({} digits)",
+            clean.len()
+        ));
     }
 
     let mut out = Vec::with_capacity(clean.len() / 2);

@@ -150,7 +150,10 @@ impl TokenTransport for SimulatedOathToken {
             let tlvs = Tlv::parse_all(&apdu.data)?;
             let resp_tlv = Tlv::find(&tlvs, tags::TAG_RESPONSE).ok_or("Missing TAG_RESPONSE")?;
             if let Some(ref pwd_key) = self.password_key {
-                let chal = self.active_challenge.as_ref().ok_or("No active challenge")?;
+                let chal = self
+                    .active_challenge
+                    .as_ref()
+                    .ok_or("No active challenge")?;
                 let expected = hmac_sha1(pwd_key, chal);
                 if resp_tlv.value == expected[..resp_tlv.value.len()] {
                     self.authenticated = true;
@@ -184,23 +187,26 @@ impl TokenTransport for SimulatedOathToken {
             let key_tlv = Tlv::find(&tlvs, tags::TAG_KEY).ok_or("Missing TAG_KEY")?;
             let name = String::from_utf8_lossy(&name_tlv.value).to_string();
 
-            let (oath_type, alg) = if let Some((ot, ha)) = HashAlgorithm::from_algo_byte(key_tlv.value[0]) {
-                (ot, ha)
-            } else {
-                (OathType::Totp, HashAlgorithm::Sha1)
-            };
+            let (oath_type, alg) =
+                if let Some((ot, ha)) = HashAlgorithm::from_algo_byte(key_tlv.value[0]) {
+                    (ot, ha)
+                } else {
+                    (OathType::Totp, HashAlgorithm::Sha1)
+                };
 
-            let digits = if key_tlv.value.len() > 1 && (key_tlv.value[1] == 6 || key_tlv.value[1] == 8) {
-                key_tlv.value[1] as u32
-            } else {
-                6
-            };
+            let digits =
+                if key_tlv.value.len() > 1 && (key_tlv.value[1] == 6 || key_tlv.value[1] == 8) {
+                    key_tlv.value[1] as u32
+                } else {
+                    6
+                };
 
             let touch = Tlv::find(&tlvs, tags::TAG_PROPERTY)
                 .map(|p| p.value.contains(&0x02))
                 .unwrap_or(false);
 
-            self.accounts.insert(name, (key_tlv.value.clone(), oath_type, alg, digits, touch));
+            self.accounts
+                .insert(name, (key_tlv.value.clone(), oath_type, alg, digits, touch));
             return Ok(vec![0x90, 0x00]);
         }
 

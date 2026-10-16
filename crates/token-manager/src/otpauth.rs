@@ -233,7 +233,11 @@ impl OtpAuthUri {
         let oath_type = match type_str.to_ascii_lowercase().as_str() {
             "totp" => OathType::Totp,
             "hotp" => OathType::Hotp,
-            other => return Err(format!("Unsupported OTP type '{other}' (expected totp or hotp)")),
+            other => {
+                return Err(format!(
+                    "Unsupported OTP type '{other}' (expected totp or hotp)"
+                ))
+            }
         };
 
         let (raw_label, query_str) = match rest.find('?') {
@@ -275,9 +279,10 @@ impl OtpAuthUri {
 
             match key.to_ascii_lowercase().as_str() {
                 "secret" => {
-                    secret = Some(decode_base32(&decoded_val).map_err(|e| {
-                        format!("Invalid Base32 in secret parameter: {e}")
-                    })?);
+                    secret = Some(
+                        decode_base32(&decoded_val)
+                            .map_err(|e| format!("Invalid Base32 in secret parameter: {e}"))?,
+                    );
                 }
                 "issuer" => {
                     if !decoded_val.is_empty() {
@@ -317,7 +322,8 @@ impl OtpAuthUri {
             }
         }
 
-        let secret = secret.ok_or_else(|| "Missing required 'secret' parameter in URI".to_string())?;
+        let secret =
+            secret.ok_or_else(|| "Missing required 'secret' parameter in URI".to_string())?;
         let issuer = issuer_from_param.or(issuer_from_label);
 
         Ok(Self {

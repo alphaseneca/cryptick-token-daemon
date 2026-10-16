@@ -64,9 +64,7 @@ async fn vpcd_relay_end_to_end_loopback_negotiation_and_apdu_transceive() {
 
     // 3. Connect relay to mock server
     let relay = VpcdRelay::with_port(transport, port);
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     // 4. Accept client connection from relay
     let (stream, client_addr) = listener.accept().await.unwrap();
@@ -150,9 +148,7 @@ async fn vpcd_relay_enforces_261_byte_short_apdu_ceiling() {
     let (transport, _handle) = PivBleTransport::new_mock(TEST_ATR.to_vec(), Some(252));
 
     let relay = VpcdRelay::with_port(transport, port);
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (mut stream, _) = listener.accept().await.unwrap();
 
@@ -188,7 +184,9 @@ async fn vpcd_relay_all_four_piv_slots_apdu_exchange_over_ble_and_ccid() {
     let select_apdu = vec![
         0x00, 0xA4, 0x04, 0x00, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00,
     ];
-    let select_resp = vec![0x61, 0x11, 0x4F, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x90, 0x00];
+    let select_resp = vec![
+        0x61, 0x11, 0x4F, 0x09, 0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00, 0x90, 0x00,
+    ];
 
     // 2. GET DATA for each slot:
     // 9A: Tag 0x5FC105
@@ -237,31 +235,44 @@ async fn vpcd_relay_all_four_piv_slots_apdu_exchange_over_ble_and_ccid() {
         .await;
 
     let relay = VpcdRelay::with_port(transport, port);
-    let relay_task = tokio::spawn(async move {
-        relay.connect_and_run().await
-    });
+    let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (stream, _) = listener.accept().await.unwrap();
     let (mut reader, mut writer) = stream.into_split();
 
     // Verify SELECT
-    writer.write_all(&vpcd::frame(&select_apdu).unwrap()).await.unwrap();
+    writer
+        .write_all(&vpcd::frame(&select_apdu).unwrap())
+        .await
+        .unwrap();
     assert_eq!(read_framed_reply(&mut reader).await, select_resp);
 
     // Verify GET DATA for Slot 9A (Authentication)
-    writer.write_all(&vpcd::frame(&get_9a).unwrap()).await.unwrap();
+    writer
+        .write_all(&vpcd::frame(&get_9a).unwrap())
+        .await
+        .unwrap();
     assert_eq!(read_framed_reply(&mut reader).await, resp_9a);
 
     // Verify GET DATA for Slot 9C (Digital Signature)
-    writer.write_all(&vpcd::frame(&get_9c).unwrap()).await.unwrap();
+    writer
+        .write_all(&vpcd::frame(&get_9c).unwrap())
+        .await
+        .unwrap();
     assert_eq!(read_framed_reply(&mut reader).await, resp_9c);
 
     // Verify GET DATA for Slot 9D (Key Management)
-    writer.write_all(&vpcd::frame(&get_9d).unwrap()).await.unwrap();
+    writer
+        .write_all(&vpcd::frame(&get_9d).unwrap())
+        .await
+        .unwrap();
     assert_eq!(read_framed_reply(&mut reader).await, resp_9d);
 
     // Verify GET DATA for Slot 9E (Card Authentication)
-    writer.write_all(&vpcd::frame(&get_9e).unwrap()).await.unwrap();
+    writer
+        .write_all(&vpcd::frame(&get_9e).unwrap())
+        .await
+        .unwrap();
     assert_eq!(read_framed_reply(&mut reader).await, resp_9e);
 
     // Clean disconnect

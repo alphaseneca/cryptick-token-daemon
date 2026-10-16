@@ -74,7 +74,6 @@ const TAG_UTC_TIME: u8 = 0x17;
 const TAG_SEQUENCE: u8 = 0x30;
 const TAG_SET: u8 = 0x31;
 
-
 /// OID 1.2.840.10045.2.1: id-ecPublicKey (RFC 5480 §2.1.1).
 const OID_ID_EC_PUBLIC_KEY: [u8; 7] = [0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x02, 0x01];
 
@@ -198,19 +197,41 @@ impl KeyUsage {
     pub fn from_der_bits(unused_bits: u8, bytes: &[u8]) -> Self {
         let mut mask = 0u16;
         if let Some(&b0) = bytes.first() {
-            let valid_bits = if bytes.len() == 1 { 8 - (unused_bits.min(7) as usize) } else { 8 };
-            if valid_bits > 0 && (b0 & 0x80) != 0 { mask |= Self::DIGITAL_SIGNATURE.0; }
-            if valid_bits > 1 && (b0 & 0x40) != 0 { mask |= Self::NON_REPUDIATION.0; }
-            if valid_bits > 2 && (b0 & 0x20) != 0 { mask |= Self::KEY_ENCIPHERMENT.0; }
-            if valid_bits > 3 && (b0 & 0x10) != 0 { mask |= Self::DATA_ENCIPHERMENT.0; }
-            if valid_bits > 4 && (b0 & 0x08) != 0 { mask |= Self::KEY_AGREEMENT.0; }
-            if valid_bits > 5 && (b0 & 0x04) != 0 { mask |= Self::KEY_CERT_SIGN.0; }
-            if valid_bits > 6 && (b0 & 0x02) != 0 { mask |= Self::CRL_SIGN.0; }
-            if valid_bits > 7 && (b0 & 0x01) != 0 { mask |= Self::ENCIPHER_ONLY.0; }
+            let valid_bits = if bytes.len() == 1 {
+                8 - (unused_bits.min(7) as usize)
+            } else {
+                8
+            };
+            if valid_bits > 0 && (b0 & 0x80) != 0 {
+                mask |= Self::DIGITAL_SIGNATURE.0;
+            }
+            if valid_bits > 1 && (b0 & 0x40) != 0 {
+                mask |= Self::NON_REPUDIATION.0;
+            }
+            if valid_bits > 2 && (b0 & 0x20) != 0 {
+                mask |= Self::KEY_ENCIPHERMENT.0;
+            }
+            if valid_bits > 3 && (b0 & 0x10) != 0 {
+                mask |= Self::DATA_ENCIPHERMENT.0;
+            }
+            if valid_bits > 4 && (b0 & 0x08) != 0 {
+                mask |= Self::KEY_AGREEMENT.0;
+            }
+            if valid_bits > 5 && (b0 & 0x04) != 0 {
+                mask |= Self::KEY_CERT_SIGN.0;
+            }
+            if valid_bits > 6 && (b0 & 0x02) != 0 {
+                mask |= Self::CRL_SIGN.0;
+            }
+            if valid_bits > 7 && (b0 & 0x01) != 0 {
+                mask |= Self::ENCIPHER_ONLY.0;
+            }
         }
         if let Some(&b1) = bytes.get(1) {
             let valid_bits = 8 - (unused_bits.min(7) as usize);
-            if valid_bits > 0 && (b1 & 0x80) != 0 { mask |= Self::DECIPHER_ONLY.0; }
+            if valid_bits > 0 && (b1 & 0x80) != 0 {
+                mask |= Self::DECIPHER_ONLY.0;
+            }
         }
         Self(mask)
     }
@@ -686,7 +707,9 @@ pub fn parse_certificate(der: &[u8]) -> Result<ParsedCertificate, CertError> {
     let mut top = DerReader::new(der);
     let cert_body = top.read_sequence()?;
     if top.offset != der.len() {
-        return Err(CertError::MalformedDer("trailing bytes after outer SEQUENCE".into()));
+        return Err(CertError::MalformedDer(
+            "trailing bytes after outer SEQUENCE".into(),
+        ));
     }
 
     let mut cert_reader = DerReader::new(cert_body);
@@ -738,7 +761,9 @@ pub fn parse_certificate(der: &[u8]) -> Result<ParsedCertificate, CertError> {
     let _spki_alg = spki_reader.read_sequence()?;
     let pk_bits = spki_reader.read_tlv_content(TAG_BIT_STRING)?;
     if pk_bits.is_empty() {
-        return Err(CertError::MalformedDer("empty public key bit string".into()));
+        return Err(CertError::MalformedDer(
+            "empty public key bit string".into(),
+        ));
     }
     let public_key = pk_bits[1..].to_vec();
 
@@ -796,7 +821,9 @@ fn parse_common_name(name_seq: &[u8]) -> Result<Option<String>, CertError> {
             let oid = attr_reader.read_tlv_content(TAG_OID)?;
             let str_tag = attr_reader.peek_tag()?;
             let val = attr_reader.read_tlv_content(str_tag)?;
-            if oid == OID_COMMON_NAME && (str_tag == TAG_UTF8_STRING || str_tag == TAG_PRINTABLE_STRING) {
+            if oid == OID_COMMON_NAME
+                && (str_tag == TAG_UTF8_STRING || str_tag == TAG_PRINTABLE_STRING)
+            {
                 return Ok(Some(String::from_utf8_lossy(val).to_string()));
             }
         }
@@ -875,7 +902,6 @@ mod tests {
         // Not uncompressed (doesn't start with 0x04)
         let bad_format = [0x02u8; 65];
         assert_eq!(
-
             CertificateBuilder::new(Slot::PivAuthentication, &bad_format).unwrap_err(),
             CertError::InvalidPublicKeyFormat(0x02)
         );
@@ -920,18 +946,42 @@ mod tests {
         let builder = CertificateBuilder::new(Slot::PivAuthentication, &pk).unwrap();
 
         // Non-digit characters
-        assert!(builder.clone().with_validity("INVALIDDATE1Z", "270101000000Z").is_err());
-        assert!(builder.clone().with_validity("260101000000Z", "INVALIDDATE1Z").is_err());
-        assert!(builder.clone().with_validity("26010100000AZ", "270101000000Z").is_err());
+        assert!(builder
+            .clone()
+            .with_validity("INVALIDDATE1Z", "270101000000Z")
+            .is_err());
+        assert!(builder
+            .clone()
+            .with_validity("260101000000Z", "INVALIDDATE1Z")
+            .is_err());
+        assert!(builder
+            .clone()
+            .with_validity("26010100000AZ", "270101000000Z")
+            .is_err());
 
         // Wrong length or missing Z
-        assert!(builder.clone().with_validity("260101000000", "270101000000Z").is_err());
-        assert!(builder.clone().with_validity("260101000000X", "270101000000Z").is_err());
+        assert!(builder
+            .clone()
+            .with_validity("260101000000", "270101000000Z")
+            .is_err());
+        assert!(builder
+            .clone()
+            .with_validity("260101000000X", "270101000000Z")
+            .is_err());
 
         // Invalid calendar ranges
-        assert!(builder.clone().with_validity("261301000000Z", "270101000000Z").is_err()); // month 13
-        assert!(builder.clone().with_validity("260132000000Z", "270101000000Z").is_err()); // day 32
-        assert!(builder.clone().with_validity("260101250000Z", "270101000000Z").is_err()); // hour 25
+        assert!(builder
+            .clone()
+            .with_validity("261301000000Z", "270101000000Z")
+            .is_err()); // month 13
+        assert!(builder
+            .clone()
+            .with_validity("260132000000Z", "270101000000Z")
+            .is_err()); // day 32
+        assert!(builder
+            .clone()
+            .with_validity("260101250000Z", "270101000000Z")
+            .is_err()); // hour 25
     }
 
     #[test]

@@ -27,7 +27,10 @@ pub fn run_base_info(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     }
 
     if check {
-        println!("Device found: Cryptick Token ({serial}) on {}", transport.transport_name());
+        println!(
+            "Device found: Cryptick Token ({serial}) on {}",
+            transport.transport_name()
+        );
         return Ok(());
     }
 
@@ -61,9 +64,7 @@ pub fn run_base_list(args: &[String]) -> Result<(), String> {
     // 1. Direct USB Scan
     if let Ok(usb_devices) = UsbTransport::list_devices() {
         for dev in usb_devices {
-            let sn = dev
-                .serial
-                .unwrap_or_else(|| "CRYPTICK-USB-01".to_string());
+            let sn = dev.serial.unwrap_or_else(|| "CRYPTICK-USB-01".to_string());
             found_devices.push((sn, "Direct USB CTAPHID (0x1209:0xBEEE)"));
         }
     }

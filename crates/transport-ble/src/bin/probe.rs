@@ -31,7 +31,9 @@ async fn main() -> std::process::ExitCode {
         print!("{USAGE}");
         return std::process::ExitCode::SUCCESS;
     }
-    let is_scan_mode = args.iter().any(|a| a == "--scan" || a == "--list" || a == "scan");
+    let is_scan_mode = args
+        .iter()
+        .any(|a| a == "--scan" || a == "--list" || a == "scan");
     let require_bonded = args.iter().any(|a| a == "--require-bonded");
     let target = args
         .windows(2)
@@ -41,7 +43,10 @@ async fn main() -> std::process::ExitCode {
         .windows(2)
         .find(|w| w[0] == "--timeout")
         .and_then(|w| w[1].parse().ok())
-        .map_or(Duration::from_secs(if is_scan_mode { 3 } else { 10 }), Duration::from_secs);
+        .map_or(
+            Duration::from_secs(if is_scan_mode { 3 } else { 10 }),
+            Duration::from_secs,
+        );
 
     let res = if is_scan_mode {
         scan_all(timeout).await
@@ -66,11 +71,16 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run(timeout: Duration, target: Option<String>, require_bonded: bool) -> Result<(), BleError> {
+async fn run(
+    timeout: Duration,
+    target: Option<String>,
+    require_bonded: bool,
+) -> Result<(), BleError> {
     let adapter = adapter().await?;
     eprintln!("scanning for {} ...", transport_ble::fido_service());
 
-    let peripheral = transport_ble::find_device_with_target(&adapter, target.as_deref(), timeout).await?;
+    let peripheral =
+        transport_ble::find_device_with_target(&adapter, target.as_deref(), timeout).await?;
     let info = probe(&peripheral).await?;
 
     println!("device");
@@ -156,7 +166,10 @@ async fn run(timeout: Duration, target: Option<String>, require_bonded: bool) ->
 async fn scan_all(timeout: Duration) -> Result<(), BleError> {
     use transport_ble::btleplug::api::{Central as _, ScanFilter};
     let adapter = adapter().await?;
-    println!("Scanning for all nearby BLE devices ({}s)...", timeout.as_secs());
+    println!(
+        "Scanning for all nearby BLE devices ({}s)...",
+        timeout.as_secs()
+    );
     adapter.start_scan(ScanFilter::default()).await?;
     tokio::time::sleep(timeout).await;
     let _ = adapter.stop_scan().await;
@@ -195,4 +208,3 @@ async fn scan_all(timeout: Duration) -> Result<(), BleError> {
     println!("\nTotal visible devices: {}", count);
     Ok(())
 }
-

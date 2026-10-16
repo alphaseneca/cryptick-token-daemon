@@ -42,7 +42,10 @@ fn slot_tag(slot: Slot) -> u32 {
 }
 
 /// Handles all `ykman piv ...` subcommands.
-pub fn handle_piv_command(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+pub fn handle_piv_command(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), String> {
     if args.is_empty() {
         print_piv_help();
         return Ok(());
@@ -85,7 +88,10 @@ fn select_piv(transport: &mut dyn TokenTransport) -> Result<ResponseApdu, String
     let raw = transport.transceive(0x03, &select_apdu.to_bytes(), PIV_TIMEOUT)?;
     let resp = ResponseApdu::parse(&raw)?;
     if !resp.is_success() {
-        return Err(format!("PIV applet selection failed with SW: {:#06X}", resp.sw.0));
+        return Err(format!(
+            "PIV applet selection failed with SW: {:#06X}",
+            resp.sw.0
+        ));
     }
     Ok(resp)
 }
@@ -112,8 +118,17 @@ fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<
     for (label, slot) in slots {
         let tag = slot_tag(slot);
         let get_apdu = CommandApdu::with_data(
-            0x00, 0xCB, 0x3F, 0xFF,
-            vec![0x5C, 0x03, ((tag >> 16) & 0xFF) as u8, ((tag >> 8) & 0xFF) as u8, (tag & 0xFF) as u8]
+            0x00,
+            0xCB,
+            0x3F,
+            0xFF,
+            vec![
+                0x5C,
+                0x03,
+                ((tag >> 16) & 0xFF) as u8,
+                ((tag >> 8) & 0xFF) as u8,
+                (tag & 0xFF) as u8,
+            ],
         );
 
         if let Ok(raw) = transport.transceive(0x03, &get_apdu.to_bytes(), PIV_TIMEOUT) {
@@ -124,10 +139,16 @@ fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<
                         println!("  • {label}:");
                         println!("      Subject CN: {}", cert.common_name);
                         println!("      Serial    : {}", format_hex(&cert.serial_number));
-                        println!("      Validity  : {} to {}", cert.not_before, cert.not_after);
+                        println!(
+                            "      Validity  : {} to {}",
+                            cert.not_before, cert.not_after
+                        );
                         continue;
                     }
-                    println!("  • {label}: [Certificate Present, {} bytes]", resp.data.len());
+                    println!(
+                        "  • {label}: [Certificate Present, {} bytes]",
+                        resp.data.len()
+                    );
                     continue;
                 }
             }
@@ -163,8 +184,18 @@ fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
-                    "-P" | "--pin" => { i += 1; if i < args.len() { old_pin = Some(args[i].clone()); } }
-                    "-n" | "--new-pin" => { i += 1; if i < args.len() { new_pin = Some(args[i].clone()); } }
+                    "-P" | "--pin" => {
+                        i += 1;
+                        if i < args.len() {
+                            old_pin = Some(args[i].clone());
+                        }
+                    }
+                    "-n" | "--new-pin" => {
+                        i += 1;
+                        if i < args.len() {
+                            new_pin = Some(args[i].clone());
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -188,7 +219,11 @@ fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result
 
             let cmd = commands::change_pin(old_pin.as_bytes(), new_pin.as_bytes())
                 .map_err(|e| format!("Invalid PIN format: {e}"))?;
-            let raw = transport.transceive(0x03, &cmd.encode().map_err(|e| e.to_string())?, PIV_TIMEOUT)?;
+            let raw = transport.transceive(
+                0x03,
+                &cmd.encode().map_err(|e| e.to_string())?,
+                PIV_TIMEOUT,
+            )?;
             let resp = ResponseApdu::parse(&raw)?;
             if resp.is_success() {
                 println!("✓ PIN successfully updated.");
@@ -225,7 +260,11 @@ fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                         "9A" => vec![Slot::PivAuthentication],
                         "9D" => vec![Slot::KeyManagement],
                         "9C" => vec![Slot::DigitalSignature],
-                        "ALL" => vec![Slot::PivAuthentication, Slot::KeyManagement, Slot::DigitalSignature],
+                        "ALL" => vec![
+                            Slot::PivAuthentication,
+                            Slot::KeyManagement,
+                            Slot::DigitalSignature,
+                        ],
                         s => return Err(format!("Unknown slot '{s}'. Use 9A, 9D, 9C, or ALL.")),
                     };
                 }
@@ -256,15 +295,29 @@ fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     for slot in &opts.slots {
         let report = provision_slot(&mut card, *slot, pin_bytes, cn)
             .map_err(|e| format!("Provisioning failed: {e}"))?;
-        println!("  ✓ Slot {:?}: Generated NIST P-256 EC key pair (pubkey {} bytes)", slot, report.public_key.len());
+        println!(
+            "  ✓ Slot {:?}: Generated NIST P-256 EC key pair (pubkey {} bytes)",
+            slot,
+            report.public_key.len()
+        );
         if let Ok(cert) = parse_certificate(&report.certificate_der) {
-            println!("  ✓ Certificate: CN={}, Serial={}", cert.common_name, format_hex(&cert.serial_number));
+            println!(
+                "  ✓ Certificate: CN={}, Serial={}",
+                cert.common_name,
+                format_hex(&cert.serial_number)
+            );
         } else {
-            println!("  ✓ Certificate: DER size {} bytes (container {} bytes)", report.certificate_der.len(), report.container_len);
+            println!(
+                "  ✓ Certificate: DER size {} bytes (container {} bytes)",
+                report.certificate_der.len(),
+                report.container_len
+            );
         }
     }
 
-    println!("\n✓ PIV provisioned successfully. Ready for macOS SmartCard login and SSH authentication.");
+    println!(
+        "\n✓ PIV provisioned successfully. Ready for macOS SmartCard login and SSH authentication."
+    );
     Ok(())
 }
 
@@ -287,14 +340,26 @@ fn run_piv_certificates(transport: &mut dyn TokenTransport, args: &[String]) -> 
             let slot = Slot::PivAuthentication;
             let tag = slot_tag(slot);
             let get_apdu = CommandApdu::with_data(
-                0x00, 0xCB, 0x3F, 0xFF,
-                vec![0x5C, 0x03, ((tag >> 16) & 0xFF) as u8, ((tag >> 8) & 0xFF) as u8, (tag & 0xFF) as u8]
+                0x00,
+                0xCB,
+                0x3F,
+                0xFF,
+                vec![
+                    0x5C,
+                    0x03,
+                    ((tag >> 16) & 0xFF) as u8,
+                    ((tag >> 8) & 0xFF) as u8,
+                    (tag & 0xFF) as u8,
+                ],
             );
             let raw = transport.transceive(0x03, &get_apdu.to_bytes(), PIV_TIMEOUT)?;
             let resp = ResponseApdu::parse(&raw)?;
             if resp.is_success() && !resp.data.is_empty() {
                 println!("-----BEGIN CERTIFICATE-----");
-                println!("{}", base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &resp.data));
+                println!(
+                    "{}",
+                    base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &resp.data)
+                );
                 println!("-----END CERTIFICATE-----");
                 Ok(())
             } else {
@@ -322,13 +387,17 @@ fn run_piv_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<
         print!("WARNING: This will delete all stored PIV certificates and reset PIN/PUK! Proceed? [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Reset cancelled.");
             Ok(())
         } else {
             select_piv(transport)?;
-            println!("✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678).");
+            println!(
+                "✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678)."
+            );
             Ok(())
         }
     } else {

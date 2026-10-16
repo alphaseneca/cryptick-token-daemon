@@ -159,14 +159,21 @@ impl UsbTransport {
         match self.device.read_timeout(&mut buf, timeout_ms) {
             Ok(n) if n == PACKET_SIZE => Ok(Some(buf)),
             Ok(0) => Ok(None),
-            Ok(n) => Err(format!("Unexpected USB packet length: {n} (expected {PACKET_SIZE})")),
+            Ok(n) => Err(format!(
+                "Unexpected USB packet length: {n} (expected {PACKET_SIZE})"
+            )),
             Err(e) => Err(format!("USB packet read error: {e}")),
         }
     }
 }
 
 impl TokenTransport for UsbTransport {
-    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    fn transceive(
+        &mut self,
+        cmd: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         if payload.len() > 7609 {
             return Err("Payload exceeds maximum CTAPHID sequence capacity (7609 bytes)".into());
         }
@@ -224,7 +231,9 @@ impl TokenTransport for UsbTransport {
             // 0x3F = CTAPHID_ERROR
             if opcode == 0x3F {
                 let err_code = raw.get(7).copied().unwrap_or(0);
-                return Err(format!("Device reported CTAPHID protocol error {err_code:#04X}"));
+                return Err(format!(
+                    "Device reported CTAPHID protocol error {err_code:#04X}"
+                ));
             }
 
             if total_len.is_none() {

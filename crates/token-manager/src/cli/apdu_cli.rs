@@ -78,7 +78,11 @@ pub fn run_apdu_command(transport: &mut dyn TokenTransport, args: &[String]) -> 
             print!("apdu> ");
             io::stdout().flush().map_err(|e| e.to_string())?;
             let mut line = String::new();
-            if io::stdin().read_line(&mut line).map_err(|e| e.to_string())? == 0 {
+            if io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| e.to_string())?
+                == 0
+            {
                 break;
             }
             let trimmed = line.trim();
@@ -122,13 +126,13 @@ fn execute_single_apdu(
     let resp = ResponseApdu::parse(&resp_bytes)?;
 
     if verbose {
-        println!(
-            "RX [{} bytes] (elapsed: {:.2?})",
-            resp_bytes.len(),
-            elapsed
-        );
+        println!("RX [{} bytes] (elapsed: {:.2?})", resp_bytes.len(), elapsed);
         if !resp.data.is_empty() {
-            println!("  Data [{} bytes]: {}", resp.data.len(), format_hex(&resp.data));
+            println!(
+                "  Data [{} bytes]: {}",
+                resp.data.len(),
+                format_hex(&resp.data)
+            );
         }
         println!("  SW: {}", resp.sw);
     } else {

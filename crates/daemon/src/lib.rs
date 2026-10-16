@@ -14,11 +14,11 @@ pub mod cancel;
 pub mod cli;
 pub mod error;
 pub mod hid;
+pub mod login;
 pub mod server;
 pub mod service;
 pub mod session;
 pub mod transport;
-pub mod login;
 pub mod vpcd_relay;
 
 #[cfg(feature = "fake-transport")]

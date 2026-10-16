@@ -168,7 +168,10 @@ fn parse_service_subcommand(args: &[String]) -> Result<CliCommand, ParseError> {
         ));
     }
 
-    if args.iter().any(|a| a == "-h" || a == "--help" || a == "help") {
+    if args
+        .iter()
+        .any(|a| a == "-h" || a == "--help" || a == "help")
+    {
         return Ok(CliCommand::Help);
     }
 
@@ -208,7 +211,9 @@ fn parse_run_options(args: &[String]) -> Result<CliCommand, ParseError> {
             "--socket" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(ParseError("flag '--socket' requires a path argument".into()));
+                    return Err(ParseError(
+                        "flag '--socket' requires a path argument".into(),
+                    ));
                 }
                 opts.socket = Some(PathBuf::from(&args[i]));
                 i += 1;
@@ -235,7 +240,9 @@ fn parse_pair_options(args: &[String]) -> Result<CliCommand, ParseError> {
             "-p" | "--pin" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(ParseError("flag '--pin' requires a 6-digit PIN argument".into()));
+                    return Err(ParseError(
+                        "flag '--pin' requires a 6-digit PIN argument".into(),
+                    ));
                 }
                 opts.pin = Some(args[i].clone());
                 i += 1;
@@ -243,7 +250,9 @@ fn parse_pair_options(args: &[String]) -> Result<CliCommand, ParseError> {
             "-d" | "--device" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(ParseError("flag '--device' requires a device address or UUID argument".into()));
+                    return Err(ParseError(
+                        "flag '--device' requires a device address or UUID argument".into(),
+                    ));
                 }
                 opts.device = Some(args[i].clone());
                 i += 1;
@@ -283,7 +292,9 @@ fn parse_forget_options(args: &[String]) -> Result<CliCommand, ParseError> {
             "-d" | "--device" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(ParseError("flag '--device' requires a device address or UUID argument".into()));
+                    return Err(ParseError(
+                        "flag '--device' requires a device address or UUID argument".into(),
+                    ));
                 }
                 opts.device = Some(args[i].clone());
                 i += 1;
@@ -306,7 +317,9 @@ fn parse_forget_options(args: &[String]) -> Result<CliCommand, ParseError> {
 
 fn parse_login_command(args: &[String]) -> Result<CliCommand, ParseError> {
     if args.is_empty() {
-        return Ok(CliCommand::Login(LoginCommand::Status(LoginStatusOptions::default())));
+        return Ok(CliCommand::Login(LoginCommand::Status(
+            LoginStatusOptions::default(),
+        )));
     }
 
     match args[0].as_str() {
@@ -363,7 +376,9 @@ fn parse_login_setup_options(args: &[String]) -> Result<CliCommand, ParseError> 
             "-H" | "--hash" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err(ParseError("flag '--hash' requires an identity hash argument".into()));
+                    return Err(ParseError(
+                        "flag '--hash' requires an identity hash argument".into(),
+                    ));
                 }
                 opts.hash = Some(args[i].clone());
                 i += 1;
@@ -482,7 +497,10 @@ mod tests {
         assert_eq!(parse_args(["scan"]).unwrap(), CliCommand::Devices);
         assert_eq!(parse_args(["connect"]).unwrap(), CliCommand::Connect);
         assert_eq!(parse_args(["disconnect"]).unwrap(), CliCommand::Disconnect);
-        assert_eq!(parse_args(["forget"]).unwrap(), CliCommand::Forget(ForgetOptions::default()));
+        assert_eq!(
+            parse_args(["forget"]).unwrap(),
+            CliCommand::Forget(ForgetOptions::default())
+        );
         assert_eq!(
             parse_args(["forget", "Cryptick-5C6E"]).unwrap(),
             CliCommand::Forget(ForgetOptions {
@@ -561,4 +579,3 @@ mod tests {
         );
     }
 }
-

@@ -97,7 +97,8 @@ pub fn check_login_status(opts: &LoginStatusOptions) -> LoginStatusReport {
 #[cfg(target_os = "macos")]
 fn check_macos_status(user: &str) -> LoginStatusReport {
     // 1. CryptoTokenKit pivtoken status
-    let ctk_path = Path::new("/System/Library/Frameworks/CryptoTokenKit.framework/PlugIns/pivtoken.appex");
+    let ctk_path =
+        Path::new("/System/Library/Frameworks/CryptoTokenKit.framework/PlugIns/pivtoken.appex");
     let ctk_exists = ctk_path.exists();
 
     // Check system_profiler for smartcard details
@@ -134,7 +135,8 @@ fn check_macos_status(user: &str) -> LoginStatusReport {
     let pairing_ui_enabled = !pairing_ui_out.to_lowercase().contains("disabled");
 
     // 3. vpcd driver & loopback port
-    let vpcd_bundle_path = Path::new("/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle");
+    let vpcd_bundle_path =
+        Path::new("/usr/local/libexec/SmartCardServices/drivers/ifd-vpcd.bundle");
     let vpcd_installed = vpcd_bundle_path.exists() || sp_output.contains("ifd-vpcd");
     let vpcd_active = crate::vpcd_relay::is_loopback_port_active(35963);
 
@@ -160,10 +162,8 @@ fn check_macos_status(user: &str) -> LoginStatusReport {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    let slot_9a_ready = !identities_out.trim().is_empty()
-        || paired_hash.is_some()
-        || usb_present
-        || ble_in_range;
+    let slot_9a_ready =
+        !identities_out.trim().is_empty() || paired_hash.is_some() || usb_present || ble_in_range;
 
     let ready_for_login = paired_hash.is_some() && login_enabled;
 
@@ -218,9 +218,16 @@ fn check_linux_status(user: &str) -> LoginStatusReport {
 
     // Check /etc/pam.d/ files for pam_u2f or pam_p11
     let mut pam_configured = false;
-    for conf in &["/etc/pam.d/sudo", "/etc/pam.d/common-auth", "/etc/pam.d/system-auth"] {
+    for conf in &[
+        "/etc/pam.d/sudo",
+        "/etc/pam.d/common-auth",
+        "/etc/pam.d/system-auth",
+    ] {
         if let Ok(content) = std::fs::read_to_string(conf) {
-            if content.contains("pam_u2f.so") || content.contains("pam_p11.so") || content.contains("pam_pkcs11.so") {
+            if content.contains("pam_u2f.so")
+                || content.contains("pam_p11.so")
+                || content.contains("pam_pkcs11.so")
+            {
                 pam_configured = true;
                 break;
             }
@@ -230,7 +237,10 @@ fn check_linux_status(user: &str) -> LoginStatusReport {
     // Check user's u2f_keys
     let home = std::env::var("HOME").unwrap_or_else(|_| format!("/home/{user}"));
     let cryptick_u2f_path = Path::new(&home).join(".config/cryptick/u2f_keys");
-    let fallback_u2f_path = Path::new(&home).join(".config").join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap()).join("u2f_keys");
+    let fallback_u2f_path = Path::new(&home)
+        .join(".config")
+        .join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap())
+        .join("u2f_keys");
     let u2f_keys_configured = cryptick_u2f_path.exists() || fallback_u2f_path.exists();
 
     // Check pcscd
@@ -318,7 +328,10 @@ fn check_usb_presence() -> (bool, String) {
     {
         for path in ["/dev/cu.usbmodemCRYPTICK2", "/dev/tty.usbmodemCRYPTICK2"] {
             if Path::new(path).exists() {
-                return (true, format!("{path} (Cryptick USB composite CTAPHID + CCID)"));
+                return (
+                    true,
+                    format!("{path} (Cryptick USB composite CTAPHID + CCID)"),
+                );
             }
         }
         // Try globbing
@@ -332,7 +345,10 @@ fn check_usb_presence() -> (bool, String) {
             }
         }
     }
-    (false, "No Cryptick USB device detected on /dev/".to_string())
+    (
+        false,
+        "No Cryptick USB device detected on /dev/".to_string(),
+    )
 }
 
 /// Helper to check BLE link via running daemon or socket.
@@ -383,46 +399,94 @@ pub fn print_login_status(report: &LoginStatusReport) {
     println!("      OS                   : {}", report.os);
     println!(
         "      SmartCard Subsystem  : {} {}",
-        if report.smartcard_subsystem_active { "✓" } else { "✕" },
+        if report.smartcard_subsystem_active {
+            "✓"
+        } else {
+            "✕"
+        },
         report.subsystem_detail
     );
     println!(
         "      SmartCard Login      : {} {}",
-        if report.login_enabled { "✓ Enabled" } else { "• Disabled" },
-        if report.login_enabled { "(allowSmartCard = true)" } else { "(run 'cryptick login setup')" }
+        if report.login_enabled {
+            "✓ Enabled"
+        } else {
+            "• Disabled"
+        },
+        if report.login_enabled {
+            "(allowSmartCard = true)"
+        } else {
+            "(run 'cryptick login setup')"
+        }
     );
     println!(
         "      Card Removal Lock    : {} {}",
-        if report.removal_lock_enabled { "✓ Enabled" } else { "• Disabled" },
-        if report.removal_lock_enabled { "(tokenRemovalAction = 1)" } else { "(optional)" }
+        if report.removal_lock_enabled {
+            "✓ Enabled"
+        } else {
+            "• Disabled"
+        },
+        if report.removal_lock_enabled {
+            "(tokenRemovalAction = 1)"
+        } else {
+            "(optional)"
+        }
     );
     if report.os == "macOS" {
         println!(
             "      Pairing UI           : {}",
-            if report.pairing_ui_enabled { "✓ Enabled" } else { "• Disabled" }
+            if report.pairing_ui_enabled {
+                "✓ Enabled"
+            } else {
+                "• Disabled"
+            }
         );
     }
 
     println!("\n  [2] Virtual Reader Relay (vpcd)");
     println!(
         "      vpcd Driver Bundle   : {} {}",
-        if report.vpcd_installed { "✓ Installed" } else { "• Not found" },
-        if report.vpcd_installed { "(ifd-vpcd.bundle)" } else { "(smartcard services fallback)" }
+        if report.vpcd_installed {
+            "✓ Installed"
+        } else {
+            "• Not found"
+        },
+        if report.vpcd_installed {
+            "(ifd-vpcd.bundle)"
+        } else {
+            "(smartcard services fallback)"
+        }
     );
     println!(
         "      Loopback Port 35963  : {}",
-        if report.vpcd_active { "✓ Active (Relaying BLE smartcard)" } else { "• Standby (connects when BLE card active)" }
+        if report.vpcd_active {
+            "✓ Active (Relaying BLE smartcard)"
+        } else {
+            "• Standby (connects when BLE card active)"
+        }
     );
 
     println!("\n  [3] Token Hardware & Transport");
     println!(
         "      USB Interface        : {} {}",
-        if report.usb_present { "✓ Connected" } else { "• Not plugged in" },
-        if report.usb_present { format!("({})", report.usb_detail) } else { "".to_string() }
+        if report.usb_present {
+            "✓ Connected"
+        } else {
+            "• Not plugged in"
+        },
+        if report.usb_present {
+            format!("({})", report.usb_detail)
+        } else {
+            "".to_string()
+        }
     );
     println!(
         "      Bluetooth Link       : {}",
-        if report.ble_in_range { "✓ Connected & In Range" } else { "• Searching / Standby" }
+        if report.ble_in_range {
+            "✓ Connected & In Range"
+        } else {
+            "• Searching / Standby"
+        }
     );
 
     println!("\n  [4] User Identity & Authentication (Slot 9A)");
@@ -466,7 +530,10 @@ pub fn run_login_setup(opts: &LoginSetupOptions) -> Result<(), String> {
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        println!("  • Platform '{}' has no automated native SmartCard pairing implementation.", std::env::consts::OS);
+        println!(
+            "  • Platform '{}' has no automated native SmartCard pairing implementation.",
+            std::env::consts::OS
+        );
         Ok(())
     }
 }
@@ -531,16 +598,16 @@ fn run_macos_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
             None => {
                 if opts.dry_run {
                     let mock_hash = "3B564922614AFE0917FB12449A9E62EE36863CC9";
-                    println!("        • No card hash reported (simulating with mock hash: {mock_hash})");
+                    println!(
+                        "        • No card hash reported (simulating with mock hash: {mock_hash})"
+                    );
                     mock_hash.to_string()
                 } else {
-                    return Err(
-                        "Unable to read Slot 9A public key hash from card.\n\
+                    return Err("Unable to read Slot 9A public key hash from card.\n\
                          Ensure the token is plugged in or connected via BLE,\n\
                          and that Slot 9A is provisioned ('cryptick-piv provision --slot 9A').\n\
                          You can also specify a hash explicitly with '--hash <HASH>'."
-                            .to_string(),
-                    );
+                        .to_string());
                 }
             }
         }
@@ -583,7 +650,9 @@ fn run_macos_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
         println!("        [DRY-RUN] Would enable allowSmartCard = true");
         println!("        [DRY-RUN] Would enable pairing dialog via sc_auth pairing_ui -s enable");
         if opts.lock_on_removal {
-            println!("        [DRY-RUN] Would enable tokenRemovalAction = 1 (screen lock on departure)");
+            println!(
+                "        [DRY-RUN] Would enable tokenRemovalAction = 1 (screen lock on departure)"
+            );
         }
     } else {
         // Enable pairing dialog
@@ -594,13 +663,25 @@ fn run_macos_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
 
         // Enable allowSmartCard
         let _ = Command::new("defaults")
-            .args(["write", "/Library/Preferences/com.apple.security.smartcard", "allowSmartCard", "-bool", "true"])
+            .args([
+                "write",
+                "/Library/Preferences/com.apple.security.smartcard",
+                "allowSmartCard",
+                "-bool",
+                "true",
+            ])
             .output();
         println!("        ✓ Enabled SmartCard login (allowSmartCard = true)");
 
         if opts.lock_on_removal {
             let _ = Command::new("defaults")
-                .args(["write", "/Library/Preferences/com.apple.security.smartcard", "tokenRemovalAction", "-int", "1"])
+                .args([
+                    "write",
+                    "/Library/Preferences/com.apple.security.smartcard",
+                    "tokenRemovalAction",
+                    "-int",
+                    "1",
+                ])
                 .output();
             println!("        ✓ Enabled lock-on-departure (tokenRemovalAction = 1)");
         }
@@ -609,7 +690,9 @@ fn run_macos_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
     println!("------------------------------------------------");
     println!("✔ Computer login setup complete!");
     println!("  • To test 1-click token unlock, press Cmd+Ctrl+Q to lock your screen.");
-    println!("  • Your Cryptick Token will authenticate the session automatically via USB CCID or BLE.");
+    println!(
+        "  • Your Cryptick Token will authenticate the session automatically via USB CCID or BLE."
+    );
 
     Ok(())
 }
@@ -620,19 +703,30 @@ fn run_linux_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
     let home = std::env::var("HOME").unwrap_or_else(|_| format!("/home/{user}"));
     let cryptick_dir = Path::new(&home).join(".config/cryptick");
     let u2f_keys_file = cryptick_dir.join("u2f_keys");
-    let fallback_dir = Path::new(&home).join(".config").join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap());
+    let fallback_dir = Path::new(&home)
+        .join(".config")
+        .join(String::from_utf8(vec![89, 117, 98, 105, 99, 111]).unwrap());
     let fallback_keys_file = fallback_dir.join("u2f_keys");
 
     println!("        ✓ Target user: {user}");
 
     println!("\n  [2/3] Configuring PAM U2F security key credentials...");
     if opts.dry_run {
-        println!("        [DRY-RUN] Would create directory: {}", cryptick_dir.display());
-        println!("        [DRY-RUN] Would generate security key credential to {}", u2f_keys_file.display());
+        println!(
+            "        [DRY-RUN] Would create directory: {}",
+            cryptick_dir.display()
+        );
+        println!(
+            "        [DRY-RUN] Would generate security key credential to {}",
+            u2f_keys_file.display()
+        );
     } else {
         if !cryptick_dir.exists() {
             let _ = std::fs::create_dir_all(&cryptick_dir);
-            println!("        ✓ Created configuration directory: {}", cryptick_dir.display());
+            println!(
+                "        ✓ Created configuration directory: {}",
+                cryptick_dir.display()
+            );
         }
         if !fallback_dir.exists() {
             let _ = std::fs::create_dir_all(&fallback_dir);
@@ -645,7 +739,10 @@ fn run_linux_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
                 if !key_mapping.trim().is_empty() {
                     let _ = std::fs::write(&u2f_keys_file, &key_mapping);
                     let _ = std::fs::write(&fallback_keys_file, &key_mapping);
-                    println!("        ✓ Successfully registered token in {}", u2f_keys_file.display());
+                    println!(
+                        "        ✓ Successfully registered token in {}",
+                        u2f_keys_file.display()
+                    );
                 }
             } else {
                 println!("        • pamu2fcfg waiting for token touch or not responding.");

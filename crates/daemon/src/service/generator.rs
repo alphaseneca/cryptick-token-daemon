@@ -45,7 +45,7 @@ pub fn generate_systemd_unit(exec_path: &Path, args: &[&str]) -> String {
     };
 
     format!(
-"[Unit]
+        "[Unit]
 Description=Cryptick Token Host Daemon
 Documentation=https://github.com/alphaseneca/cryptick-token-daemon
 After=default.target
@@ -59,8 +59,7 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 ",
-        exec_str,
-        args_str
+        exec_str, args_str
     )
 }
 
@@ -133,11 +132,7 @@ pub fn generate_launchd_plist(
 /// * `exec_path` - Path to `cryptick-daemon.exe`.
 /// * `task_name` - Task name / URI (e.g. `"CryptickDaemon"`).
 /// * `args` - Command-line arguments for Exec action (defaults to `&["run"]` if empty).
-pub fn generate_windows_task_xml(
-    exec_path: &Path,
-    task_name: &str,
-    args: &[&str],
-) -> String {
+pub fn generate_windows_task_xml(exec_path: &Path, task_name: &str, args: &[&str]) -> String {
     let args_str = if args.is_empty() {
         "run".to_string()
     } else {
@@ -145,7 +140,7 @@ pub fn generate_windows_task_xml(
     };
 
     format!(
-"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <Task version=\"1.2\" xmlns=\"http://schemas.microsoft.com/windows/2004/02/mit/task\">
   <RegistrationInfo>
     <Description>Cryptick Token Host Daemon</Description>

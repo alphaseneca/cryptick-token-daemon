@@ -84,7 +84,10 @@ async fn main() -> std::io::Result<()> {
             let exec_path = std::env::current_exe()?;
             let manager = service::current_service_manager();
             manager.install(&exec_path, &["run"])?;
-            println!("Installed and started service ({})", manager.platform_name());
+            println!(
+                "Installed and started service ({})",
+                manager.platform_name()
+            );
             Ok(())
         }
         CliCommand::Service(ServiceSubcommand::Uninstall) => {
@@ -132,10 +135,27 @@ async fn run_check() -> std::io::Result<()> {
     let status = manager.status()?;
     println!("Platform         : {}", status.platform);
     println!("Service Unit     : {}", status.unit_path.display());
-    println!("  Installed      : {}", if status.unit_exists { "yes" } else { "no" });
-    println!("  Running        : {}", if status.service_running { status.service_details.as_deref().unwrap_or("yes") } else { "no" });
+    println!(
+        "  Installed      : {}",
+        if status.unit_exists { "yes" } else { "no" }
+    );
+    println!(
+        "  Running        : {}",
+        if status.service_running {
+            status.service_details.as_deref().unwrap_or("yes")
+        } else {
+            "no"
+        }
+    );
     println!("IPC Endpoint     : {}", status.endpoint);
-    println!("  Connectable    : {}", if status.endpoint_connectable { "yes" } else { "no" });
+    println!(
+        "  Connectable    : {}",
+        if status.endpoint_connectable {
+            "yes"
+        } else {
+            "no"
+        }
+    );
 
     // Check BLE subsystem & device
     print!("Bluetooth Radio  : ");
@@ -188,7 +208,10 @@ async fn run_devices() -> std::io::Result<()> {
     if let Some(ref st) = status {
         if st.endpoint_connectable {
             println!("\n[1] Active Daemon Connection (BLE Link Held)");
-            println!("    Service       : {}", st.service_details.as_deref().unwrap_or("running"));
+            println!(
+                "    Service       : {}",
+                st.service_details.as_deref().unwrap_or("running")
+            );
             println!("    IPC Endpoint  : {}", st.endpoint);
             println!("    Link State    : Connected to Cryptick Token over BLE");
         }
@@ -224,7 +247,10 @@ async fn run_devices() -> std::io::Result<()> {
 
             let mut count = 0;
             if let Ok(peripherals) = adapter.peripherals().await {
-                println!("    {:<24} {:<20} {:<6} Services", "NAME", "ADDRESS", "RSSI");
+                println!(
+                    "    {:<24} {:<20} {:<6} Services",
+                    "NAME", "ADDRESS", "RSSI"
+                );
                 println!("    {:-<24} {:-<20} {:-<6} {:-<20}", "", "", "", "");
                 for p in peripherals {
                     if let Ok(Some(props)) = p.properties().await {
@@ -283,9 +309,9 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
     }
 
     // 2. Discover adapter
-    let adapter = transport_ble::adapter().await.map_err(|e| {
-        std::io::Error::other(format!("Bluetooth adapter unavailable: {e}"))
-    })?;
+    let adapter = transport_ble::adapter()
+        .await
+        .map_err(|e| std::io::Error::other(format!("Bluetooth adapter unavailable: {e}")))?;
 
     // 3. Scan for Cryptick Token
     let peripheral = if let Some(ref target) = opts.device {
@@ -294,24 +320,26 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
             &adapter,
             Some(target.as_str()),
             std::time::Duration::from_secs(8),
-        ).await {
+        )
+        .await
+        {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("Failed to discover Cryptick Token '{target}' on BLE: {e}");
                 if was_running {
                     let _ = run_connect().await;
                 }
-                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string()));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    e.to_string(),
+                ));
             }
         }
     } else {
         println!("Scanning for Cryptick Tokens nearby (service 0xFFFD)...");
-        let devices = transport_ble::find_all_devices(
-            &adapter,
-            std::time::Duration::from_secs(3),
-        ).await.map_err(|e| {
-            std::io::Error::other(format!("BLE scan error: {e}"))
-        })?;
+        let devices = transport_ble::find_all_devices(&adapter, std::time::Duration::from_secs(3))
+            .await
+            .map_err(|e| std::io::Error::other(format!("BLE scan error: {e}")))?;
 
         if devices.is_empty() {
             eprintln!("No Cryptick Tokens found advertising nearby.");
@@ -372,10 +400,11 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
         } else {
             Ok(())
         }
-    }).await;
+    })
+    .await;
 
     match connect_res {
-        Ok(Ok(())) => {},
+        Ok(Ok(())) => {}
         Ok(Err(e)) => {
             eprintln!("\nFailed to connect to token: {e}");
             let err_str = e.to_string();
@@ -389,16 +418,27 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
         Err(_) => {
             eprintln!("\nTimed out connecting to token [{addr}].");
             eprintln!("Ensure the token is awake, not connected to another host, and shows 'Ready to Pair'.");
-            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "Connection timed out"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "Connection timed out",
+            ));
         }
     }
 
     println!("Connected. Discovering GATT services...");
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    tokio::time::timeout(std::time::Duration::from_secs(20), peripheral.discover_services())
-        .await
-        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "Timed out discovering services"))?
-        .map_err(|e| std::io::Error::other(format!("Failed to discover token GATT services: {e}")))?;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        peripheral.discover_services(),
+    )
+    .await
+    .map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "Timed out discovering services",
+        )
+    })?
+    .map_err(|e| std::io::Error::other(format!("Failed to discover token GATT services: {e}")))?;
 
     // 5. Initiate authenticated bonding
     println!("\n=== Initiating LE Secure Connections (LESC) Bonding ===");
@@ -419,14 +459,21 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
 
         // CTAP BLE PING frame: [CMD: 0x81 (PING), Length: 0x00 0x04, DATA: 'P','A','I','R']
         let ping_frame = [0x81, 0x00, 0x04, b'P', b'A', b'I', b'R'];
-        match peripheral.write(&cp, &ping_frame, WriteType::WithResponse).await {
+        match peripheral
+            .write(&cp, &ping_frame, WriteType::WithResponse)
+            .await
+        {
             Ok(()) => {
                 println!("[OK] Authenticated write accepted by token.");
-                println!("[OK] LESC MITM bonding verified! The link is encrypted and authenticated.");
+                println!(
+                    "[OK] LESC MITM bonding verified! The link is encrypted and authenticated."
+                );
             }
             Err(e) => {
                 let err_str = e.to_string();
-                if err_str.to_lowercase().contains("insufficient") || err_str.contains("NotPermitted") {
+                if err_str.to_lowercase().contains("insufficient")
+                    || err_str.contains("NotPermitted")
+                {
                     eprintln!("[!] GATT write requires authenticated bonding: {e}");
                     eprintln!("    Confirm that the 6-digit PIN from the OLED was entered when prompted by your system.");
                 } else {
@@ -439,7 +486,9 @@ async fn run_pair(opts: PairOptions) -> std::io::Result<()> {
         }
     } else {
         let _ = peripheral.disconnect().await;
-        return Err(std::io::Error::other("FIDO GATT service characteristics not found"));
+        return Err(std::io::Error::other(
+            "FIDO GATT service characteristics not found",
+        ));
     }
 
     let _ = peripheral.disconnect().await;
@@ -582,7 +631,10 @@ async fn run_forget(opts: cli::ForgetOptions) -> std::io::Result<()> {
                 use std::io::Write;
                 if file.write_all(b"UNPAIR\r\n").is_ok() {
                     let _ = file.flush();
-                    println!("[OK] Sent UNPAIR command to token over serial ({})", path.display());
+                    println!(
+                        "[OK] Sent UNPAIR command to token over serial ({})",
+                        path.display()
+                    );
                     serial_wiped = true;
                     break;
                 }
@@ -594,7 +646,9 @@ async fn run_forget(opts: cli::ForgetOptions) -> std::io::Result<()> {
     println!("[OK] Paired device records and local IPC sockets removed.");
 
     if serial_wiped {
-        println!("[OK] Token NVS bonds wiped! Token has restarted advertising in 'Ready to Pair' mode.");
+        println!(
+            "[OK] Token NVS bonds wiped! Token has restarted advertising in 'Ready to Pair' mode."
+        );
     } else {
         println!("\nTo complete unpairing on the hardware token:");
         println!("  1. On the Cryptick Token OLED, select 'Bluetooth' -> 'Unpair / Wipe Bonds'.");
@@ -605,11 +659,17 @@ async fn run_forget(opts: cli::ForgetOptions) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     {
         println!("  - Open System Settings -> Bluetooth.");
-        println!("  - Under 'My Devices', find '{}' and click (i) -> 'Forget This Device'.", _target_dev.as_deref().unwrap_or("Cryptick-Token-*"));
+        println!(
+            "  - Under 'My Devices', find '{}' and click (i) -> 'Forget This Device'.",
+            _target_dev.as_deref().unwrap_or("Cryptick-Token-*")
+        );
     }
     #[cfg(target_os = "linux")]
     {
-        println!("  - Run: bluetoothctl remove {}", _target_dev.as_deref().unwrap_or("<device-mac>"));
+        println!(
+            "  - Run: bluetoothctl remove {}",
+            _target_dev.as_deref().unwrap_or("<device-mac>")
+        );
     }
 
     Ok(())
@@ -621,7 +681,10 @@ async fn run_info() -> std::io::Result<()> {
 
     if status.endpoint_connectable {
         println!("=== Cryptick Token Status (via Active Daemon) ===");
-        println!("Service          : {}", status.service_details.as_deref().unwrap_or("running"));
+        println!(
+            "Service          : {}",
+            status.service_details.as_deref().unwrap_or("running")
+        );
         println!("IPC Socket       : {}", status.endpoint);
 
         // Query status over IPC
@@ -643,7 +706,9 @@ async fn run_info() -> std::io::Result<()> {
                             decoder.push(&buf[..n]);
                             if let Ok(Some(resp_frame)) = decoder.next_frame() {
                                 if let Ok(env) = ipc::decode_daemon(&resp_frame) {
-                                    if let ipc::DaemonMessage::DeviceRange { in_range, bonded } = env.body {
+                                    if let ipc::DaemonMessage::DeviceRange { in_range, bonded } =
+                                        env.body
+                                    {
                                         println!("In Range         : {in_range}");
                                         println!("Bonded / Secure  : {bonded}");
                                         println!("Link Usable      : {}", in_range && bonded);
@@ -666,10 +731,20 @@ async fn run_info() -> std::io::Result<()> {
                 Ok(peripheral) => {
                     if let Ok(info) = transport_ble::probe(&peripheral).await {
                         println!("=== Cryptick Token Information ===");
-                        println!("Name             : {}", info.name.as_deref().unwrap_or("Cryptick Token"));
+                        println!(
+                            "Name             : {}",
+                            info.name.as_deref().unwrap_or("Cryptick Token")
+                        );
                         println!("Address          : {}", info.address);
                         println!("ControlPointLen  : {}", info.control_point_length);
-                        println!("FIDO2 Revision   : {}", if info.speaks_fido2 { "FIDO2 (0x20)" } else { "none" });
+                        println!(
+                            "FIDO2 Revision   : {}",
+                            if info.speaks_fido2 {
+                                "FIDO2 (0x20)"
+                            } else {
+                                "none"
+                            }
+                        );
                     }
                 }
                 Err(e) => println!("Token not found on BLE ({e})."),

@@ -82,7 +82,10 @@ fn provision_slot_flags() {
     // --all
     let cmd = parse_args(["--all"]).unwrap();
     if let CliCommand::Provision(opts) = cmd {
-        assert_eq!(opts.slots, vec![Slot::PivAuthentication, Slot::KeyManagement]);
+        assert_eq!(
+            opts.slots,
+            vec![Slot::PivAuthentication, Slot::KeyManagement]
+        );
     } else {
         panic!("expected Provision");
     }
@@ -111,7 +114,10 @@ fn provision_full_options() {
     .unwrap();
 
     if let CliCommand::Provision(opts) = cmd {
-        assert_eq!(opts.slots, vec![Slot::PivAuthentication, Slot::KeyManagement]);
+        assert_eq!(
+            opts.slots,
+            vec![Slot::PivAuthentication, Slot::KeyManagement]
+        );
         assert!(opts.dry_run);
         assert_eq!(opts.pin, Some("888888".to_string()));
         assert_eq!(opts.common_name, Some("Custom Subject CN".to_string()));
@@ -126,13 +132,16 @@ fn invalid_slot_or_flag_returns_error() {
     assert!(parse_args(["--slot", "INVALID"]).is_err());
     assert!(parse_args(["--unknown-flag"]).is_err());
     assert!(parse_args(["--slot"]).is_err()); // missing arg
-    assert!(parse_args(["--pin"]).is_err());  // missing arg
+    assert!(parse_args(["--pin"]).is_err()); // missing arg
 }
 
 #[test]
 fn parse_slot_names() {
     assert_eq!(parse_slot("9A").unwrap(), Slot::PivAuthentication);
-    assert_eq!(parse_slot("authentication").unwrap(), Slot::PivAuthentication);
+    assert_eq!(
+        parse_slot("authentication").unwrap(),
+        Slot::PivAuthentication
+    );
     assert_eq!(parse_slot("9D").unwrap(), Slot::KeyManagement);
     assert_eq!(parse_slot("key_management").unwrap(), Slot::KeyManagement);
     assert_eq!(parse_slot("9C").unwrap(), Slot::DigitalSignature);

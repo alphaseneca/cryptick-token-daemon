@@ -57,14 +57,22 @@ impl ServiceStatus {
              Overall: {}\n",
             self.platform,
             self.unit_path.display(),
-            if self.unit_exists { "yes" } else { "no (file not found)" },
+            if self.unit_exists {
+                "yes"
+            } else {
+                "no (file not found)"
+            },
             if self.service_running {
                 self.service_details.as_deref().unwrap_or("yes")
             } else {
                 "no"
             },
             self.endpoint,
-            if self.endpoint_connectable { "yes" } else { "no" },
+            if self.endpoint_connectable {
+                "yes"
+            } else {
+                "no"
+            },
             overall
         )
     }

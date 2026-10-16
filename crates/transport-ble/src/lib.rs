@@ -80,8 +80,7 @@ pub const PIV_CONTROL_POINT: Uuid = Uuid::from_u128(0xFBF6EB91_7F39_41B1_A191_95
 /// `pivStatus` — the token notifies APDU fragments here.
 pub const PIV_STATUS: Uuid = Uuid::from_u128(0xFBF6EB92_7F39_41B1_A191_9527CC42F8BE);
 /// `pivControlPointLength` — max write size, 20–512.
-pub const PIV_CONTROL_POINT_LENGTH: Uuid =
-    Uuid::from_u128(0xFBF6EB93_7F39_41B1_A191_9527CC42F8BE);
+pub const PIV_CONTROL_POINT_LENGTH: Uuid = Uuid::from_u128(0xFBF6EB93_7F39_41B1_A191_9527CC42F8BE);
 /// `pivAtr` — static Answer-to-Reset.
 pub const PIV_ATR: Uuid = Uuid::from_u128(0xFBF6EB94_7F39_41B1_A191_9527CC42F8BE);
 

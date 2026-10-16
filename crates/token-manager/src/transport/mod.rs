@@ -7,8 +7,8 @@
 pub mod daemon;
 pub mod usb;
 
-use std::time::Duration;
 pub use daemon::DaemonTransport;
+use std::time::Duration;
 pub use usb::UsbTransport;
 
 /// A transport connection capable of transceiving CTAPHID / APDU commands to Cryptick Token.
@@ -18,7 +18,8 @@ pub trait TokenTransport {
     /// For OATH and vendor commands: `cmd = 0x63` (`CTAPHID_CRYPTICK_OATH = 0xE3`).
     /// For CTAPHID_MSG (standard raw APDU): `cmd = 0x03`.
     /// For CTAPHID_CBOR: `cmd = 0x10`.
-    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration) -> Result<Vec<u8>, String>;
+    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration)
+        -> Result<Vec<u8>, String>;
 
     /// Human-readable transport name (e.g. "Direct USB" or "BLE Daemon Bridge").
     fn transport_name(&self) -> &'static str;
@@ -81,7 +82,12 @@ impl DualTransport {
 }
 
 impl TokenTransport for DualTransport {
-    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    fn transceive(
+        &mut self,
+        cmd: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
         self.active.transceive(cmd, payload, timeout)
     }
 

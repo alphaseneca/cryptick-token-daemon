@@ -79,7 +79,10 @@ async fn test_adversarial_cpl_exact_boundaries() {
     handle_min
         .set_cpl_response(Some(Ok(vec![0x00, 0x14]))) // 20
         .await;
-    assert_eq!(transport_min.refresh_fragment_size().await.unwrap().get(), 20);
+    assert_eq!(
+        transport_min.refresh_fragment_size().await.unwrap().get(),
+        20
+    );
 
     // Exact MAX boundary (512)
     let (transport_max, handle_max) = BleTransport::new_mock(Some(MAX_FRAGMENT_SIZE));
@@ -87,7 +90,10 @@ async fn test_adversarial_cpl_exact_boundaries() {
     handle_max
         .set_cpl_response(Some(Ok(vec![0x02, 0x00]))) // 512
         .await;
-    assert_eq!(transport_max.refresh_fragment_size().await.unwrap().get(), 512);
+    assert_eq!(
+        transport_max.refresh_fragment_size().await.unwrap().get(),
+        512
+    );
 }
 
 #[tokio::test]
@@ -110,7 +116,9 @@ async fn test_adversarial_cpl_malformed_responses() {
     );
 
     // 3-byte response
-    handle.set_cpl_response(Some(Ok(vec![0x00, 0x40, 0x00]))).await;
+    handle
+        .set_cpl_response(Some(Ok(vec![0x00, 0x40, 0x00])))
+        .await;
     assert_eq!(
         transport.refresh_fragment_size().await.unwrap().get(),
         DEFAULT_FRAGMENT_SIZE
@@ -148,7 +156,10 @@ async fn test_rapid_succession_att_errors_lockout_link_state() {
         let t = transport.clone();
         let counter = Arc::clone(&auth_refusal_count);
         tasks.push(tokio::spawn(async move {
-            let err = t.write_fragment(&[0x83, 0x00, 0x01, 0xFF]).await.unwrap_err();
+            let err = t
+                .write_fragment(&[0x83, 0x00, 0x01, 0xFF])
+                .await
+                .unwrap_err();
             if matches!(err, TransportError::InsufficientAuthentication) {
                 counter.fetch_add(1, Ordering::SeqCst);
             }
@@ -170,7 +181,10 @@ async fn test_rapid_succession_att_errors_lockout_link_state() {
     // Clear the mock error to simulate backend thinking it recovered;
     // but the transport MUST fail closed and refuse any subsequent write!
     handle.set_write_error(None).await;
-    let next_err = transport.write_fragment(&[0x83, 0x00, 0x01, 0xFF]).await.unwrap_err();
+    let next_err = transport
+        .write_fragment(&[0x83, 0x00, 0x01, 0xFF])
+        .await
+        .unwrap_err();
     assert_eq!(next_err, TransportError::InsufficientAuthentication);
 
     // Verify written fragments in handle: only the first call reached mock IO, subsequent were blocked early!
@@ -185,7 +199,10 @@ async fn test_att_encryption_refusal_lockout() {
         .set_write_error(Some(MockWriteError::InsufficientEncryption))
         .await;
 
-    let err = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err, TransportError::InsufficientEncryption);
     assert!(err.is_bond_failure());
 
@@ -194,7 +211,10 @@ async fn test_att_encryption_refusal_lockout() {
     assert!(!transport.link_state().bonded);
 
     // Subsequent write fails closed
-    let err2 = transport.write_fragment(&[0x83, 0x00, 0x00]).await.unwrap_err();
+    let err2 = transport
+        .write_fragment(&[0x83, 0x00, 0x00])
+        .await
+        .unwrap_err();
     assert_eq!(err2, TransportError::InsufficientAuthentication);
 }
 
@@ -293,7 +313,10 @@ async fn test_adversarial_disconnection_during_transceive_piv() {
     let apdu = vec![0x00, 0xA4, 0x04, 0x00, 0x00];
     let err = transport.transceive(&apdu).await.unwrap_err();
     assert!(
-        matches!(err, PivTransportError::Transport(TransportError::Disconnected)),
+        matches!(
+            err,
+            PivTransportError::Transport(TransportError::Disconnected)
+        ),
         "Must return Disconnected on mid-operation disconnection"
     );
 
@@ -314,9 +337,7 @@ async fn test_adversarial_piv_apdu_ceiling_boundaries() {
     let boundary_apdu = vec![0x5A; MAX_APDU_LEN];
     let expected_resp = vec![0x90, 0x00];
     let exp_clone = expected_resp.clone();
-    handle
-        .set_auto_responder(move |_| exp_clone.clone())
-        .await;
+    handle.set_auto_responder(move |_| exp_clone.clone()).await;
 
     let res = transport.transceive(&boundary_apdu).await.unwrap();
     assert_eq!(res, expected_resp);

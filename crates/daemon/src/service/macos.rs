@@ -1,8 +1,6 @@
 //! macOS launchd LaunchAgent service management.
 
-use super::{
-    generator::generate_launchd_plist, is_ipc_connectable, ServiceManager, ServiceStatus,
-};
+use super::{generator::generate_launchd_plist, is_ipc_connectable, ServiceManager, ServiceStatus};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -29,8 +27,9 @@ impl ServiceManager for LaunchdServiceManager {
     }
 
     fn unit_path(&self) -> io::Result<PathBuf> {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set"))?;
+        let home = std::env::var_os("HOME").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set")
+        })?;
         Ok(PathBuf::from(home)
             .join("Library")
             .join("LaunchAgents")
@@ -38,8 +37,9 @@ impl ServiceManager for LaunchdServiceManager {
     }
 
     fn install(&self, exec_path: &Path, extra_args: &[&str]) -> io::Result<()> {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set"))?;
+        let home = std::env::var_os("HOME").ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "HOME environment variable not set")
+        })?;
         let home_path = PathBuf::from(home);
         let log_dir = home_path.join("Library").join("Logs");
         std::fs::create_dir_all(&log_dir)?;
@@ -95,9 +95,9 @@ impl ServiceManager for LaunchdServiceManager {
     }
 
     fn status(&self) -> io::Result<ServiceStatus> {
-        let unit_path = self.unit_path().unwrap_or_else(|_| {
-            PathBuf::from("~/Library/LaunchAgents/com.cryptick.daemon.plist")
-        });
+        let unit_path = self
+            .unit_path()
+            .unwrap_or_else(|_| PathBuf::from("~/Library/LaunchAgents/com.cryptick.daemon.plist"));
         let unit_exists = unit_path.is_file();
 
         let output = Command::new("launchctl")
@@ -132,9 +132,7 @@ impl ServiceManager for LaunchdServiceManager {
         };
 
         let endpoint = ipc::IpcEndpoint::default_platform();
-        let endpoint_connectable = endpoint
-            .as_ref()
-            .is_some_and(is_ipc_connectable);
+        let endpoint_connectable = endpoint.as_ref().is_some_and(is_ipc_connectable);
         let endpoint_str = endpoint
             .map(|ep| ep.display_target())
             .unwrap_or_else(|| "none".to_string());

@@ -11,7 +11,6 @@ use crate::commands;
 use crate::objects::Slot;
 use crate::provision::{provision_slot, ProvisionOptions, ProvisionReport, SimulatedCard};
 
-
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
@@ -218,13 +217,9 @@ pub fn run_provision(opts: ProvisionOptions) -> Result<(), String> {
             slot.certificate_tag().value()
         );
 
-        let report: ProvisionReport = provision_slot(
-            &mut card,
-            slot,
-            pin_bytes,
-            opts.common_name.as_deref(),
-        )
-        .map_err(|e| format!("failed provisioning slot {slot:?}: {e}"))?;
+        let report: ProvisionReport =
+            provision_slot(&mut card, slot, pin_bytes, opts.common_name.as_deref())
+                .map_err(|e| format!("failed provisioning slot {slot:?}: {e}"))?;
 
         println!("  [OK] EC P-256 key pair generated on-token.");
         println!(
@@ -259,7 +254,10 @@ pub fn run_provision(opts: ProvisionOptions) -> Result<(), String> {
     }
 
     if opts.print_apdus {
-        println!("\n=== APDU Transaction Log ({} APDUs) ===", card.transceived.len());
+        println!(
+            "\n=== APDU Transaction Log ({} APDUs) ===",
+            card.transceived.len()
+        );
         for (i, apdu) in card.transceived.iter().enumerate() {
             let cla = apdu.first().copied().unwrap_or(0);
             let ins = apdu.get(1).copied().unwrap_or(0);

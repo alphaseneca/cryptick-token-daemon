@@ -54,7 +54,10 @@ fn test_base32_permissive_decoding() {
 #[test]
 fn test_url_decoding() {
     assert_eq!(url_decode("hello%20world"), "hello world");
-    assert_eq!(url_decode("GitHub%3Aalice%40example.com"), "GitHub:alice@example.com");
+    assert_eq!(
+        url_decode("GitHub%3Aalice%40example.com"),
+        "GitHub:alice@example.com"
+    );
     assert_eq!(url_decode("no_escapes_here"), "no_escapes_here");
     assert_eq!(url_decode("%2Fpath%2F%2B%3D"), "/path/+=");
 }

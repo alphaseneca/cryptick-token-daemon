@@ -136,7 +136,11 @@ pub fn configure_usb_applications(
             "FIDO" | "FIDO2" | "U2F" => current.usb_fido = true,
             "OATH" | "TOTP" | "HOTP" => current.usb_oath = true,
             "PIV" | "CCID" => current.usb_piv = true,
-            other => return Err(format!("Unknown USB application '{other}' (expected FIDO2, OATH, PIV)")),
+            other => {
+                return Err(format!(
+                    "Unknown USB application '{other}' (expected FIDO2, OATH, PIV)"
+                ))
+            }
         }
     }
 
@@ -145,7 +149,11 @@ pub fn configure_usb_applications(
             "FIDO" | "FIDO2" | "U2F" => current.usb_fido = false,
             "OATH" | "TOTP" | "HOTP" => current.usb_oath = false,
             "PIV" | "CCID" => current.usb_piv = false,
-            other => return Err(format!("Unknown USB application '{other}' (expected FIDO2, OATH, PIV)")),
+            other => {
+                return Err(format!(
+                    "Unknown USB application '{other}' (expected FIDO2, OATH, PIV)"
+                ))
+            }
         }
     }
 
@@ -185,7 +193,9 @@ pub fn set_lock_code(
     if let Some(curr) = current_lock_code {
         let b = crate::apdu::parse_hex(curr)?;
         if b.len() != 16 {
-            return Err("Current lock code must be exactly 16 bytes (32 hex characters)".to_string());
+            return Err(
+                "Current lock code must be exactly 16 bytes (32 hex characters)".to_string(),
+            );
         }
         data.extend_from_slice(&b);
     } else {

@@ -32,7 +32,12 @@ impl ServiceManager for WindowsTaskServiceManager {
         let base = std::env::var_os("LOCALAPPDATA")
             .or_else(|| std::env::var_os("APPDATA"))
             .or_else(|| std::env::var_os("USERPROFILE"))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "neither LOCALAPPDATA, APPDATA, nor USERPROFILE is set"))?;
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "neither LOCALAPPDATA, APPDATA, nor USERPROFILE is set",
+                )
+            })?;
 
         Ok(PathBuf::from(base)
             .join("cryptick")
@@ -91,9 +96,9 @@ impl ServiceManager for WindowsTaskServiceManager {
     }
 
     fn status(&self) -> io::Result<ServiceStatus> {
-        let unit_path = self.unit_path().unwrap_or_else(|_| {
-            PathBuf::from(r"%LOCALAPPDATA%\cryptick\cryptick-daemon-task.xml")
-        });
+        let unit_path = self
+            .unit_path()
+            .unwrap_or_else(|_| PathBuf::from(r"%LOCALAPPDATA%\cryptick\cryptick-daemon-task.xml"));
         let unit_exists = unit_path.is_file();
 
         let output = Command::new("schtasks")
@@ -114,9 +119,7 @@ impl ServiceManager for WindowsTaskServiceManager {
         };
 
         let endpoint = ipc::IpcEndpoint::default_platform();
-        let endpoint_connectable = endpoint
-            .as_ref()
-            .is_some_and(is_ipc_connectable);
+        let endpoint_connectable = endpoint.as_ref().is_some_and(is_ipc_connectable);
         let endpoint_str = endpoint
             .map(|ep| ep.display_target())
             .unwrap_or_else(|| "none".to_string());
