@@ -104,14 +104,51 @@ impl StatusCode {
     pub const INVALID_PARAMETER: StatusCode = StatusCode(0x02);
     /// `CTAP1_ERR_INVALID_LENGTH`
     pub const INVALID_LENGTH: StatusCode = StatusCode(0x03);
+    /// `CTAP2_ERR_MISSING_PARAMETER`
+    pub const MISSING_PARAMETER: StatusCode = StatusCode(0x14);
+    /// `CTAP2_ERR_NO_CREDENTIALS`
+    pub const NO_CREDENTIALS: StatusCode = StatusCode(0x2e);
     /// `CTAP2_ERR_OPERATION_DENIED`
     pub const OPERATION_DENIED: StatusCode = StatusCode(0x27);
     /// `CTAP2_ERR_KEEPALIVE_CANCEL` — the transaction was cancelled.
-    pub const KEEPALIVE_CANCEL: StatusCode = StatusCode(0x2e);
+    ///
+    /// **Corrected 2026-10 from the `0x2e` this crate shipped with.** `0x2e` is
+    /// actually `CTAP2_ERR_NO_CREDENTIALS`. Verified against CTAP2.1 §8.2.3 and
+    /// cross-checked against `fido2.ctap.CtapError.ERR` in Yubico's
+    /// `python-fido2` (the reference host implementation) and against this
+    /// device's own firmware (`core/fido2/ctap_errors.h`:
+    /// `CTAP2_ERR_KEEPALIVE_CANCEL 0x2D`), which had it right. Exactly the
+    /// off-by-one-table mistake PROJECT.md §20 warns about: verify against the
+    /// spec, not against the other side's code — in this case the other side
+    /// was correct and this crate was not.
+    pub const KEEPALIVE_CANCEL: StatusCode = StatusCode(0x2d);
     /// `CTAP2_ERR_USER_ACTION_TIMEOUT` — the user never touched the sensor.
-    pub const USER_ACTION_TIMEOUT: StatusCode = StatusCode(0x30);
+    ///
+    /// **Corrected 2026-10 from `0x30`**, which is actually `CTAP2_ERR_NOT_ALLOWED`.
+    /// Real value is `0x2f`; see the [`Self::KEEPALIVE_CANCEL`] note for how this
+    /// was verified. The firmware's `ctap2_user_presence_test()` wrapper
+    /// (`core/fido2/ctap.c`) does not actually return this one for a plain
+    /// touch-timeout — it returns [`Self::ACTION_TIMEOUT`] (`0x3a`) instead; both
+    /// are real CTAP2.1 codes and a relay must represent either correctly.
+    pub const USER_ACTION_TIMEOUT: StatusCode = StatusCode(0x2f);
+    /// `CTAP2_ERR_ACTION_TIMEOUT` — distinct from [`Self::USER_ACTION_TIMEOUT`]
+    /// and the one this device's firmware actually returns when a
+    /// user-presence wait (`ctap2_user_presence_test`, `CTAP2_UP_DELAY_MS` =
+    /// 29s) expires with no touch (`core/fido2/ctap.c`, `core/fido2/ctap_errors.h`).
+    pub const ACTION_TIMEOUT: StatusCode = StatusCode(0x3a);
+    /// `CTAP2_ERR_NOT_ALLOWED`
+    pub const NOT_ALLOWED: StatusCode = StatusCode(0x30);
+    /// `CTAP2_ERR_PIN_INVALID`
+    pub const PIN_INVALID: StatusCode = StatusCode(0x31);
+    /// `CTAP2_ERR_PIN_AUTH_INVALID`
+    pub const PIN_AUTH_INVALID: StatusCode = StatusCode(0x33);
+    /// `CTAP2_ERR_PIN_NOT_SET`
+    pub const PIN_NOT_SET: StatusCode = StatusCode(0x35);
     /// `CTAP2_ERR_UP_REQUIRED` — user presence is required and was not given.
-    pub const UP_REQUIRED: StatusCode = StatusCode(0x3c);
+    ///
+    /// **Corrected 2026-10 from `0x3c`**, which is actually `CTAP2_ERR_UV_BLOCKED`.
+    /// Real value is `0x3b`; see the [`Self::KEEPALIVE_CANCEL`] note.
+    pub const UP_REQUIRED: StatusCode = StatusCode(0x3b);
     /// `CTAP1_ERR_OTHER`
     pub const OTHER: StatusCode = StatusCode(0x7f);
 
@@ -132,9 +169,16 @@ impl StatusCode {
             StatusCode::INVALID_COMMAND => "CTAP1_ERR_INVALID_COMMAND",
             StatusCode::INVALID_PARAMETER => "CTAP1_ERR_INVALID_PARAMETER",
             StatusCode::INVALID_LENGTH => "CTAP1_ERR_INVALID_LENGTH",
+            StatusCode::MISSING_PARAMETER => "CTAP2_ERR_MISSING_PARAMETER",
+            StatusCode::NO_CREDENTIALS => "CTAP2_ERR_NO_CREDENTIALS",
             StatusCode::OPERATION_DENIED => "CTAP2_ERR_OPERATION_DENIED",
             StatusCode::KEEPALIVE_CANCEL => "CTAP2_ERR_KEEPALIVE_CANCEL",
             StatusCode::USER_ACTION_TIMEOUT => "CTAP2_ERR_USER_ACTION_TIMEOUT",
+            StatusCode::ACTION_TIMEOUT => "CTAP2_ERR_ACTION_TIMEOUT",
+            StatusCode::NOT_ALLOWED => "CTAP2_ERR_NOT_ALLOWED",
+            StatusCode::PIN_INVALID => "CTAP2_ERR_PIN_INVALID",
+            StatusCode::PIN_AUTH_INVALID => "CTAP2_ERR_PIN_AUTH_INVALID",
+            StatusCode::PIN_NOT_SET => "CTAP2_ERR_PIN_NOT_SET",
             StatusCode::UP_REQUIRED => "CTAP2_ERR_UP_REQUIRED",
             StatusCode::OTHER => "CTAP1_ERR_OTHER",
             _ => return None,
@@ -277,6 +321,40 @@ mod tests {
         for byte in [0x01u8, 0x27, 0x2e, 0x30, 0x3c, 0x7f, 0xff] {
             assert!(!StatusCode(byte).is_ok(), "{byte:#04x}");
         }
+    }
+
+    #[test]
+    fn corrected_status_codes_match_the_ctap2_1_spec() {
+        // Verified against CTAP2.1 §8.2.3 and cross-checked against
+        // python-fido2's `CtapError.ERR` and this device's firmware
+        // (core/fido2/ctap_errors.h). See the doc comments on each constant.
+        assert_eq!(StatusCode::KEEPALIVE_CANCEL.as_u8(), 0x2d);
+        assert_eq!(StatusCode::USER_ACTION_TIMEOUT.as_u8(), 0x2f);
+        assert_eq!(StatusCode::ACTION_TIMEOUT.as_u8(), 0x3a);
+        assert_eq!(StatusCode::UP_REQUIRED.as_u8(), 0x3b);
+        assert_eq!(StatusCode::NOT_ALLOWED.as_u8(), 0x30);
+        assert_eq!(StatusCode::NO_CREDENTIALS.as_u8(), 0x2e);
+        assert_eq!(StatusCode::PIN_NOT_SET.as_u8(), 0x35);
+
+        // None of the corrected values collide with each other or with a
+        // named constant that used to sit at that byte (the whole bug was two
+        // real codes colliding under one wrong name).
+        assert_eq!(
+            StatusCode::KEEPALIVE_CANCEL.name(),
+            Some("CTAP2_ERR_KEEPALIVE_CANCEL")
+        );
+        assert_eq!(
+            StatusCode::NO_CREDENTIALS.name(),
+            Some("CTAP2_ERR_NO_CREDENTIALS")
+        );
+        assert_eq!(
+            StatusCode::USER_ACTION_TIMEOUT.name(),
+            Some("CTAP2_ERR_USER_ACTION_TIMEOUT")
+        );
+        assert_eq!(
+            StatusCode::NOT_ALLOWED.name(),
+            Some("CTAP2_ERR_NOT_ALLOWED")
+        );
     }
 
     #[test]
