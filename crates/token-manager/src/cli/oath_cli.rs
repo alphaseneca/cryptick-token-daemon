@@ -1,4 +1,4 @@
-//! CLI subcommand handlers for `ykman oath`.
+//! CLI subcommand handlers for `cryptick-manager oath`.
 
 use crate::access::{forget_all_keys, forget_key, remember_key};
 use crate::oath::{
@@ -10,7 +10,7 @@ use crate::transport::TokenTransport;
 use std::fs;
 use std::io::{self, Write};
 
-/// Handles all `ykman oath ...` subcommands.
+/// Handles all `cryptick-manager oath ...` subcommands.
 pub fn handle_oath_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -30,14 +30,14 @@ pub fn handle_oath_command(
         "access" => run_oath_access(transport, &args[1..]),
         "accounts" => run_oath_accounts(transport, &args[1..]),
         unknown => Err(format!(
-            "Unknown oath subcommand '{unknown}'. Run 'ykman oath --help' for available commands."
+            "Unknown oath subcommand '{unknown}'. Run 'cryptick-manager oath --help' for available commands."
         )),
     }
 }
 
 pub fn print_oath_help() {
     println!(
-        "Usage: ykman oath [COMMAND] [OPTIONS]\n\n\
+        "Usage: cryptick-manager oath [COMMAND] [OPTIONS]\n\n\
          Manage OATH (TOTP / HOTP) authentication on Cryptick Token.\n\n\
          Commands:\n\
            info                  Display OATH application status and configuration\n\
@@ -129,7 +129,7 @@ fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result
 fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman oath access [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager oath access [COMMAND] [OPTIONS]\n\n\
              Manage OATH application access password.\n\n\
              Commands:\n\
                change    Change or set the access password\n\
@@ -275,7 +275,7 @@ fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> R
 fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman oath accounts [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager oath accounts [COMMAND] [OPTIONS]\n\n\
              Manage and generate OATH accounts on Cryptick Token.\n\n\
              Commands:\n\
                list       List all configured accounts\n\
@@ -374,7 +374,7 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                     password = Some(args[i].clone());
                 }
             }
-            "-H" | "--hover" => {} // Supported flag in ykman
+            "-H" | "--hover" => {} // Supported flag in cryptick-manager
             arg if !arg.starts_with('-') && query.is_none() => {
                 query = Some(arg.to_string());
             }

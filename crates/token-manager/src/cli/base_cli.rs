@@ -1,10 +1,10 @@
-//! CLI handlers for base ykman commands: `info`, `list`, and `script`.
+//! CLI handlers for base cryptick-manager commands: `info`, `list`, and `script`.
 
 use crate::script::{read_script_lines, substitute_args, tokenize_line};
 use crate::transport::usb::UsbTransport;
 use crate::transport::{DualTransport, TokenTransport};
 
-/// Handles `ykman info [OPTIONS]`.
+/// Handles `cryptick-manager info [OPTIONS]`.
 pub fn run_base_info(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     let mut check = false;
     let mut serial_only = false;
@@ -50,7 +50,7 @@ pub fn run_base_info(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-/// Handles `ykman list [OPTIONS]`.
+/// Handles `cryptick-manager list [OPTIONS]`.
 pub fn run_base_list(args: &[String]) -> Result<(), String> {
     let mut serials_only = false;
     for arg in args {
@@ -97,13 +97,13 @@ pub fn run_base_list(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Handles `ykman script [OPTIONS] FILE [ARGUMENTS]`.
+/// Handles `cryptick-manager script [OPTIONS] FILE [ARGUMENTS]`.
 pub fn run_base_script(
     args: &[String],
     executor: fn(&[String]) -> Result<(), String>,
 ) -> Result<(), String> {
     if args.is_empty() {
-        return Err("Usage: ykman script [OPTIONS] FILE [ARGUMENTS...]".to_string());
+        return Err("Usage: cryptick-manager script [OPTIONS] FILE [ARGUMENTS...]".to_string());
     }
 
     let file_path = &args[0];
@@ -112,9 +112,8 @@ pub fn run_base_script(
     let lines = read_script_lines(file_path)?;
     println!("Executing script '{file_path}' ({} lines)...", lines.len());
 
-    let mut line_no = 0;
-    for raw_line in lines {
-        line_no += 1;
+    for (line_no, raw_line) in lines.into_iter().enumerate() {
+        let line_no = line_no + 1;
         let line = substitute_args(&raw_line, &script_args);
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {

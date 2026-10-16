@@ -1,13 +1,13 @@
-//! CLI subcommand handlers for `ykman piv`.
+//! CLI subcommand handlers for `cryptick-manager piv`.
 //!
 //! Provides complete YubiKey Manager parity for PIV smart card operations:
-//! - `ykman piv info`
-//! - `ykman piv reset`
-//! - `ykman piv access change-pin`
-//! - `ykman piv access change-puk`
-//! - `ykman piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
-//! - `ykman piv certificates export <slot>`
-//! - `ykman piv certificates delete <slot>`
+//! - `cryptick-manager piv info`
+//! - `cryptick-manager piv reset`
+//! - `cryptick-manager piv access change-pin`
+//! - `cryptick-manager piv access change-puk`
+//! - `cryptick-manager piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
+//! - `cryptick-manager piv certificates export <slot>`
+//! - `cryptick-manager piv certificates delete <slot>`
 
 use crate::apdu::{aid, format_hex, CommandApdu, ResponseApdu};
 use crate::transport::TokenTransport;
@@ -41,7 +41,7 @@ fn slot_tag(slot: Slot) -> u32 {
     }
 }
 
-/// Handles all `ykman piv ...` subcommands.
+/// Handles all `cryptick-manager piv ...` subcommands.
 pub fn handle_piv_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -62,14 +62,14 @@ pub fn handle_piv_command(
         "provision" => run_piv_provision(transport, &args[1..]),
         "certificates" => run_piv_certificates(transport, &args[1..]),
         unknown => Err(format!(
-            "Unknown piv subcommand '{unknown}'. Run 'ykman piv --help' for available commands."
+            "Unknown piv subcommand '{unknown}'. Run 'cryptick-manager piv --help' for available commands."
         )),
     }
 }
 
 pub fn print_piv_help() {
     println!(
-        "Usage: ykman piv [COMMAND] [OPTIONS]\n\n\
+        "Usage: cryptick-manager piv [COMMAND] [OPTIONS]\n\n\
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
@@ -157,17 +157,17 @@ fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<
     }
 
     if configured_count == 0 {
-        println!("\nHint: Run 'ykman piv provision --slot 9A' to configure macOS / Linux login.");
+        println!("\nHint: Run 'cryptick-manager piv provision --slot 9A' to configure macOS / Linux login.");
     }
 
     Ok(())
 }
 
-/// Handles `ykman piv access [change-pin|change-puk]`.
+/// Handles `cryptick-manager piv access [change-pin|change-puk]`.
 fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman piv access [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager piv access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                change-pin   Change the 6-8 digit user PIN\n\
                change-puk   Change the 8 digit PIN Unlock Key (PUK)\n"
@@ -240,7 +240,7 @@ fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result
     }
 }
 
-/// Handles `ykman piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
+/// Handles `cryptick-manager piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
 fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     let mut opts = ProvisionOptions {
         slots: vec![Slot::PivAuthentication],
@@ -321,11 +321,11 @@ fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-/// Handles `ykman piv certificates [export|delete]`.
+/// Handles `cryptick-manager piv certificates [export|delete]`.
 fn run_piv_certificates(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman piv certificates [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager piv certificates [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                export   Export a certificate from a slot to a file or stdout\n\
                delete   Delete a certificate stored in a slot\n"
@@ -374,7 +374,7 @@ fn run_piv_certificates(transport: &mut dyn TokenTransport, args: &[String]) -> 
     }
 }
 
-/// Handles `ykman piv reset`.
+/// Handles `cryptick-manager piv reset`.
 fn run_piv_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     let mut force = false;
     for arg in args {

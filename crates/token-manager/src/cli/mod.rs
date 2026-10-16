@@ -1,4 +1,4 @@
-//! Top-level CLI router and dispatcher for `cryptick-ykman` and `ykman`.
+//! Top-level CLI router and dispatcher for `cryptick-manager`.
 
 pub mod apdu_cli;
 pub mod base_cli;
@@ -77,15 +77,14 @@ pub fn dispatch(args: &[String]) -> Result<(), String> {
         "apdu" => apdu_cli::run_apdu_command(transport.active(), sub_args),
         "config" => config_cli::handle_config_command(transport.active(), sub_args),
         unknown => Err(format!(
-            "Unknown command '{unknown}'. Run 'cryptick-manager --help' (or 'ykman --help') for available commands."
+            "Unknown command '{unknown}'. Run 'cryptick-manager --help' for available commands."
         )),
     }
 }
 
 pub fn print_main_help() {
     println!(
-        "Usage: cryptick-manager [OPTIONS] COMMAND [ARGS]...\n\
-         Alias: ykman [OPTIONS] COMMAND [ARGS]...\n\n\
+        "Usage: cryptick-manager [OPTIONS] COMMAND [ARGS]...\n\n\
          Configure and manage Cryptick Token (0x1209:0xBEEE) over USB and Bluetooth Low Energy.\n\n\
          Commands:\n\
            info          Show information about the connected token\n\

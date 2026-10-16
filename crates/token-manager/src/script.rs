@@ -1,6 +1,6 @@
-//! Batch script execution runner for `ykman script`.
+//! Batch script execution runner for `cryptick-manager script`.
 //!
-//! Executes a file containing lines of ykman commands in sequence,
+//! Executes a file containing lines of cryptick-manager commands in sequence,
 //! supporting comments (`#`), whitespace, quotes, and positional parameter substitution.
 
 use std::fs;
@@ -68,7 +68,7 @@ pub fn substitute_args(line: &str, args: &[String]) -> String {
 pub fn read_script_lines(path: &str) -> Result<Vec<String>, String> {
     if path == "-" {
         let stdin = io::stdin();
-        let lines: Vec<String> = stdin.lock().lines().filter_map(|l| l.ok()).collect();
+        let lines: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();
         Ok(lines)
     } else {
         let content = fs::read_to_string(path)

@@ -1,4 +1,4 @@
-//! CLI subcommand handlers for `ykman config`.
+//! CLI subcommand handlers for `cryptick-manager config`.
 
 use crate::config::{
     configure_usb_applications, get_config_status, reset_config, set_lock_code, set_mode,
@@ -7,7 +7,7 @@ use crate::config::{
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
 
-/// Handles `ykman config ...` subcommands.
+/// Handles `cryptick-manager config ...` subcommands.
 pub fn handle_config_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -28,14 +28,14 @@ pub fn handle_config_command(
         "set-lock-code" => run_config_set_lock_code(transport, &args[1..]),
         "usb" => run_config_usb(transport, &args[1..]),
         unknown => Err(format!(
-            "Unknown config subcommand '{unknown}'. Run 'ykman config --help' for usage."
+            "Unknown config subcommand '{unknown}'. Run 'cryptick-manager config --help' for usage."
         )),
     }
 }
 
 pub fn print_config_help() {
     println!(
-        "Usage: ykman config [COMMAND] [OPTIONS]\n\n\
+        "Usage: cryptick-manager config [COMMAND] [OPTIONS]\n\n\
          Configure device connection modes, USB applications, and lock codes.\n\n\
          Commands:\n\
            mode           Configure enabled connection modes (e.g. FIDO+OATH+PIV, CCID, ALL)\n\

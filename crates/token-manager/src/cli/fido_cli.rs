@@ -1,13 +1,13 @@
-//! CLI subcommand handlers for `ykman fido`.
+//! CLI subcommand handlers for `cryptick-manager fido`.
 //!
 //! Provides complete YubiKey Manager parity for FIDO2 and biometric passkey operations:
-//! - `ykman fido info`
-//! - `ykman fido reset`
-//! - `ykman fido access change-pin`
-//! - `ykman fido access set-pin`
-//! - `ykman fido fingerprints list`
-//! - `ykman fido fingerprints add <name>`
-//! - `ykman fido fingerprints delete <name>`
+//! - `cryptick-manager fido info`
+//! - `cryptick-manager fido reset`
+//! - `cryptick-manager fido access change-pin`
+//! - `cryptick-manager fido access set-pin`
+//! - `cryptick-manager fido fingerprints list`
+//! - `cryptick-manager fido fingerprints add <name>`
+//! - `cryptick-manager fido fingerprints delete <name>`
 
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 const FIDO_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Handles all `ykman fido ...` subcommands.
+/// Handles all `cryptick-manager fido ...` subcommands.
 pub fn handle_fido_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -35,14 +35,14 @@ pub fn handle_fido_command(
         "access" => run_fido_access(transport, &args[1..]),
         "fingerprints" | "bio" => run_fido_fingerprints(transport, &args[1..]),
         unknown => Err(format!(
-            "Unknown fido subcommand '{unknown}'. Run 'ykman fido --help' for available commands."
+            "Unknown fido subcommand '{unknown}'. Run 'cryptick-manager fido --help' for available commands."
         )),
     }
 }
 
 pub fn print_fido_help() {
     println!(
-        "Usage: ykman fido [COMMAND] [OPTIONS]\n\n\
+        "Usage: cryptick-manager fido [COMMAND] [OPTIONS]\n\n\
          Manage FIDO2 passkeys, PINs, and on-chip biometric fingerprints on Cryptick Token.\n\n\
          Commands:\n\
            info          Display FIDO2 / WebAuthn capabilities and security policy\n\
@@ -87,11 +87,11 @@ fn run_fido_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result
     Ok(())
 }
 
-/// Handles `ykman fido access [change-pin|set-pin]`.
+/// Handles `cryptick-manager fido access [change-pin|set-pin]`.
 fn run_fido_access(_transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman fido access [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager fido access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                change-pin   Change the FIDO2 user PIN\n\
                set-pin      Set an initial FIDO2 PIN\n"
@@ -129,14 +129,14 @@ fn run_fido_access(_transport: &mut dyn TokenTransport, args: &[String]) -> Resu
     }
 }
 
-/// Handles `ykman fido fingerprints [list|add|delete]`.
+/// Handles `cryptick-manager fido fingerprints [list|add|delete]`.
 fn run_fido_fingerprints(
     _transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), String> {
     if args.is_empty() {
         println!(
-            "Usage: ykman fido fingerprints [COMMAND] [OPTIONS]\n\n\
+            "Usage: cryptick-manager fido fingerprints [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                list       List enrolled fingerprint templates\n\
                add        Enroll a new biometric fingerprint template\n\
@@ -177,7 +177,7 @@ fn run_fido_fingerprints(
     }
 }
 
-/// Handles `ykman fido reset`.
+/// Handles `cryptick-manager fido reset`.
 fn run_fido_reset(_transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     let mut force = false;
     for arg in args {

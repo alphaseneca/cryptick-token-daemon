@@ -1,4 +1,4 @@
-//! CLI handler for raw APDU commands: `ykman apdu`.
+//! CLI handler for raw APDU commands: `cryptick-manager apdu`.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu};
 use crate::transport::TokenTransport;
@@ -18,7 +18,7 @@ pub fn resolve_aid(alias: &str) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Handles `ykman apdu [OPTIONS] [APDU]`.
+/// Handles `cryptick-manager apdu [OPTIONS] [APDU]`.
 pub fn run_apdu_command(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
     let mut applet_aid = None;
     let mut verbose = false;
@@ -29,7 +29,7 @@ pub fn run_apdu_command(transport: &mut dyn TokenTransport, args: &[String]) -> 
         match args[i].as_str() {
             "-h" | "--help" => {
                 println!(
-                    "Usage: ykman apdu [OPTIONS] [APDU]\n\n\
+                    "Usage: cryptick-manager apdu [OPTIONS] [APDU]\n\n\
                      Send raw ISO 7816 APDUs to the token.\n\n\
                      Options:\n\
                        -a, --applet <AID>    Select applet before transmitting (e.g. oath, piv, mgmt, or hex AID)\n\

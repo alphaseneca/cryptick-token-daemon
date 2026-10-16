@@ -365,8 +365,8 @@ function run_login() {
     esac
 }
 
-function find_ykman() {
-    for p in "cryptick-ykman" "$HOME/.local/bin/cryptick-ykman" "$(dirname "$0")/../target/release/cryptick-ykman" "$(dirname "$0")/../target/debug/cryptick-ykman" "ykman"; do
+function find_manager_bin() {
+    for p in "cryptick-manager" "$HOME/.local/bin/cryptick-manager" "$(dirname "$0")/../target/release/cryptick-manager" "$(dirname "$0")/../target/debug/cryptick-manager"; do
         if command -v "$p" &>/dev/null; then
             command -v "$p"
             return 0
@@ -417,65 +417,65 @@ case "${1:-status}" in
         run_logs
         ;;
     oath)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" oath "${@:2}"
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" oath "${@:2}"
         else
-            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
-            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            echo -e "${RED}Error: 'cryptick-manager' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-manager${RESET}" >&2
             exit 1
         fi
         ;;
     accounts)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" oath accounts "${@:2}"
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" oath accounts "${@:2}"
         else
-            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
-            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            echo -e "${RED}Error: 'cryptick-manager' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-manager${RESET}" >&2
             exit 1
         fi
         ;;
     config)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" config "${@:2}"
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" config "${@:2}"
         else
-            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
-            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            echo -e "${RED}Error: 'cryptick-manager' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-manager${RESET}" >&2
             exit 1
         fi
         ;;
     apdu)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" apdu "${@:2}"
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" apdu "${@:2}"
         else
-            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
-            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            echo -e "${RED}Error: 'cryptick-manager' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-manager${RESET}" >&2
             exit 1
         fi
         ;;
-    ykman)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" "${@:2}"
+    manage)
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" "${@:2}"
         else
-            echo -e "${RED}Error: 'cryptick-ykman' not found in PATH or target/release.${RESET}" >&2
-            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-ykman${RESET}" >&2
+            echo -e "${RED}Error: 'cryptick-manager' not found in PATH or target/release.${RESET}" >&2
+            echo -e "Build it with: ${CYAN}cargo build --release -p cryptick-manager${RESET}" >&2
             exit 1
         fi
         ;;
     info)
-        YKMAN_BIN=$(find_ykman || true)
-        if [ -n "$YKMAN_BIN" ]; then
-            "$YKMAN_BIN" info "${@:2}"
+        MANAGER_BIN=$(find_manager_bin || true)
+        if [ -n "$MANAGER_BIN" ]; then
+            "$MANAGER_BIN" info "${@:2}"
         else
             cryptick-daemon info
         fi
         ;;
     *)
-        echo "Usage: cryptick [status | test | fix | pair | devices | login | log | oath | config | apdu | info | ykman]"
+        echo "Usage: cryptick [status | test | fix | pair | devices | login | log | oath | config | apdu | info | manage]"
         exit 1
         ;;
 esac

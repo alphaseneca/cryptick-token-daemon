@@ -105,7 +105,7 @@ pub fn authenticate_session(
         rem_key
     } else {
         return Err(
-            "OATH application is password-protected. Provide the password using '-p, --password <PASS>' or run 'ykman oath access remember'.".to_string(),
+            "OATH application is password-protected. Provide the password using '-p, --password <PASS>' or run 'cryptick-manager oath access remember'.".to_string(),
         );
     };
 
@@ -214,9 +214,10 @@ pub fn calculate_code(
     let counter = now_secs / (period as u64);
     let chal_bytes = counter.to_be_bytes();
 
-    let mut data_tlvs = Vec::new();
-    data_tlvs.push(Tlv::new(tags::TAG_NAME, name.as_bytes().to_vec()));
-    data_tlvs.push(Tlv::new(tags::TAG_CHALLENGE, chal_bytes.to_vec()));
+    let data_tlvs = vec![
+        Tlv::new(tags::TAG_NAME, name.as_bytes().to_vec()),
+        Tlv::new(tags::TAG_CHALLENGE, chal_bytes.to_vec()),
+    ];
     let payload = crate::tlv::encode_tlvs(&data_tlvs);
 
     // INS 0xA2 (Cryptick CALCULATE)
@@ -398,9 +399,10 @@ pub fn rename_account(
     authenticate_session(transport, &applet, password_opt)?;
 
     // Attempt token-side rename instruction (INS 0x0A)
-    let mut tlvs = Vec::new();
-    tlvs.push(Tlv::new(tags::TAG_NAME, old_name.as_bytes().to_vec()));
-    tlvs.push(Tlv::new(tags::TAG_NAME_LIST, new_name.as_bytes().to_vec()));
+    let tlvs = vec![
+        Tlv::new(tags::TAG_NAME, old_name.as_bytes().to_vec()),
+        Tlv::new(tags::TAG_NAME_LIST, new_name.as_bytes().to_vec()),
+    ];
     let payload = crate::tlv::encode_tlvs(&tlvs);
 
     let rename_apdu = CommandApdu::with_data(0x00, 0x0A, 0x00, 0x00, payload);
@@ -413,11 +415,9 @@ pub fn rename_account(
     }
 
     // If hardware does not implement in-place rename, inform the user about the Zero-Trust guarantee
-    Err(format!(
-        "Cryptick Token hardware does not support modifying encrypted seeds in-place without secret seed re-entry.\n\
+    Err("Cryptick Token hardware does not support modifying encrypted seeds in-place without secret seed re-entry.\n\
          Under the Zero-Trust Hardware Guarantee, seeds stored in encrypted LittleFS flash cannot be exported by the host.\n\
-         To rename, re-add the credential with the new name using 'ykman oath accounts add' or import from URI."
-    ))
+         To rename, re-add the credential with the new name using 'cryptick-manager oath accounts add' or import from URI.".to_string())
 }
 
 /// Resets the OATH application, wiping all enrolled accounts and clearing access password.
