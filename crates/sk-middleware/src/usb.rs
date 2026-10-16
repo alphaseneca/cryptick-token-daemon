@@ -74,7 +74,7 @@ impl UsbClient {
             Some(r) => r,
             None => return Err(crate::SSH_SK_ERR_DEVICE_NOT_FOUND),
         };
-        if resp.len() < 19 || resp[4] != 0x86 || &resp[7..15] != &nonce {
+        if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
             return Err(crate::SSH_SK_ERR_GENERAL);
         }
 

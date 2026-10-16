@@ -7,17 +7,96 @@
 
 use ipc::{ClientMessage, DaemonMessage, Envelope, ErrorCode, FrameDecoder, IpcError};
 use std::{
-    io::{ErrorKind, Read, Write},
-    os::unix::net::UnixStream,
+    io::{ErrorKind, Write},
     path::Path,
     time::{Duration, Instant},
 };
 use thiserror::Error;
 
+#[cfg(unix)]
+use std::{io::Read, os::unix::net::UnixStream};
+
+#[cfg(windows)]
+use windows_pipe::PipeStream;
+
 /// How long a single socket read may block before the overall deadline is
 /// rechecked. Keepalives arrive far more often than this while the device is
 /// waiting for a fingerprint, so it only bites when the daemon has gone quiet.
 const READ_SLICE: Duration = Duration::from_millis(500);
+
+/// A blocking client connection to a Windows named pipe.
+///
+/// `std::fs::File` has no read-timeout API, unlike `UnixStream`, so a
+/// background thread owns the actual `ReadFile` calls and hands chunks back
+/// over a channel — `recv_timeout` on that channel is what lets
+/// [`DaemonClient::recv`] honour its deadline even while the pipe is silent.
+/// Identical to the module of the same name in `crates/webauthn-host/src/daemon.rs`
+/// and `crates/token-manager/src/transport/daemon.rs`; this one must stay
+/// free-standing because §10 forbids `sk-middleware` from depending on
+/// anything not already audited for running inside `ssh-sk-helper`.
+#[cfg(windows)]
+mod windows_pipe {
+    use std::fs::{File, OpenOptions};
+    use std::io::{self, Write};
+    use std::path::Path;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    pub struct PipeStream {
+        writer: File,
+        rx: mpsc::Receiver<io::Result<Vec<u8>>>,
+    }
+
+    impl PipeStream {
+        /// Connects to an existing named pipe server instance (see
+        /// `crates/daemon/src/server.rs`'s `windows::IpcListener`).
+        pub fn connect(path: &Path) -> io::Result<Self> {
+            let file = OpenOptions::new().read(true).write(true).open(path)?;
+            let reader = file.try_clone()?;
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut reader = reader;
+                let mut buf = [0u8; 8192];
+                loop {
+                    let result = reader.read(&mut buf).map(|n| buf[..n].to_vec());
+                    let is_eof_or_err =
+                        matches!(&result, Ok(chunk) if chunk.is_empty()) || result.is_err();
+                    if tx.send(result).is_err() || is_eof_or_err {
+                        break;
+                    }
+                }
+            });
+            Ok(Self { writer: file, rx })
+        }
+
+        pub fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+            self.writer.write_all(buf)
+        }
+
+        pub fn flush(&mut self) -> io::Result<()> {
+            self.writer.flush()
+        }
+
+        /// Waits up to `timeout` for the next chunk read from the pipe. An
+        /// empty `Vec` means the peer closed the connection, matching what a
+        /// `0`-byte `read()` means on the Unix path.
+        pub fn read_chunk(&mut self, timeout: Duration) -> io::Result<Vec<u8>> {
+            match self.rx.recv_timeout(timeout) {
+                Ok(Ok(chunk)) => Ok(chunk),
+                Ok(Err(e)) => Err(e),
+                Err(mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "named pipe read timed out",
+                )),
+                Err(mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "named pipe reader thread ended unexpectedly",
+                )),
+            }
+        }
+    }
+}
 
 /// Talking to the daemon failed.
 #[derive(Debug, Error)]
@@ -63,7 +142,10 @@ pub struct DeviceStatus {
 /// A blocking connection to the daemon.
 #[derive(Debug)]
 pub struct DaemonClient {
+    #[cfg(unix)]
     stream: UnixStream,
+    #[cfg(windows)]
+    stream: PipeStream,
     decoder: FrameDecoder,
     next_id: u64,
 }
@@ -75,7 +157,8 @@ impl DaemonClient {
         Self::connect_to(&path, timeout)
     }
 
-    /// Connects to a specific socket path.
+    /// Connects to a specific socket (Unix) or named pipe (Windows) path.
+    #[cfg(unix)]
     pub fn connect_to(path: &Path, timeout: Duration) -> Result<Self, ClientError> {
         let stream = UnixStream::connect(path).map_err(ClientError::NotRunning)?;
         stream
@@ -91,6 +174,38 @@ impl DaemonClient {
         })
     }
 
+    /// Connects over the daemon's Windows named pipe.
+    ///
+    /// **Known caveat, not yet hardware-verified:** the background reader
+    /// thread inside [`PipeStream`] can still be blocked in `ReadFile` when
+    /// this connection (and the FFI call that owns it) finishes, because
+    /// Windows gives no portable way to cancel a blocking read without raw
+    /// `OVERLAPPED` I/O. §10 asks for no background thread to outlive a
+    /// call; this falls short of that in the strict sense, but the thread
+    /// exits as soon as the daemon's next write or the pipe's close arrives,
+    /// and `ssh-sk-helper` itself is a short-lived, per-operation process
+    /// (PROJECT.md §10) that tears the whole thing down moments later either
+    /// way. Replacing this with real overlapped I/O would remove the gap;
+    /// flagged here rather than guessed at because it needs a Windows
+    /// session to verify, which this sandbox does not have.
+    #[cfg(windows)]
+    pub fn connect_to(path: &Path, _timeout: Duration) -> Result<Self, ClientError> {
+        let stream = PipeStream::connect(path).map_err(ClientError::NotRunning)?;
+        Ok(Self {
+            stream,
+            decoder: FrameDecoder::new(),
+            next_id: 1,
+        })
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    pub fn connect_to(_path: &Path, _timeout: Duration) -> Result<Self, ClientError> {
+        Err(ClientError::NotRunning(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "local IPC is not supported on this platform",
+        )))
+    }
+
     fn take_id(&mut self) -> String {
         let id = self.next_id;
         // Per-connection, not process-global: §10 forbids global state, and a
@@ -100,10 +215,19 @@ impl DaemonClient {
         format!("sk-{id}")
     }
 
+    #[cfg(any(unix, windows))]
     fn send(&mut self, id: &str, body: ClientMessage) -> Result<(), ClientError> {
         let frame = ipc::encode(&Envelope::new(id, body))?;
         self.stream.write_all(&frame).map_err(ClientError::Io)?;
         self.stream.flush().map_err(ClientError::Io)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn send(&mut self, _id: &str, _body: ClientMessage) -> Result<(), ClientError> {
+        Err(ClientError::NotRunning(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "local IPC is not supported on this platform",
+        )))
     }
 
     /// Reads replies until one matching `id` arrives, or the deadline passes.
@@ -113,6 +237,7 @@ impl DaemonClient {
     /// has already printed its own "you may need to touch your authenticator"
     /// prompt, and §10 forbids writing anything to stdout or stderr from here.
     /// They deliberately do **not** extend the deadline.
+    #[cfg(unix)]
     fn recv(&mut self, id: &str, deadline: Instant) -> Result<DaemonMessage, ClientError> {
         let mut buf = [0u8; 8192];
         loop {
@@ -146,6 +271,51 @@ impl DaemonClient {
                 Err(e) => return Err(ClientError::Io(e)),
             }
         }
+    }
+
+    /// Same contract as the Unix `recv`, but reads come from
+    /// `PipeStream::read_chunk`'s background-thread channel instead of a
+    /// socket with its own read timeout (PROJECT.md §13).
+    #[cfg(windows)]
+    fn recv(&mut self, id: &str, deadline: Instant) -> Result<DaemonMessage, ClientError> {
+        loop {
+            while let Some(frame) = self.decoder.next_frame()? {
+                let envelope = ipc::decode_daemon(&frame)?;
+                if envelope.id != id {
+                    continue;
+                }
+                match envelope.body {
+                    DaemonMessage::CtapKeepalive { .. } => continue,
+                    body => return Ok(body),
+                }
+            }
+
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(ClientError::Timeout);
+            }
+            let slice = (deadline - now).min(READ_SLICE);
+
+            match self.stream.read_chunk(slice) {
+                Ok(chunk) if chunk.is_empty() => {
+                    return Err(ClientError::Io(std::io::Error::new(
+                        ErrorKind::UnexpectedEof,
+                        "the daemon closed the connection",
+                    )))
+                }
+                Ok(chunk) => self.decoder.push(&chunk),
+                Err(e) if e.kind() == ErrorKind::TimedOut => {}
+                Err(e) => return Err(ClientError::Io(e)),
+            }
+        }
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn recv(&mut self, _id: &str, _deadline: Instant) -> Result<DaemonMessage, ClientError> {
+        Err(ClientError::NotRunning(std::io::Error::new(
+            ErrorKind::Unsupported,
+            "local IPC is not supported on this platform",
+        )))
     }
 
     /// Asks whether the token is reachable.

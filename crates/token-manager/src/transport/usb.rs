@@ -132,7 +132,7 @@ impl UsbTransport {
             None => return Err("Timeout waiting for CTAPHID_INIT response from USB token".into()),
         };
 
-        if resp.len() < 19 || resp[4] != 0x86 || &resp[7..15] != &nonce {
+        if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
             return Err("Invalid CTAPHID_INIT response from token".into());
         }
 
@@ -236,7 +236,15 @@ impl TokenTransport for UsbTransport {
                 ));
             }
 
-            if total_len.is_none() {
+            if let Some(total) = total_len {
+                // Continuation packet (high bit clear)
+                if rcmd & 0x80 != 0 {
+                    continue;
+                }
+                let needed = total.saturating_sub(out.len());
+                let chunk_len = needed.min(PACKET_SIZE - 5);
+                out.extend_from_slice(&raw[5..5 + chunk_len]);
+            } else {
                 // Must be an initialization packet (high bit set) matching command opcode
                 if (rcmd & 0x80 == 0) || (opcode != (cmd & 0x7F)) {
                     continue;
@@ -245,14 +253,6 @@ impl TokenTransport for UsbTransport {
                 total_len = Some(len);
                 let chunk_len = len.min(PACKET_SIZE - 7);
                 out.extend_from_slice(&raw[7..7 + chunk_len]);
-            } else {
-                // Continuation packet (high bit clear)
-                if rcmd & 0x80 != 0 {
-                    continue;
-                }
-                let needed = total_len.unwrap().saturating_sub(out.len());
-                let chunk_len = needed.min(PACKET_SIZE - 5);
-                out.extend_from_slice(&raw[5..5 + chunk_len]);
             }
 
             if let Some(total) = total_len {

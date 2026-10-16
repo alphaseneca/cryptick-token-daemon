@@ -70,7 +70,7 @@ impl UsbClient {
             Some(r) => r,
             None => return Err("Timeout waiting for CTAPHID_INIT".into()),
         };
-        if resp.len() < 19 || resp[4] != 0x86 || &resp[7..15] != &nonce {
+        if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
             return Err("Invalid CTAPHID_INIT response".into());
         }
 
@@ -166,7 +166,14 @@ impl UsbClient {
                 return Err(format!("Device reported CTAPHID error {:#04x}", err));
             }
 
-            if total_len.is_none() {
+            if let Some(total) = total_len {
+                if rcmd & 0x80 != 0 {
+                    continue;
+                }
+                let needed = total.saturating_sub(out.len());
+                let chunk_len = needed.min(PACKET_SIZE - 5);
+                out.extend_from_slice(&raw[5..5 + chunk_len]);
+            } else {
                 if opcode != (cmd & 0x7F) {
                     continue;
                 }
@@ -174,13 +181,6 @@ impl UsbClient {
                 total_len = Some(len);
                 let chunk_len = len.min(PACKET_SIZE - 7);
                 out.extend_from_slice(&raw[7..7 + chunk_len]);
-            } else {
-                if rcmd & 0x80 != 0 {
-                    continue;
-                }
-                let needed = total_len.unwrap().saturating_sub(out.len());
-                let chunk_len = needed.min(PACKET_SIZE - 5);
-                out.extend_from_slice(&raw[5..5 + chunk_len]);
             }
 
             if let Some(total) = total_len {
