@@ -70,11 +70,11 @@ async fn a_request_round_trips_over_a_real_socket() {
         Reply::Ctap(expected.clone()),
     )));
 
+    let devices = Arc::new(Mutex::new(DeviceStore::in_memory()));
     tokio::spawn(async move {
         // Our own uid, so the credential check must let this through.
         let stream = listener.accept().await.expect("accept").expect("own uid");
-        let devices = Arc::new(Mutex::new(DeviceStore::in_memory()));
-        serve_connection(stream, bridge, devices).await;
+        serve_connection(stream, bridge, devices, None).await;
     });
 
     let mut client = tokio::net::UnixStream::connect(&path)

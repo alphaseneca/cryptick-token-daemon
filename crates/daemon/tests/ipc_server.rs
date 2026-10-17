@@ -67,7 +67,7 @@ fn start_with_devices(device: FakeDevice, devices: DeviceStore) -> Client {
     let (server_side, client_side) = tokio::io::duplex(64 * 1024);
     let bridge = Arc::new(Bridge::new(device));
     let devices = Arc::new(Mutex::new(devices));
-    tokio::spawn(serve_connection(server_side, bridge, devices));
+    tokio::spawn(serve_connection(server_side, bridge, devices, None));
     Client {
         stream: client_side,
         decoder: FrameDecoder::new(),

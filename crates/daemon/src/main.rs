@@ -40,7 +40,11 @@ mod fake_main {
             },
         );
         let bridge = Arc::new(Bridge::new(device));
-        let devices = Arc::new(Mutex::new(DeviceStore::load()));
+        // The fake transport has no notion of "which physical device" — no
+        // live-retarget capability, so `devices.select` is bookkeeping only
+        // here (`retarget: None`), same as any transport that hasn't
+        // implemented `LiveRetarget`.
+        let devices = Arc::new(Mutex::new(DeviceStore::in_memory()));
         let listener = IpcListener::bind(&socket)?;
         eprintln!("listening on {}", listener.path().display());
         eprintln!("fake device, no radio — PROJECT.md §14 L2");
@@ -52,6 +56,7 @@ mod fake_main {
                         stream,
                         Arc::clone(&bridge),
                         Arc::clone(&devices),
+                        None,
                     ));
                 }
                 Ok(None) => eprintln!("refused a connection from another user"),
@@ -825,7 +830,7 @@ mod live_main {
     use daemon::{
         devices::DeviceStore,
         server::{serve_connection, unix::IpcListener},
-        Bridge, ReconnectingBleTransport,
+        Bridge, LiveRetarget, ReconnectingBleTransport,
     };
     use std::sync::{Arc, Mutex};
 
@@ -836,9 +841,17 @@ mod live_main {
         eprintln!("Starting auto-reconnecting BLE transport (monitoring Cryptick Token)...");
         let (transport, _reconnect_handle) = ReconnectingBleTransport::spawn(None, None).await;
 
-        let mut device_store = DeviceStore::load();
-        device_store.seed_from_paired_target(transport.target_device());
-        let devices = Arc::new(Mutex::new(device_store));
+        // Seed the known-devices store from whatever single BLE target was
+        // already persisted (`transport::paired_device_path()`), so a device
+        // paired before this store existed still shows up in `devices.list`.
+        let mut store = DeviceStore::load();
+        store.seed_from_paired_target(transport.target_device().as_deref());
+        let devices = Arc::new(Mutex::new(store));
+
+        // `ReconnectingBleTransport` is the one transport that implements
+        // `LiveRetarget` today — `devices.select` against this daemon
+        // actually hot-retargets the live connection, not just bookkeeping.
+        let retarget: Arc<dyn LiveRetarget> = Arc::new(transport.clone());
 
         let bridge = Arc::new(Bridge::new(transport));
 
@@ -849,6 +862,7 @@ mod live_main {
                         stream,
                         Arc::clone(&bridge),
                         Arc::clone(&devices),
+                        Some(Arc::clone(&retarget)),
                     ));
                 }
                 Ok(None) => {}

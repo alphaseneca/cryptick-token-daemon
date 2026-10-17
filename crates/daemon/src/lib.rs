@@ -32,5 +32,8 @@ pub use error::DaemonError;
 pub use hid::{HidBridge, PacketSink};
 pub use login::{check_login_status, print_login_status, run_login_setup, LoginStatusReport};
 pub use session::{KeepaliveSink, Session};
-pub use transport::{FragmentTransport, LinkState, ReconnectingBleTransport, TransportError};
+pub use transport::{
+    FragmentTransport, LinkState, LiveRetarget, ReconnectingBleTransport, RetargetError,
+    TransportError,
+};
 pub use vpcd_relay::{run_vpcd_relay, PivCardTransport, RelayError, VpcdRelay};

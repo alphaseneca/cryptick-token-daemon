@@ -14,7 +14,7 @@ use crate::{
     cancel::{cancel_pair, CancelHandle},
     devices::DeviceStore,
     error::DaemonError,
-    transport::FragmentTransport,
+    transport::{FragmentTransport, LiveRetarget},
 };
 use ipc::{ClientMessage, DaemonMessage, DeviceInfo, Envelope, ErrorCode, IpcError};
 use std::{
@@ -65,10 +65,17 @@ fn send_error(out: &Outbox, id: &str, code: ErrorCode, message: &str) {
 type InFlight = Arc<Mutex<Option<(String, CancelHandle)>>>;
 
 /// Serves one client connection until it closes or misbehaves.
+///
+/// `retarget` is `None` for a transport with no [`LiveRetarget`]
+/// implementation (the `fake-transport` build, or any future transport that
+/// hasn't implemented it yet) — `devices.select` still updates `devices`
+/// immediately in that case, but has no live effect until the next
+/// reconnect or restart, exactly as before hot-retargeting existed.
 pub async fn serve_connection<S, T>(
     stream: S,
     bridge: Arc<Bridge<T>>,
     devices: Arc<Mutex<DeviceStore>>,
+    retarget: Option<Arc<dyn LiveRetarget>>,
 ) where
     S: AsyncRead + AsyncWrite + Send + 'static,
     T: FragmentTransport + Clone + Send + Sync + 'static,
@@ -98,7 +105,7 @@ pub async fn serve_connection<S, T>(
         loop {
             match decoder.next_frame() {
                 Ok(Some(frame)) => {
-                    handle_frame(&frame, &out, &bridge, &in_flight, &devices);
+                    handle_frame(&frame, &out, &bridge, &in_flight, &devices, &retarget);
                 }
                 Ok(None) => break,
                 Err(err) => {
@@ -125,6 +132,7 @@ fn handle_frame<T>(
     bridge: &Arc<Bridge<T>>,
     in_flight: &InFlight,
     devices: &Arc<Mutex<DeviceStore>>,
+    retarget: &Option<Arc<dyn LiveRetarget>>,
 ) where
     T: FragmentTransport + Clone + Send + Sync + 'static,
 {
@@ -164,12 +172,12 @@ fn handle_frame<T>(
         }
 
         ClientMessage::ListDevices => {
-            // Bookkeeping, not a CTAP transaction (crate::devices's module
-            // doc) — answered straight from the store, never queued behind
-            // `in_flight`. Piggybacks a `last_seen` bump onto this read: if
-            // the link is connected right now and the store already has an
-            // active entry, that is real evidence the active device is
-            // still reachable, not merely assumed.
+            // Bookkeeping, not a CTAP transaction — answered straight from
+            // the store, never queued behind `in_flight`. Piggybacks a real
+            // `last_seen` bump onto this read: if the link is connected
+            // right now and the store already has an active entry, that is
+            // real evidence the active device is still reachable, not
+            // merely assumed.
             let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
             if bridge.link().connected {
                 if let Some(active_id) = store.active_id().map(str::to_string) {
@@ -194,16 +202,18 @@ fn handle_frame<T>(
         }
 
         ClientMessage::SelectDevice { id: device_id } => {
-            let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
-            match store.set_active(&device_id) {
-                Ok(()) => send(out, &Envelope::new(id, DaemonMessage::Ack)),
-                Err(_) => send_error(
-                    out,
-                    &id,
-                    ErrorCode::BadRequest,
-                    &format!("no known device with id {device_id:?}"),
-                ),
-            }
+            // May need a bounded BLE scan (when a live-retarget capability
+            // exists), so this runs off the read loop exactly like
+            // `CtapRequest` does, rather than blocking this connection from
+            // handling anything else meanwhile.
+            tokio::spawn(run_retarget(
+                Arc::clone(devices),
+                retarget.clone(),
+                Arc::clone(bridge),
+                out.clone(),
+                id,
+                device_id,
+            ));
         }
 
         ClientMessage::CtapCancel => {
@@ -314,6 +324,91 @@ async fn run_transaction<T>(
     let mut slot = in_flight.lock().unwrap_or_else(|e| e.into_inner());
     if slot.as_ref().is_some_and(|(slot_id, _)| slot_id == &id) {
         *slot = None;
+    }
+}
+
+/// Handles one `devices.select` request: validates the id, hot-retargets
+/// the live transport when one is available, and only then commits the
+/// bookkeeping change.
+///
+/// The ordering matters. If a live-retarget capability exists and the
+/// attempt fails, `devices` is left exactly as it was — PROJECT.md §15.8
+/// ("fail closed") read against this bookkeeping means `active_id` and the
+/// live connection must never be allowed to disagree about which device is
+/// actually in use. When there is no live-retarget capability at all (the
+/// `fake-transport` build, or a future transport that hasn't implemented
+/// it), there is nothing to verify reachability against, so the bookkeeping
+/// commits immediately and takes effect on the next reconnect or restart —
+/// the pre-existing behaviour, unchanged.
+async fn run_retarget<T>(
+    devices: Arc<Mutex<DeviceStore>>,
+    retarget: Option<Arc<dyn LiveRetarget>>,
+    bridge: Arc<Bridge<T>>,
+    out: Outbox,
+    id: String,
+    device_id: String,
+) where
+    T: FragmentTransport + Clone + Send + Sync + 'static,
+{
+    {
+        let store = devices.lock().unwrap_or_else(|e| e.into_inner());
+        if !store.is_known(&device_id) {
+            send_error(
+                &out,
+                &id,
+                ErrorCode::BadRequest,
+                &format!("no known device with id {device_id:?}"),
+            );
+            return;
+        }
+    }
+
+    let Some(retarget) = retarget else {
+        // No live-retarget capability on this transport — bookkeeping only,
+        // takes effect on the next reconnect/restart.
+        let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
+        match store.set_active(&device_id) {
+            Ok(()) => send(&out, &Envelope::new(id, DaemonMessage::Ack)),
+            Err(err) => send_error(&out, &id, ErrorCode::BadRequest, &err.to_string()),
+        }
+        return;
+    };
+
+    // `Bridge` rejects rather than queues a second transaction (its own doc
+    // comment); retargeting under an in-flight CTAP transaction is refused
+    // the same way rather than racing the swap against it. This is a
+    // best-effort check, not a lock held for the whole retarget attempt —
+    // real hardware with a transaction landing in that window is one of the
+    // things NOTES.md flags as unverified here.
+    if bridge.is_busy() {
+        send_error(
+            &out,
+            &id,
+            ErrorCode::Busy,
+            "a transaction is in flight; retry once it finishes",
+        );
+        return;
+    }
+
+    match retarget.retarget(&device_id).await {
+        Ok(()) => {
+            let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
+            // The id was already confirmed known above, and nothing else
+            // mutates `devices` between then and now on this task — but
+            // `set_active` is cheap and its own fail-closed check is the
+            // authoritative one, so re-running it costs nothing.
+            match store.set_active(&device_id) {
+                Ok(()) => send(&out, &Envelope::new(id, DaemonMessage::Ack)),
+                Err(err) => send_error(&out, &id, ErrorCode::BadRequest, &err.to_string()),
+            }
+        }
+        Err(err) => {
+            // The live connection was left untouched by `retarget` on
+            // failure (see `LiveRetarget`'s contract) — do not update
+            // `active_id` either, so bookkeeping and the live connection
+            // never disagree about which device is actually in use.
+            send_error(&out, &id, ErrorCode::NotConnected, &err.to_string());
+        }
     }
 }
 

@@ -241,6 +241,11 @@ impl DeviceStore {
         out
     }
 
+    /// Whether `id` is a device this store has recorded.
+    pub fn is_known(&self, id: &str) -> bool {
+        self.file.devices.iter().any(|d| d.id == id)
+    }
+
     /// The id `select_device` last chose, if any.
     pub fn active_id(&self) -> Option<&str> {
         self.file.active_id.as_deref()
@@ -251,7 +256,7 @@ impl DeviceStore {
     /// typo or a stale id from the extension's own cache must not silently
     /// become "no device selected" or "whatever was active before."
     pub fn set_active(&mut self, id: &str) -> Result<(), UnknownDeviceError> {
-        if !self.file.devices.iter().any(|d| d.id == id) {
+        if !self.is_known(id) {
             return Err(UnknownDeviceError(id.to_string()));
         }
         self.file.active_id = Some(id.to_string());
@@ -267,7 +272,7 @@ impl DeviceStore {
     /// is already stored.
     pub fn seed_from_paired_target(&mut self, target: Option<&str>) {
         let Some(address) = target else { return };
-        if !self.file.devices.iter().any(|d| d.id == address) {
+        if !self.is_known(address) {
             self.record_seen(address, None, "ble");
         } else if self.file.active_id.is_none() {
             self.file.active_id = Some(address.to_string());
@@ -393,5 +398,14 @@ mod tests {
         store.record_seen("addr", Some("A Nice Name"), "ble");
         store.seed_from_paired_target(Some("addr"));
         assert_eq!(store.list()[0].name, "A Nice Name");
+    }
+
+    #[test]
+    fn is_known_reflects_what_has_been_recorded() {
+        let mut store = DeviceStore::load_from(temp_path("is-known"));
+        assert!(!store.is_known("x"));
+        store.record_seen("x", None, "ble");
+        assert!(store.is_known("x"));
+        assert!(!store.is_known("y"));
     }
 }
