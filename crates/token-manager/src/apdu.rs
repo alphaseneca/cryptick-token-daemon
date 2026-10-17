@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use crate::error::ManagerError;
+
 /// Well-known Application Identifiers (AIDs).
 pub mod aid {
     /// Cryptick OATH Applet AID: `A0 00 00 05 27 21 01`
@@ -224,9 +226,11 @@ impl CommandApdu {
     }
 
     /// Parses raw bytes into a Command APDU.
-    pub fn parse(bytes: &[u8]) -> Result<Self, String> {
+    pub fn parse(bytes: &[u8]) -> Result<Self, ManagerError> {
         if bytes.len() < 4 {
-            return Err("APDU must be at least 4 bytes (CLA, INS, P1, P2)".to_string());
+            return Err(ManagerError::InvalidInput(
+                "APDU must be at least 4 bytes (CLA, INS, P1, P2)".to_string(),
+            ));
         }
 
         let cla = bytes[0];
@@ -246,11 +250,11 @@ impl CommandApdu {
         }
 
         if bytes.len() < 5 + lc {
-            return Err(format!(
+            return Err(ManagerError::InvalidInput(format!(
                 "APDU truncated: expected {} data bytes, got {}",
                 lc,
                 bytes.len() - 5
-            ));
+            )));
         }
 
         let data = bytes[5..5 + lc].to_vec();
@@ -281,9 +285,11 @@ impl ResponseApdu {
     }
 
     /// Parses a raw response byte buffer. The last two bytes are always SW1 and SW2.
-    pub fn parse(raw: &[u8]) -> Result<Self, String> {
+    pub fn parse(raw: &[u8]) -> Result<Self, ManagerError> {
         if raw.len() < 2 {
-            return Err("Response APDU must be at least 2 bytes (SW1, SW2)".to_string());
+            return Err(ManagerError::InvalidInput(
+                "Response APDU must be at least 2 bytes (SW1, SW2)".to_string(),
+            ));
         }
 
         let sw_bytes = [raw[raw.len() - 2], raw[raw.len() - 1]];
@@ -299,17 +305,17 @@ impl ResponseApdu {
     }
 
     /// Checks success and returns an error with description if non-zero.
-    pub fn check_success(&self) -> Result<&[u8], String> {
+    pub fn check_success(&self) -> Result<&[u8], ManagerError> {
         if self.sw.is_success() {
             Ok(&self.data)
         } else {
-            Err(format!("Device returned error {}", self.sw))
+            Err(ManagerError::DeviceStatus(self.sw))
         }
     }
 }
 
 /// Parses a hex string into a byte vector, ignoring spaces, colons, and prefixes like `0x`.
-pub fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+pub fn parse_hex(s: &str) -> Result<Vec<u8>, ManagerError> {
     let clean: String = s
         .chars()
         .filter(|c| !c.is_whitespace() && *c != ':' && *c != '-')
@@ -318,10 +324,10 @@ pub fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
     let clean = clean.trim_start_matches("0x").trim_start_matches("0X");
 
     if !clean.len().is_multiple_of(2) {
-        return Err(format!(
+        return Err(ManagerError::InvalidInput(format!(
             "Hex string has odd length ({} digits)",
             clean.len()
-        ));
+        )));
     }
 
     let mut out = Vec::with_capacity(clean.len() / 2);

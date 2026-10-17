@@ -5,6 +5,7 @@
 
 use crate::access::{derive_access_key, get_remembered_key, hmac_sha1, remember_key};
 use crate::apdu::{aid, CommandApdu, ResponseApdu, StatusWord};
+use crate::error::ManagerError;
 use crate::otpauth::{HashAlgorithm, OathType};
 use crate::tlv::{tags, Tlv};
 use crate::transport::TokenTransport;
@@ -55,7 +56,7 @@ pub struct CalculatedCode {
 }
 
 /// Selects the OATH applet on the token.
-pub fn select_oath(transport: &mut dyn TokenTransport) -> Result<OathAppletInfo, String> {
+pub fn select_oath(transport: &mut dyn TokenTransport) -> Result<OathAppletInfo, ManagerError> {
     let select_apdu = CommandApdu::select_applet(aid::OATH);
     let resp_bytes = transport.transceive(0x63, &select_apdu.to_bytes(), OATH_TIMEOUT)?;
     let resp = ResponseApdu::parse(&resp_bytes)?;
@@ -93,7 +94,7 @@ pub fn authenticate_session(
     transport: &mut dyn TokenTransport,
     applet_info: &OathAppletInfo,
     password_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let challenge = match &applet_info.challenge {
         Some(chal) if !chal.is_empty() => chal,
         _ => return Ok(()), // No password required
@@ -104,9 +105,9 @@ pub fn authenticate_session(
     } else if let Some(rem_key) = get_remembered_key(&applet_info.device_id) {
         rem_key
     } else {
-        return Err(
+        return Err(ManagerError::InvalidInput(
             "OATH application is password-protected. Provide the password using '-p, --password <PASS>' or run 'cryptick-manager oath access remember'.".to_string(),
-        );
+        ));
     };
 
     let resp_hash = hmac_sha1(&key, challenge);
@@ -130,9 +131,11 @@ pub fn authenticate_session(
         if resp.sw == StatusWord::SECURITY_STATUS_NOT_SATISFIED
             || resp.sw == StatusWord::DATA_INVALID
         {
-            return Err("Authentication failed: incorrect OATH access password.".to_string());
+            return Err(ManagerError::Other(
+                "Authentication failed: incorrect OATH access password.".to_string(),
+            ));
         }
-        return Err(format!("OATH VALIDATE returned error {}", resp.sw));
+        return Err(ManagerError::DeviceStatus(resp.sw));
     }
 
     Ok(())
@@ -142,7 +145,7 @@ pub fn authenticate_session(
 pub fn list_accounts(
     transport: &mut dyn TokenTransport,
     password_opt: Option<&str>,
-) -> Result<Vec<OathAccountSummary>, String> {
+) -> Result<Vec<OathAccountSummary>, ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, password_opt)?;
 
@@ -200,7 +203,7 @@ pub fn calculate_code(
     timestamp: Option<u64>,
     period: u32,
     password_opt: Option<&str>,
-) -> Result<CalculatedCode, String> {
+) -> Result<CalculatedCode, ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, password_opt)?;
 
@@ -233,13 +236,19 @@ pub fn calculate_code(
     }
 
     if resp.sw == StatusWord::CONDITIONS_NOT_SATISFIED {
-        return Err("User verification timed out or was cancelled (touch sensor).".to_string());
+        return Err(ManagerError::Other(
+            "User verification timed out or was cancelled (touch sensor).".to_string(),
+        ));
     }
     if resp.sw == StatusWord::SECURITY_STATUS_NOT_SATISFIED {
-        return Err("Touch sensor interaction required to approve calculation.".to_string());
+        return Err(ManagerError::Other(
+            "Touch sensor interaction required to approve calculation.".to_string(),
+        ));
     }
     if resp.sw == StatusWord::NOT_FOUND || resp.sw == StatusWord::REFERENCED_DATA_NOT_FOUND {
-        return Err(format!("Account '{name}' not found on token."));
+        return Err(ManagerError::NotFound(format!(
+            "Account '{name}' not found on token."
+        )));
     }
 
     resp.check_success()?;
@@ -315,7 +324,7 @@ pub fn put_account(
     transport: &mut dyn TokenTransport,
     opts: AddAccountOptions,
     password_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, password_opt)?;
 
@@ -349,7 +358,9 @@ pub fn put_account(
     let resp = ResponseApdu::parse(&resp_bytes)?;
 
     if resp.sw == StatusWord::MEMORY_FULL {
-        return Err("Cannot add account: token flash storage is full.".to_string());
+        return Err(ManagerError::Other(
+            "Cannot add account: token flash storage is full.".to_string(),
+        ));
     }
     resp.check_success()?;
 
@@ -361,7 +372,7 @@ pub fn delete_account(
     transport: &mut dyn TokenTransport,
     name: &str,
     password_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, password_opt)?;
 
@@ -381,7 +392,9 @@ pub fn delete_account(
     }
 
     if resp.sw == StatusWord::NOT_FOUND || resp.sw == StatusWord::REFERENCED_DATA_NOT_FOUND {
-        return Err(format!("Account '{name}' not found on token."));
+        return Err(ManagerError::NotFound(format!(
+            "Account '{name}' not found on token."
+        )));
     }
 
     resp.check_success()?;
@@ -394,7 +407,7 @@ pub fn rename_account(
     old_name: &str,
     new_name: &str,
     password_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, password_opt)?;
 
@@ -415,13 +428,15 @@ pub fn rename_account(
     }
 
     // If hardware does not implement in-place rename, inform the user about the Zero-Trust guarantee
-    Err("Cryptick Token hardware does not support modifying encrypted seeds in-place without secret seed re-entry.\n\
+    Err(ManagerError::Other(
+        "Cryptick Token hardware does not support modifying encrypted seeds in-place without secret seed re-entry.\n\
          Under the Zero-Trust Hardware Guarantee, seeds stored in encrypted LittleFS flash cannot be exported by the host.\n\
-         To rename, re-add the credential with the new name using 'cryptick-manager oath accounts add' or import from URI.".to_string())
+         To rename, re-add the credential with the new name using 'cryptick-manager oath accounts add' or import from URI.".to_string(),
+    ))
 }
 
 /// Resets the OATH application, wiping all enrolled accounts and clearing access password.
-pub fn reset_oath(transport: &mut dyn TokenTransport) -> Result<(), String> {
+pub fn reset_oath(transport: &mut dyn TokenTransport) -> Result<(), ManagerError> {
     let _ = select_oath(transport)?;
 
     // INS 0x04 = RESET
@@ -442,7 +457,7 @@ pub fn set_access_password(
     current_pwd_opt: Option<&str>,
     new_pwd_opt: Option<&str>,
     remember: bool,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let applet = select_oath(transport)?;
     authenticate_session(transport, &applet, current_pwd_opt)?;
 
@@ -450,9 +465,9 @@ pub fn set_access_password(
 
     if let Some(new_pwd) = new_pwd_opt {
         if new_pwd.is_empty() {
-            return Err(
+            return Err(ManagerError::InvalidInput(
                 "New password cannot be empty (use '--clear' to remove password)".to_string(),
-            );
+            ));
         }
         let derived_key = derive_access_key(new_pwd, &applet.device_id);
         // TAG_KEY (0x73): 16-byte derived key

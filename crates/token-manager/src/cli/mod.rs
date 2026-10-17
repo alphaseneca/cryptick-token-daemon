@@ -8,10 +8,11 @@ pub mod fido_cli;
 pub mod oath_cli;
 pub mod piv_cli;
 
+use crate::error::ManagerError;
 use crate::transport::DualTransport;
 
 /// Dispatches raw argument lists to subcommands.
-pub fn dispatch(args: &[String]) -> Result<(), String> {
+pub fn dispatch(args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         print_main_help();
         return Ok(());
@@ -84,12 +85,13 @@ pub fn dispatch(args: &[String]) -> Result<(), String> {
         "info" => base_cli::run_base_info(transport.active(), sub_args),
         "apdu" => apdu_cli::run_apdu_command(transport.active(), sub_args),
         "config" => config_cli::handle_config_command(transport.active(), sub_args),
-        unknown => Err(format!(
+        unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown command '{unknown}'. Run 'cryptick-manager --help' for available commands."
-        )),
+        ))),
     }
 }
 
+/// Prints the top-level `cryptick-manager --help` usage text.
 pub fn print_main_help() {
     println!(
         "Usage: cryptick-manager [OPTIONS] COMMAND [ARGS]...\n\n\

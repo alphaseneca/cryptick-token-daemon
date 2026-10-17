@@ -1,6 +1,7 @@
 //! CLI handler for raw APDU commands: `cryptick-manager apdu`.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu};
+use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
@@ -8,7 +9,7 @@ use std::time::{Duration, Instant};
 const APDU_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Resolves an applet alias (e.g. "oath", "piv", "mgmt") or parses an AID hex string.
-pub fn resolve_aid(alias: &str) -> Result<Vec<u8>, String> {
+pub fn resolve_aid(alias: &str) -> Result<Vec<u8>, ManagerError> {
     match alias.to_ascii_lowercase().as_str() {
         "oath" | "totp" => Ok(aid::OATH.to_vec()),
         "piv" | "ccid" => Ok(aid::PIV.to_vec()),
@@ -19,7 +20,10 @@ pub fn resolve_aid(alias: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Handles `cryptick-manager apdu [OPTIONS] [APDU]`.
-pub fn run_apdu_command(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+pub fn run_apdu_command(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut applet_aid = None;
     let mut verbose = false;
     let mut apdu_parts = Vec::new();
@@ -49,7 +53,7 @@ pub fn run_apdu_command(transport: &mut dyn TokenTransport, args: &[String]) -> 
             part if !part.starts_with('-') => {
                 apdu_parts.push(part.to_string());
             }
-            other => return Err(format!("Unknown option '{other}'")),
+            other => return Err(ManagerError::InvalidInput(format!("Unknown option '{other}'"))),
         }
         i += 1;
     }
@@ -109,10 +113,12 @@ fn execute_single_apdu(
     transport: &mut dyn TokenTransport,
     apdu_hex: &str,
     verbose: bool,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let raw_bytes = parse_hex(apdu_hex)?;
     if raw_bytes.len() < 4 {
-        return Err("APDU must be at least 4 bytes (CLA, INS, P1, P2)".to_string());
+        return Err(ManagerError::InvalidInput(
+            "APDU must be at least 4 bytes (CLA, INS, P1, P2)".to_string(),
+        ));
     }
 
     if verbose {

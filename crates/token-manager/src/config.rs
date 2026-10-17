@@ -4,6 +4,7 @@
 //! adhering to the Hardware Token Management and Cryptick hardware specifications.
 
 use crate::apdu::{aid, CommandApdu, ResponseApdu};
+use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use std::time::Duration;
 
@@ -26,7 +27,7 @@ pub enum DeviceMode {
 
 impl DeviceMode {
     /// Parses a mode string (e.g. "FIDO+OATH+PIV", "CCID", "ALL", "OTP").
-    pub fn parse(s: &str) -> Result<Self, String> {
+    pub fn parse(s: &str) -> Result<Self, ManagerError> {
         let upper = s.to_ascii_uppercase().replace(' ', "");
         match upper.as_str() {
             "FIDO" | "U2F" | "FIDO2" => Ok(Self::Fido),
@@ -34,9 +35,9 @@ impl DeviceMode {
             "OTP" => Ok(Self::Otp),
             "FIDO+CCID" | "CCID+FIDO" => Ok(Self::FidoCcid),
             "ALL" | "FIDO+OATH+PIV" | "FIDO+PIV+OATH" | "FIDO2+OATH+PIV" => Ok(Self::All),
-            _ => Err(format!(
+            _ => Err(ManagerError::InvalidInput(format!(
                 "Invalid mode '{s}'. Supported modes: FIDO, CCID, OTP, FIDO+CCID, ALL (or FIDO+OATH+PIV)"
-            )),
+            ))),
         }
     }
 }
@@ -75,7 +76,7 @@ impl Default for ConfigStatus {
 }
 
 /// Reads device configuration status.
-pub fn get_config_status(transport: &mut dyn TokenTransport) -> Result<ConfigStatus, String> {
+pub fn get_config_status(transport: &mut dyn TokenTransport) -> Result<ConfigStatus, ManagerError> {
     // Attempt to select Cryptick Management Applet
     let select_mgmt = CommandApdu::select_applet(aid::MANAGEMENT);
     if let Ok(resp_bytes) = transport.transceive(0x03, &select_mgmt.to_bytes(), CONFIG_TIMEOUT) {
@@ -96,7 +97,7 @@ pub fn set_mode(
     transport: &mut dyn TokenTransport,
     mode: DeviceMode,
     lock_code_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let _status = get_config_status(transport)?;
 
     let mode_byte = match mode {
@@ -128,7 +129,7 @@ pub fn configure_usb_applications(
     enable: &[String],
     disable: &[String],
     lock_code_opt: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let mut current = get_config_status(transport)?;
 
     for app in enable {
@@ -137,9 +138,9 @@ pub fn configure_usb_applications(
             "OATH" | "TOTP" | "HOTP" => current.usb_oath = true,
             "PIV" | "CCID" => current.usb_piv = true,
             other => {
-                return Err(format!(
+                return Err(ManagerError::InvalidInput(format!(
                     "Unknown USB application '{other}' (expected FIDO2, OATH, PIV)"
-                ))
+                )))
             }
         }
     }
@@ -150,9 +151,9 @@ pub fn configure_usb_applications(
             "OATH" | "TOTP" | "HOTP" => current.usb_oath = false,
             "PIV" | "CCID" => current.usb_piv = false,
             other => {
-                return Err(format!(
+                return Err(ManagerError::InvalidInput(format!(
                     "Unknown USB application '{other}' (expected FIDO2, OATH, PIV)"
-                ))
+                )))
             }
         }
     }
@@ -188,14 +189,14 @@ pub fn set_lock_code(
     transport: &mut dyn TokenTransport,
     current_lock_code: Option<&str>,
     new_lock_code: Option<&str>,
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let mut data = Vec::with_capacity(32);
     if let Some(curr) = current_lock_code {
         let b = crate::apdu::parse_hex(curr)?;
         if b.len() != 16 {
-            return Err(
+            return Err(ManagerError::InvalidInput(
                 "Current lock code must be exactly 16 bytes (32 hex characters)".to_string(),
-            );
+            ));
         }
         data.extend_from_slice(&b);
     } else {
@@ -205,7 +206,9 @@ pub fn set_lock_code(
     if let Some(new_lc) = new_lock_code {
         let b = crate::apdu::parse_hex(new_lc)?;
         if b.len() != 16 {
-            return Err("New lock code must be exactly 16 bytes (32 hex characters)".to_string());
+            return Err(ManagerError::InvalidInput(
+                "New lock code must be exactly 16 bytes (32 hex characters)".to_string(),
+            ));
         }
         data.extend_from_slice(&b);
     } else {
@@ -223,7 +226,7 @@ pub fn set_lock_code(
 }
 
 /// Resets configuration to factory defaults.
-pub fn reset_config(transport: &mut dyn TokenTransport) -> Result<(), String> {
+pub fn reset_config(transport: &mut dyn TokenTransport) -> Result<(), ManagerError> {
     // INS 0x1E = DEVICE RESET
     let apdu = CommandApdu::new(0x00, 0x1E, 0x00, 0x00);
     let resp_bytes = transport.transceive(0x03, &apdu.to_bytes(), CONFIG_TIMEOUT)?;

@@ -3,6 +3,8 @@
 //! Handles single-byte tags, length framing (1-byte or 2-byte ASN.1 lengths),
 //! and tag lookup dictionary.
 
+use crate::error::ManagerError;
+
 /// Standard YKOATH TLV Tags.
 pub mod tags {
     /// Account identifier string (UTF-8, e.g. `Issuer:Account`): `0x71`
@@ -77,13 +79,15 @@ impl Tlv {
     }
 
     /// Parses all TLV elements from a buffer.
-    pub fn parse_all(mut data: &[u8]) -> Result<Vec<Tlv>, String> {
+    pub fn parse_all(mut data: &[u8]) -> Result<Vec<Tlv>, ManagerError> {
         let mut tlvs = Vec::new();
         while !data.is_empty() {
             let tag = data[0];
             data = &data[1..];
             if data.is_empty() {
-                return Err(format!("Unexpected end of data after tag {tag:#04X}"));
+                return Err(ManagerError::InvalidInput(format!(
+                    "Unexpected end of data after tag {tag:#04X}"
+                )));
             }
 
             let first_len = data[0];
@@ -92,33 +96,33 @@ impl Tlv {
                 first_len as usize
             } else if first_len == 0x81 {
                 if data.is_empty() {
-                    return Err(format!(
+                    return Err(ManagerError::InvalidInput(format!(
                         "Unexpected end of data in length field for tag {tag:#04X}"
-                    ));
+                    )));
                 }
                 let l = data[0] as usize;
                 data = &data[1..];
                 l
             } else if first_len == 0x82 {
                 if data.len() < 2 {
-                    return Err(format!(
+                    return Err(ManagerError::InvalidInput(format!(
                         "Unexpected end of data in 2-byte length field for tag {tag:#04X}"
-                    ));
+                    )));
                 }
                 let l = ((data[0] as usize) << 8) | (data[1] as usize);
                 data = &data[2..];
                 l
             } else {
-                return Err(format!(
+                return Err(ManagerError::InvalidInput(format!(
                     "Unsupported BER-TLV length prefix {first_len:#04X}"
-                ));
+                )));
             };
 
             if data.len() < len {
-                return Err(format!(
+                return Err(ManagerError::InvalidInput(format!(
                     "TLV payload truncated: expected {len} bytes for tag {tag:#04X}, have {}",
                     data.len()
-                ));
+                )));
             }
 
             let value = data[..len].to_vec();

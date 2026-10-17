@@ -3,6 +3,7 @@
 //! Directly interacts with the token over raw 64-byte CTAPHID frames via `hidapi`.
 
 use super::TokenTransport;
+use crate::error::ManagerError;
 use ctaphid::{ChannelId, PACKET_SIZE};
 use hidapi::{HidApi, HidDevice};
 use std::time::{Duration, Instant};
@@ -33,8 +34,9 @@ pub struct UsbTransport {
 
 impl UsbTransport {
     /// Lists all detected Cryptick Token USB devices.
-    pub fn list_devices() -> Result<Vec<UsbDeviceInfo>, String> {
-        let api = HidApi::new().map_err(|e| format!("Failed to initialize HID subsystem: {e}"))?;
+    pub fn list_devices() -> Result<Vec<UsbDeviceInfo>, ManagerError> {
+        let api = HidApi::new()
+            .map_err(|e| ManagerError::Transport(format!("Failed to initialize HID subsystem: {e}")))?;
         let mut list = Vec::new();
         for dev in api.device_list() {
             if dev.vendor_id() == CRYPTICK_VID && dev.product_id() == CRYPTICK_PID {
@@ -50,7 +52,7 @@ impl UsbTransport {
     }
 
     /// Attempts to locate and connect to a Cryptick Token on USB.
-    pub fn try_connect(device_filter: Option<&str>) -> Result<Option<Self>, String> {
+    pub fn try_connect(device_filter: Option<&str>) -> Result<Option<Self>, ManagerError> {
         let api = match HidApi::new() {
             Ok(api) => api,
             Err(_) => return Ok(None),
@@ -113,7 +115,7 @@ impl UsbTransport {
     }
 
     /// Negotiates a dedicated CTAPHID channel via `CTAPHID_INIT` (0x86).
-    pub fn init_channel(&mut self) -> Result<(), String> {
+    pub fn init_channel(&mut self) -> Result<(), ManagerError> {
         let mut nonce = [0u8; 8];
         for (i, b) in nonce.iter_mut().enumerate() {
             *b = (0x59 + i * 11) as u8;
@@ -129,11 +131,17 @@ impl UsbTransport {
         self.write_packet(&pkt)?;
         let resp = match self.read_slice(Duration::from_millis(250))? {
             Some(r) => r,
-            None => return Err("Timeout waiting for CTAPHID_INIT response from USB token".into()),
+            None => {
+                return Err(ManagerError::Transport(
+                    "Timeout waiting for CTAPHID_INIT response from USB token".into(),
+                ))
+            }
         };
 
         if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
-            return Err("Invalid CTAPHID_INIT response from token".into());
+            return Err(ManagerError::Transport(
+                "Invalid CTAPHID_INIT response from token".into(),
+            ));
         }
 
         let mut cid = [0u8; 4];
@@ -142,27 +150,27 @@ impl UsbTransport {
         Ok(())
     }
 
-    fn write_packet(&self, pkt: &[u8; PACKET_SIZE]) -> Result<(), String> {
+    fn write_packet(&self, pkt: &[u8; PACKET_SIZE]) -> Result<(), ManagerError> {
         // macOS and Windows HID drivers expect a report ID byte (0x00) prefix
         let mut buf = [0u8; PACKET_SIZE + 1];
         buf[0] = 0x00;
         buf[1..].copy_from_slice(pkt);
         self.device
             .write(&buf)
-            .map_err(|e| format!("USB HID packet write failed: {e}"))?;
+            .map_err(|e| ManagerError::Transport(format!("USB HID packet write failed: {e}")))?;
         Ok(())
     }
 
-    fn read_slice(&self, timeout: Duration) -> Result<Option<[u8; PACKET_SIZE]>, String> {
+    fn read_slice(&self, timeout: Duration) -> Result<Option<[u8; PACKET_SIZE]>, ManagerError> {
         let mut buf = [0u8; PACKET_SIZE];
         let timeout_ms = timeout.as_millis().max(1) as i32;
         match self.device.read_timeout(&mut buf, timeout_ms) {
             Ok(n) if n == PACKET_SIZE => Ok(Some(buf)),
             Ok(0) => Ok(None),
-            Ok(n) => Err(format!(
+            Ok(n) => Err(ManagerError::Transport(format!(
                 "Unexpected USB packet length: {n} (expected {PACKET_SIZE})"
-            )),
-            Err(e) => Err(format!("USB packet read error: {e}")),
+            ))),
+            Err(e) => Err(ManagerError::Transport(format!("USB packet read error: {e}"))),
         }
     }
 }
@@ -173,9 +181,11 @@ impl TokenTransport for UsbTransport {
         cmd: u8,
         payload: &[u8],
         timeout: Duration,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, ManagerError> {
         if payload.len() > 7609 {
-            return Err("Payload exceeds maximum CTAPHID sequence capacity (7609 bytes)".into());
+            return Err(ManagerError::InvalidInput(
+                "Payload exceeds maximum CTAPHID sequence capacity (7609 bytes)".into(),
+            ));
         }
 
         // 1. Send Initialization Packet
@@ -231,9 +241,9 @@ impl TokenTransport for UsbTransport {
             // 0x3F = CTAPHID_ERROR
             if opcode == 0x3F {
                 let err_code = raw.get(7).copied().unwrap_or(0);
-                return Err(format!(
+                return Err(ManagerError::Transport(format!(
                     "Device reported CTAPHID protocol error {err_code:#04X}"
-                ));
+                )));
             }
 
             if let Some(total) = total_len {
@@ -263,7 +273,9 @@ impl TokenTransport for UsbTransport {
             }
         }
 
-        Err("Device read timed out waiting for complete response".into())
+        Err(ManagerError::Transport(
+            "Device read timed out waiting for complete response".into(),
+        ))
     }
 
     fn transport_name(&self) -> &'static str {

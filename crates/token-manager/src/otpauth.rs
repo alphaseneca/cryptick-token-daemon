@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use crate::error::ManagerError;
+
 /// OATH OTP generation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OathType {
@@ -90,7 +92,7 @@ impl fmt::Display for HashAlgorithm {
 ///
 /// Handles case-insensitivity, ignores spaces and hyphens, and accepts
 /// both padded (`=`) and unpadded inputs.
-pub fn decode_base32(input: &str) -> Result<Vec<u8>, String> {
+pub fn decode_base32(input: &str) -> Result<Vec<u8>, ManagerError> {
     let mut clean = String::with_capacity(input.len());
     for c in input.chars() {
         if c.is_whitespace() || c == '-' {
@@ -104,7 +106,7 @@ pub fn decode_base32(input: &str) -> Result<Vec<u8>, String> {
     }
 
     if clean.is_empty() {
-        return Err("Base32 input is empty".to_string());
+        return Err(ManagerError::InvalidInput("Base32 input is empty".to_string()));
     }
 
     let mut out = Vec::new();
@@ -115,7 +117,11 @@ pub fn decode_base32(input: &str) -> Result<Vec<u8>, String> {
         let val = match c {
             'A'..='Z' => (c as u8 - b'A') as u64,
             '2'..='7' => (c as u8 - b'2' + 26) as u64,
-            _ => return Err(format!("Invalid Base32 character: '{c}'")),
+            _ => {
+                return Err(ManagerError::InvalidInput(format!(
+                    "Invalid Base32 character: '{c}'"
+                )))
+            }
         };
 
         buffer = (buffer << 5) | val;
@@ -218,25 +224,31 @@ impl OtpAuthUri {
     }
 
     /// Parses an `otpauth://` URI.
-    pub fn parse(uri_str: &str) -> Result<Self, String> {
+    pub fn parse(uri_str: &str) -> Result<Self, ManagerError> {
         let uri = uri_str.trim();
         if !uri.starts_with("otpauth://") && !uri.starts_with("OTPAUTH://") {
-            return Err("URI scheme must be 'otpauth://'".to_string());
+            return Err(ManagerError::InvalidInput(
+                "URI scheme must be 'otpauth://'".to_string(),
+            ));
         }
 
         let without_scheme = &uri["otpauth://".len()..];
         let (type_str, rest) = match without_scheme.find('/') {
             Some(idx) => (&without_scheme[..idx], &without_scheme[idx + 1..]),
-            None => return Err("Malformed otpauth URI: missing path after type".to_string()),
+            None => {
+                return Err(ManagerError::InvalidInput(
+                    "Malformed otpauth URI: missing path after type".to_string(),
+                ))
+            }
         };
 
         let oath_type = match type_str.to_ascii_lowercase().as_str() {
             "totp" => OathType::Totp,
             "hotp" => OathType::Hotp,
             other => {
-                return Err(format!(
+                return Err(ManagerError::InvalidInput(format!(
                     "Unsupported OTP type '{other}' (expected totp or hotp)"
-                ))
+                )))
             }
         };
 
@@ -294,7 +306,11 @@ impl OtpAuthUri {
                         "SHA1" => HashAlgorithm::Sha1,
                         "SHA256" => HashAlgorithm::Sha256,
                         "SHA512" => HashAlgorithm::Sha512,
-                        other => return Err(format!("Unsupported algorithm '{other}'")),
+                        other => {
+                            return Err(ManagerError::InvalidInput(format!(
+                                "Unsupported algorithm '{other}'"
+                            )))
+                        }
                     };
                 }
                 "digits" => {
@@ -302,7 +318,9 @@ impl OtpAuthUri {
                         .parse::<u32>()
                         .map_err(|_| format!("Invalid digits value: '{decoded_val}'"))?;
                     if digits != 6 && digits != 8 {
-                        return Err(format!("Unsupported digits '{digits}' (expected 6 or 8)"));
+                        return Err(ManagerError::InvalidInput(format!(
+                            "Unsupported digits '{digits}' (expected 6 or 8)"
+                        )));
                     }
                 }
                 "period" => {
@@ -310,7 +328,9 @@ impl OtpAuthUri {
                         .parse::<u32>()
                         .map_err(|_| format!("Invalid period value: '{decoded_val}'"))?;
                     if period == 0 {
-                        return Err("Period cannot be zero".to_string());
+                        return Err(ManagerError::InvalidInput(
+                            "Period cannot be zero".to_string(),
+                        ));
                     }
                 }
                 "counter" => {

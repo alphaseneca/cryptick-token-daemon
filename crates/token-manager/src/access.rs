@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::error::ManagerError;
+
 /// Pure-Rust SHA-1 implementation (RFC 3174).
 pub fn sha1(data: &[u8]) -> [u8; 20] {
     let mut h0 = 0x67452301u32;
@@ -158,19 +160,20 @@ pub fn load_remembered_keys() -> HashMap<String, String> {
 }
 
 /// Saves remembered access keys to disk.
-pub fn save_remembered_keys(keys: &HashMap<String, String>) -> Result<(), String> {
-    let path =
-        oath_keys_store_path().ok_or_else(|| "Could not determine config path".to_string())?;
+pub fn save_remembered_keys(keys: &HashMap<String, String>) -> Result<(), ManagerError> {
+    let path = oath_keys_store_path()
+        .ok_or_else(|| ManagerError::Config("Could not determine config path".to_string()))?;
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let json = serde_json::to_string_pretty(keys).map_err(|e| e.to_string())?;
-    fs::write(&path, json).map_err(|e| format!("Failed to save remembered keys: {e}"))?;
+    let json = serde_json::to_string_pretty(keys)?;
+    fs::write(&path, json)
+        .map_err(|e| ManagerError::Config(format!("Failed to save remembered keys: {e}")))?;
     Ok(())
 }
 
 /// Remembers an access key for a given token salt / ID.
-pub fn remember_key(device_id: &[u8], key: &[u8; 16]) -> Result<(), String> {
+pub fn remember_key(device_id: &[u8], key: &[u8; 16]) -> Result<(), ManagerError> {
     let mut keys = load_remembered_keys();
     let id_hex = hex_string(device_id);
     let key_hex = hex_string(key);
@@ -194,7 +197,7 @@ pub fn get_remembered_key(device_id: &[u8]) -> Option<[u8; 16]> {
 }
 
 /// Forgets a remembered access key for a given token salt / ID.
-pub fn forget_key(device_id: &[u8]) -> Result<bool, String> {
+pub fn forget_key(device_id: &[u8]) -> Result<bool, ManagerError> {
     let mut keys = load_remembered_keys();
     let id_hex = hex_string(device_id);
     let existed = keys.remove(&id_hex).is_some();
@@ -205,7 +208,7 @@ pub fn forget_key(device_id: &[u8]) -> Result<bool, String> {
 }
 
 /// Forgets all remembered access keys.
-pub fn forget_all_keys() -> Result<usize, String> {
+pub fn forget_all_keys() -> Result<usize, ManagerError> {
     let keys = load_remembered_keys();
     let count = keys.len();
     if let Some(path) = oath_keys_store_path() {

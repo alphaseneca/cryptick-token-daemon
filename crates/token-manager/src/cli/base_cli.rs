@@ -1,11 +1,24 @@
 //! CLI handlers for base cryptick-manager commands: `info`, `list`, and `script`.
+//!
+//! `list -s/--serials` matches `ykman list` exactly
+//! (`yubikey-manager/ykman/_cli/__main__.py`). `info`'s `-c/--check` and
+//! `-s/--serial` are this crate's own flags, not ykman's: real `ykman
+//! info` takes only `-c, --check-fips`, which checks for a real, distinct
+//! FIPS-certified YubiKey hardware variant — claiming to check for that on
+//! hardware with no FIPS variant would be wrong to copy, not a gap to
+//! close. `-c/--check` here means something unrelated and harmless
+//! instead: "is a token reachable at all."
 
+use crate::error::ManagerError;
 use crate::script::{read_script_lines, substitute_args, tokenize_line};
 use crate::transport::usb::UsbTransport;
 use crate::transport::{DualTransport, TokenTransport};
 
 /// Handles `cryptick-manager info [OPTIONS]`.
-pub fn run_base_info(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+pub fn run_base_info(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut check = false;
     let mut serial_only = false;
 
@@ -51,7 +64,7 @@ pub fn run_base_info(transport: &mut dyn TokenTransport, args: &[String]) -> Res
 }
 
 /// Handles `cryptick-manager list [OPTIONS]`.
-pub fn run_base_list(args: &[String]) -> Result<(), String> {
+pub fn run_base_list(args: &[String]) -> Result<(), ManagerError> {
     let mut serials_only = false;
     for arg in args {
         if arg == "-s" || arg == "--serials" {
@@ -100,10 +113,12 @@ pub fn run_base_list(args: &[String]) -> Result<(), String> {
 /// Handles `cryptick-manager script [OPTIONS] FILE [ARGUMENTS]`.
 pub fn run_base_script(
     args: &[String],
-    executor: fn(&[String]) -> Result<(), String>,
-) -> Result<(), String> {
+    executor: fn(&[String]) -> Result<(), ManagerError>,
+) -> Result<(), ManagerError> {
     if args.is_empty() {
-        return Err("Usage: cryptick-manager script [OPTIONS] FILE [ARGUMENTS...]".to_string());
+        return Err(ManagerError::InvalidInput(
+            "Usage: cryptick-manager script [OPTIONS] FILE [ARGUMENTS...]".to_string(),
+        ));
     }
 
     let file_path = &args[0];
@@ -121,13 +136,14 @@ pub fn run_base_script(
         }
 
         let tokens = tokenize_line(trimmed)
-            .map_err(|e| format!("Script syntax error at line {line_no}: {e}"))?;
+            .map_err(|e| ManagerError::InvalidInput(format!("Script syntax error at line {line_no}: {e}")))?;
         if tokens.is_empty() {
             continue;
         }
 
         println!("> {}", tokens.join(" "));
-        executor(&tokens).map_err(|e| format!("Script error at line {line_no}: {e}"))?;
+        executor(&tokens)
+            .map_err(|e| ManagerError::Other(format!("Script error at line {line_no}: {e}")))?;
     }
 
     println!("Script '{file_path}' executed successfully.");

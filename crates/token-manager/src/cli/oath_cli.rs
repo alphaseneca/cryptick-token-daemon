@@ -1,6 +1,7 @@
 //! CLI subcommand handlers for `cryptick-manager oath`.
 
 use crate::access::{forget_all_keys, forget_key, remember_key};
+use crate::error::ManagerError;
 use crate::oath::{
     calculate_code, delete_account, list_accounts, put_account, rename_account, reset_oath,
     select_oath, set_access_password, AddAccountOptions,
@@ -10,11 +11,28 @@ use crate::transport::TokenTransport;
 use std::fs;
 use std::io::{self, Write};
 
+/// Whether an account counts as "hidden" for `--show-hidden` purposes.
+///
+/// Matches ykman's own definition exactly (`is_hidden` in
+/// `yubikey-manager/ykman/oath.py`): a credential is hidden when its issuer
+/// is literally the string `_hidden` — nothing to do with a prefix or a
+/// separate flag on the device, just that one reserved issuer name ykman's
+/// own tooling uses to stash credentials it doesn't want `accounts
+/// list`/`code` to show by default. Account names in this crate are
+/// already the canonical `Issuer:Account` string (see
+/// `OtpAuthUri::canonical_name`), so the issuer is recovered by splitting
+/// on the first colon.
+fn is_hidden_account(name: &str) -> bool {
+    name.split_once(':')
+        .map(|(issuer, _)| issuer == "_hidden")
+        .unwrap_or(false)
+}
+
 /// Handles all `cryptick-manager oath ...` subcommands.
 pub fn handle_oath_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         print_oath_help();
         return Ok(());
@@ -29,12 +47,13 @@ pub fn handle_oath_command(
         "reset" => run_oath_reset(transport, &args[1..]),
         "access" => run_oath_access(transport, &args[1..]),
         "accounts" => run_oath_accounts(transport, &args[1..]),
-        unknown => Err(format!(
+        unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown oath subcommand '{unknown}'. Run 'cryptick-manager oath --help' for available commands."
-        )),
+        ))),
     }
 }
 
+/// Prints `cryptick-manager oath --help` usage text.
 pub fn print_oath_help() {
     println!(
         "Usage: cryptick-manager oath [COMMAND] [OPTIONS]\n\n\
@@ -53,7 +72,7 @@ pub fn print_oath_help() {
 // 1. OATH INFO
 // ---------------------------------------------------------------------------
 
-fn run_oath_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), String> {
+fn run_oath_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), ManagerError> {
     let applet = select_oath(transport)?;
     let accounts_res = list_accounts(transport, None);
 
@@ -95,7 +114,7 @@ fn run_oath_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result
 // 2. OATH RESET
 // ---------------------------------------------------------------------------
 
-fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut force = false;
     for arg in args {
         if arg == "-f" || arg == "--force" {
@@ -126,7 +145,7 @@ fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result
 // 3. OATH ACCESS
 // ---------------------------------------------------------------------------
 
-fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: cryptick-manager oath access [COMMAND] [OPTIONS]\n\n\
@@ -143,11 +162,13 @@ fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
         "change" => run_access_change(transport, &args[1..]),
         "forget" => run_access_forget(transport, &args[1..]),
         "remember" => run_access_remember(transport, &args[1..]),
-        other => Err(format!("Unknown access subcommand '{other}'")),
+        other => Err(ManagerError::InvalidInput(format!(
+            "Unknown access subcommand '{other}'"
+        ))),
     }
 }
 
-fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut clear = false;
     let mut password = None;
     let mut new_password = None;
@@ -170,7 +191,7 @@ fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                 }
             }
             "-r" | "--remember" => remember = true,
-            other => return Err(format!("Unknown option '{other}'")),
+            other => return Err(ManagerError::InvalidInput(format!("Unknown option '{other}'"))),
         }
         i += 1;
     }
@@ -198,7 +219,9 @@ fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     };
 
     if new_pwd.is_empty() {
-        return Err("Password cannot be empty (use '--clear' to remove password)".into());
+        return Err(ManagerError::InvalidInput(
+            "Password cannot be empty (use '--clear' to remove password)".into(),
+        ));
     }
 
     let curr_pwd = password.as_deref();
@@ -213,7 +236,7 @@ fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_access_forget(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_access_forget(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut all = false;
     for arg in args {
         if arg == "-a" || arg == "--all" {
@@ -237,7 +260,7 @@ fn run_access_forget(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut password = None;
     let mut i = 0;
     while i < args.len() {
@@ -272,7 +295,7 @@ fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> R
 // 4. OATH ACCOUNTS
 // ---------------------------------------------------------------------------
 
-fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: cryptick-manager oath accounts [COMMAND] [OPTIONS]\n\n\
@@ -297,29 +320,41 @@ fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Res
         "rename" => run_accounts_rename(transport, &args[1..]),
         "uri" => run_accounts_uri(transport, &args[1..]),
         "import" => run_accounts_import(transport, &args[1..]),
-        other => Err(format!("Unknown accounts subcommand '{other}'")),
+        other => Err(ManagerError::InvalidInput(format!(
+            "Unknown accounts subcommand '{other}'"
+        ))),
     }
 }
 
-fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut single = false;
     let mut type_filter = None;
     let mut password = None;
+    let mut show_hidden = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-s" | "--single" => single = true,
-            "-H" | "--oath-type" => {
+            // ykman: `-o, --oath-type`. `-H` is reserved for `--show-hidden`
+            // below — cryptick-manager previously had these swapped/wrong
+            // (`-H` meant `--oath-type` and there was no real hidden-account
+            // filter at all).
+            "-o" | "--oath-type" => {
                 i += 1;
                 if i < args.len() {
                     type_filter = match args[i].to_ascii_uppercase().as_str() {
                         "TOTP" => Some(OathType::Totp),
                         "HOTP" => Some(OathType::Hotp),
-                        other => return Err(format!("Invalid oath-type '{other}'")),
+                        other => {
+                            return Err(ManagerError::InvalidInput(format!(
+                                "Invalid oath-type '{other}'"
+                            )))
+                        }
                     };
                 }
             }
+            "-H" | "--show-hidden" => show_hidden = true,
             "-p" | "--password" => {
                 i += 1;
                 if i < args.len() {
@@ -335,6 +370,9 @@ fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Res
 
     if let Some(tf) = type_filter {
         accounts.retain(|a| a.oath_type == tf);
+    }
+    if !show_hidden {
+        accounts.retain(|a| !is_hidden_account(&a.name));
     }
 
     if accounts.is_empty() {
@@ -359,10 +397,11 @@ fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut single = false;
     let mut password = None;
     let mut query = None;
+    let mut show_hidden = false;
 
     let mut i = 0;
     while i < args.len() {
@@ -374,7 +413,12 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                     password = Some(args[i].clone());
                 }
             }
-            "-H" | "--hover" => {} // Supported flag in cryptick-manager
+            // ykman: `-H, --show-hidden` — "include hidden accounts". Used
+            // to be a no-op flag named `--hover` here, which matched
+            // nothing in real ykman and did nothing either; now implements
+            // the same `issuer == "_hidden"` filter ykman's `is_hidden()`
+            // uses (`yubikey-manager/ykman/oath.py`).
+            "-H" | "--show-hidden" => show_hidden = true,
             arg if !arg.starts_with('-') && query.is_none() => {
                 query = Some(arg.to_string());
             }
@@ -383,9 +427,12 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
         i += 1;
     }
 
-    let accounts = list_accounts(transport, password.as_deref())?;
+    let mut accounts = list_accounts(transport, password.as_deref())?;
+    if !show_hidden {
+        accounts.retain(|a| !is_hidden_account(&a.name));
+    }
     if accounts.is_empty() {
-        return Err("No accounts configured on token.".into());
+        return Err(ManagerError::NotFound("No accounts configured on token.".into()));
     }
 
     let mut targets = accounts;
@@ -393,7 +440,9 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
         let q_lower = q.to_ascii_lowercase();
         targets.retain(|a| a.name.to_ascii_lowercase().contains(&q_lower));
         if targets.is_empty() {
-            return Err(format!("No account matching query '{q}' found."));
+            return Err(ManagerError::NotFound(format!(
+                "No account matching query '{q}' found."
+            )));
         }
     }
 
@@ -426,7 +475,7 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut name = None;
     let mut secret_str = None;
     let mut oath_type = OathType::Totp;
@@ -446,7 +495,11 @@ fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
                     oath_type = match args[i].to_ascii_uppercase().as_str() {
                         "TOTP" => OathType::Totp,
                         "HOTP" => OathType::Hotp,
-                        other => return Err(format!("Invalid oath-type '{other}'")),
+                        other => {
+                            return Err(ManagerError::InvalidInput(format!(
+                                "Invalid oath-type '{other}'"
+                            )))
+                        }
                     };
                 }
             }
@@ -463,11 +516,20 @@ fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
                         "SHA1" => HashAlgorithm::Sha1,
                         "SHA256" => HashAlgorithm::Sha256,
                         "SHA512" => HashAlgorithm::Sha512,
-                        other => return Err(format!("Invalid algorithm '{other}'")),
+                        other => {
+                            return Err(ManagerError::InvalidInput(format!(
+                                "Invalid algorithm '{other}'"
+                            )))
+                        }
                     };
                 }
             }
-            "-p" | "--period" => {
+            // ykman: `-P, --period` (capital P). `-p` is `--password`
+            // everywhere else in this subcommand tree (`access change`,
+            // `accounts list/code/delete/rename/uri/import`) — this command
+            // used to have the two swapped, the one place in the file that
+            // broke that convention.
+            "-P" | "--period" => {
                 i += 1;
                 if i < args.len() {
                     period = args[i].parse().map_err(|_| "Invalid period".to_string())?;
@@ -481,7 +543,7 @@ fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
             }
             "-t" | "--touch" => touch = true,
             "-f" | "--force" => {}
-            "-P" | "--password" => {
+            "-p" | "--password" => {
                 i += 1;
                 if i < args.len() {
                     password = Some(args[i].clone());
@@ -533,7 +595,7 @@ fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
     Ok(())
 }
 
-fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut query = None;
     let mut force = false;
     let mut password = None;
@@ -577,7 +639,7 @@ fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> R
     Ok(())
 }
 
-fn run_accounts_rename(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_rename(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut query = None;
     let mut new_name = None;
     let mut password = None;
@@ -612,7 +674,7 @@ fn run_accounts_rename(transport: &mut dyn TokenTransport, args: &[String]) -> R
     Ok(())
 }
 
-fn run_accounts_uri(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_uri(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut uri_str = None;
     let mut touch = false;
     let mut password = None;
@@ -659,7 +721,7 @@ fn run_accounts_uri(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
     Ok(())
 }
 
-fn run_accounts_import(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_accounts_import(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut file_path = None;
     let mut touch = false;
     let mut password = None;
@@ -732,4 +794,19 @@ fn run_accounts_import(transport: &mut dyn TokenTransport, args: &[String]) -> R
 
     println!("\nImport complete: {success_count} accounts imported, {error_count} failed.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hidden_account_matches_ykmans_issuer_equals_underscore_hidden_rule() {
+        assert!(is_hidden_account("_hidden:some-label"));
+        // Not a prefix match — the issuer must be exactly "_hidden".
+        assert!(!is_hidden_account("_hidden_but_not_quite:label"));
+        assert!(!is_hidden_account("GitHub:alice"));
+        // No colon at all: there is no issuer component, so not hidden.
+        assert!(!is_hidden_account("no-issuer-here"));
+    }
 }

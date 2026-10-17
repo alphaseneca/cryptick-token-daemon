@@ -6,8 +6,10 @@
 use std::fs;
 use std::io::{self, BufRead};
 
+use crate::error::ManagerError;
+
 /// Splits a command-line string into tokens, respecting single and double quotes.
-pub fn tokenize_line(line: &str) -> Result<Vec<String>, String> {
+pub fn tokenize_line(line: &str) -> Result<Vec<String>, ManagerError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut in_single_quote = false;
@@ -44,7 +46,9 @@ pub fn tokenize_line(line: &str) -> Result<Vec<String>, String> {
     }
 
     if in_single_quote || in_double_quote {
-        return Err("Unmatched quote in command line".to_string());
+        return Err(ManagerError::InvalidInput(
+            "Unmatched quote in command line".to_string(),
+        ));
     }
 
     if !current.is_empty() {
@@ -65,7 +69,7 @@ pub fn substitute_args(line: &str, args: &[String]) -> String {
 }
 
 /// Reads lines from a file or standard input.
-pub fn read_script_lines(path: &str) -> Result<Vec<String>, String> {
+pub fn read_script_lines(path: &str) -> Result<Vec<String>, ManagerError> {
     if path == "-" {
         let stdin = io::stdin();
         let lines: Vec<String> = stdin.lock().lines().map_while(Result::ok).collect();

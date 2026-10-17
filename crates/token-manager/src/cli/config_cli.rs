@@ -4,6 +4,7 @@ use crate::config::{
     configure_usb_applications, get_config_status, reset_config, set_lock_code, set_mode,
     DeviceMode,
 };
+use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
 
@@ -11,7 +12,7 @@ use std::io::{self, Write};
 pub fn handle_config_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         print_config_help();
         return Ok(());
@@ -27,12 +28,13 @@ pub fn handle_config_command(
         "reset" => run_config_reset(transport, &args[1..]),
         "set-lock-code" => run_config_set_lock_code(transport, &args[1..]),
         "usb" => run_config_usb(transport, &args[1..]),
-        unknown => Err(format!(
+        unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown config subcommand '{unknown}'. Run 'cryptick-manager config --help' for usage."
-        )),
+        ))),
     }
 }
 
+/// Prints `cryptick-manager config --help` usage text.
 pub fn print_config_help() {
     println!(
         "Usage: cryptick-manager config [COMMAND] [OPTIONS]\n\n\
@@ -48,7 +50,7 @@ pub fn print_config_help() {
     );
 }
 
-fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut mode_str = None;
     let mut force = false;
     let mut lock_code = None;
@@ -94,7 +96,7 @@ fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
     Ok(())
 }
 
-fn run_config_nfc(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_config_nfc(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let _ = get_config_status(transport)?;
 
     println!("=== Wireless & Radio Interfaces ===");
@@ -110,7 +112,7 @@ fn run_config_nfc(transport: &mut dyn TokenTransport, args: &[String]) -> Result
     Ok(())
 }
 
-fn run_config_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_config_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut force = false;
     for arg in args {
         if arg == "-f" || arg == "--force" {
@@ -140,7 +142,7 @@ fn run_config_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
 fn run_config_set_lock_code(
     transport: &mut dyn TokenTransport,
     args: &[String],
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     let mut current_lc = None;
     let mut new_lc = None;
     let mut clear = false;
@@ -201,7 +203,7 @@ fn run_config_set_lock_code(
     Ok(())
 }
 
-fn run_config_usb(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_config_usb(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut list = false;
     let mut enable = Vec::new();
     let mut disable = Vec::new();

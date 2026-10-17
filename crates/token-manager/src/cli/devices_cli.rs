@@ -12,6 +12,7 @@
 //! `piv`/`info` do — `cli/mod.rs` special-cases this subcommand alongside
 //! `list`/`script` for that reason.
 
+use crate::error::ManagerError;
 use crate::transport::daemon::DaemonTransport;
 use crate::transport::usb::UsbTransport;
 use std::time::Duration;
@@ -26,7 +27,7 @@ struct DeviceRow {
 }
 
 /// Handles `cryptick-manager devices [list|select] [ARGS]`.
-pub fn handle_devices_command(args: &[String]) -> Result<(), String> {
+pub fn handle_devices_command(args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         return run_list();
     }
@@ -43,9 +44,9 @@ pub fn handle_devices_command(args: &[String]) -> Result<(), String> {
                 .ok_or_else(|| "Usage: cryptick-manager devices select <ID>".to_string())?;
             run_select(id)
         }
-        unknown => Err(format!(
+        unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown devices subcommand '{unknown}'. Run 'cryptick-manager devices --help' for available commands."
-        )),
+        ))),
     }
 }
 
@@ -108,7 +109,7 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-fn run_list() -> Result<(), String> {
+fn run_list() -> Result<(), ManagerError> {
     let devices = collect_devices();
     if devices.is_empty() {
         println!("No known Cryptick Tokens (USB unplugged, and none remembered by the daemon).");
@@ -146,13 +147,14 @@ fn format_last_seen(unix_secs: u64) -> String {
     }
 }
 
-fn run_select(id: &str) -> Result<(), String> {
+fn run_select(id: &str) -> Result<(), ManagerError> {
     if id == "usb" {
         println!("'usb' has nothing to select — it is a single synthetic entry for whichever Cryptick Token is plugged in (see 'devices --help').");
         return Ok(());
     }
-    let mut daemon = DaemonTransport::connect(Duration::from_secs(2))
-        .map_err(|e| format!("Cannot reach cryptick-daemon to select a device: {e}"))?;
+    let mut daemon = DaemonTransport::connect(Duration::from_secs(2)).map_err(|e| {
+        ManagerError::Transport(format!("Cannot reach cryptick-daemon to select a device: {e}"))
+    })?;
     daemon.select_device(id)?;
     println!("[OK] '{id}' is now the active device.");
     Ok(())
@@ -175,12 +177,12 @@ mod tests {
     #[test]
     fn select_with_no_id_argument_is_a_usage_error_not_a_panic() {
         let err = handle_devices_command(&["select".to_string()]).unwrap_err();
-        assert!(err.contains("Usage"));
+        assert!(err.to_string().contains("Usage"));
     }
 
     #[test]
     fn unknown_subcommand_is_reported_by_name() {
         let err = handle_devices_command(&["bogus".to_string()]).unwrap_err();
-        assert!(err.contains("bogus"));
+        assert!(err.to_string().contains("bogus"));
     }
 }

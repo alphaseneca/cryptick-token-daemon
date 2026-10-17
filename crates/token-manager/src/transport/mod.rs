@@ -11,6 +11,8 @@ pub use daemon::DaemonTransport;
 use std::time::Duration;
 pub use usb::UsbTransport;
 
+use crate::error::ManagerError;
+
 /// A transport connection capable of transceiving CTAPHID / APDU commands to Cryptick Token.
 pub trait TokenTransport {
     /// Transceives a command byte and payload to the token, returning the raw response bytes.
@@ -18,8 +20,12 @@ pub trait TokenTransport {
     /// For OATH and vendor commands: `cmd = 0x63` (`CTAPHID_CRYPTICK_OATH = 0xE3`).
     /// For CTAPHID_MSG (standard raw APDU): `cmd = 0x03`.
     /// For CTAPHID_CBOR: `cmd = 0x10`.
-    fn transceive(&mut self, cmd: u8, payload: &[u8], timeout: Duration)
-        -> Result<Vec<u8>, String>;
+    fn transceive(
+        &mut self,
+        cmd: u8,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, ManagerError>;
 
     /// Human-readable transport name (e.g. "Direct USB" or "BLE Daemon Bridge").
     fn transport_name(&self) -> &'static str;
@@ -35,12 +41,12 @@ pub struct DualTransport {
 
 impl DualTransport {
     /// Connects to Cryptick Token, attempting Direct USB first, then BLE Daemon fallback.
-    pub fn connect() -> Result<Self, String> {
+    pub fn connect() -> Result<Self, ManagerError> {
         Self::connect_with_device(None)
     }
 
     /// Connects with an optional target device / serial filter.
-    pub fn connect_with_device(device_filter: Option<&str>) -> Result<Self, String> {
+    pub fn connect_with_device(device_filter: Option<&str>) -> Result<Self, ManagerError> {
         // 1. Try Direct USB CTAPHID
         match UsbTransport::try_connect(device_filter) {
             Ok(Some(usb)) => {
@@ -52,7 +58,9 @@ impl DualTransport {
             Err(e) => {
                 // If an explicit device filter was specified and failed, record or continue
                 if let Some(target) = device_filter {
-                    return Err(format!("Direct USB connection to '{target}' failed: {e}"));
+                    return Err(ManagerError::Transport(format!(
+                        "Direct USB connection to '{target}' failed: {e}"
+                    )));
                 }
             }
         }
@@ -65,12 +73,12 @@ impl DualTransport {
                 })
             }
             Err(e) => {
-                Err(format!(
+                Err(ManagerError::Transport(format!(
                     "Cryptick Token (0x1209:0xBEEE) was not found on USB, and BLE Daemon is unavailable.\n\
                      - To connect via USB: plug the Cryptick Token into a USB-C port.\n\
                      - To connect via Bluetooth: ensure 'cryptick-daemon' is running and the token is powered on.\n\
                      Details: {e}"
-                ))
+                )))
             }
         }
     }
@@ -87,7 +95,7 @@ impl TokenTransport for DualTransport {
         cmd: u8,
         payload: &[u8],
         timeout: Duration,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, ManagerError> {
         self.active.transceive(cmd, payload, timeout)
     }
 

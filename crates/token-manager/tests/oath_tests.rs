@@ -2,6 +2,7 @@
 
 use cryptick_manager::access::{derive_access_key, hmac_sha1, sha1};
 use cryptick_manager::apdu::{aid, format_hex, CommandApdu};
+use cryptick_manager::error::ManagerError;
 use cryptick_manager::oath::{
     calculate_code, delete_account, list_accounts, put_account, reset_oath, select_oath,
     AddAccountOptions,
@@ -111,7 +112,7 @@ impl TokenTransport for SimulatedOathToken {
         _cmd: u8,
         payload: &[u8],
         _timeout: Duration,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, ManagerError> {
         let apdu = CommandApdu::parse(payload)?;
 
         // 1. SELECT AID

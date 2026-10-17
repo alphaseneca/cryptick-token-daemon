@@ -1,6 +1,8 @@
 //! CLI subcommand handlers for `cryptick-manager piv`.
 //!
-//! Provides complete YubiKey Manager parity for PIV smart card operations:
+//! Modeled on YubiKey Manager's `piv` command group as a design reference
+//! for CLI ergonomics (subcommand names, flag names/shorthand) — never
+//! user-facing, per this project's convention:
 //! - `cryptick-manager piv info`
 //! - `cryptick-manager piv reset`
 //! - `cryptick-manager piv access change-pin`
@@ -8,8 +10,32 @@
 //! - `cryptick-manager piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
 //! - `cryptick-manager piv certificates export <slot>`
 //! - `cryptick-manager piv certificates delete <slot>`
+//!
+//! Checked against `ykman`'s actual source (`yubikey-manager/ykman/_cli/piv.py`)
+//! rather than assumed from memory. Confirmed, deliberate differences:
+//!
+//! - **`provision` has no ykman equivalent name** — it deliberately
+//!   consolidates what ykman does as two separate commands, `piv keys
+//!   generate` followed by `piv certificates generate` (or `request` +
+//!   `import` for a CA-signed cert), into the one atomic operation this
+//!   device's `GENERATE ASYMMETRIC KEY PAIR` + chained `PUT DATA` flow
+//!   actually performs (`piv::provision::provision_slot`, PROJECT.md §8's
+//!   "piv now does parse APDUs" note). Splitting it into two commands here
+//!   would invent a two-step UX this device's provisioning flow doesn't
+//!   have a matching intermediate state for.
+//! - **No `piv keys` or `piv objects` command group, and `access
+//!   change-puk`/`change-management-key`/`set-retries`/`unblock-pin` are
+//!   unimplemented stubs or entirely absent.** All of these need APDU
+//!   builders — `CHANGE REFERENCE DATA` for PUK, `SET MANAGEMENT KEY`,
+//!   `RESET RETRY COUNTER`, arbitrary-slot key import/export/attestation —
+//!   that don't exist yet in `piv::commands` (only `select`, `get_data`,
+//!   `put_data`, `verify_pin`, `verify_retries`, `clear_security_status`,
+//!   `change_pin`, `sign`, and `generate_key_pair` do). This is missing
+//!   functionality to build, not a naming or flag mismatch to fix in this
+//!   module.
 
 use crate::apdu::{aid, format_hex, CommandApdu, ResponseApdu};
+use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use piv::cert::parse_certificate;
 use piv::commands;
@@ -28,7 +54,7 @@ impl<'a> CardTransceiver for TransportCardTransceiver<'a> {
     fn transceive(&mut self, command: &[u8]) -> Result<Vec<u8>, ProvisionError> {
         self.transport
             .transceive(0x03, command, PIV_TIMEOUT)
-            .map_err(ProvisionError::Transceive)
+            .map_err(|e| ProvisionError::Transceive(e.to_string()))
     }
 }
 
@@ -45,7 +71,7 @@ fn slot_tag(slot: Slot) -> u32 {
 pub fn handle_piv_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
-) -> Result<(), String> {
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         print_piv_help();
         return Ok(());
@@ -61,12 +87,13 @@ pub fn handle_piv_command(
         "access" => run_piv_access(transport, &args[1..]),
         "provision" => run_piv_provision(transport, &args[1..]),
         "certificates" => run_piv_certificates(transport, &args[1..]),
-        unknown => Err(format!(
+        unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown piv subcommand '{unknown}'. Run 'cryptick-manager piv --help' for available commands."
-        )),
+        ))),
     }
 }
 
+/// Prints `cryptick-manager piv --help` usage text.
 pub fn print_piv_help() {
     println!(
         "Usage: cryptick-manager piv [COMMAND] [OPTIONS]\n\n\
@@ -83,21 +110,21 @@ pub fn print_piv_help() {
 }
 
 /// Selects the PIV applet on the token.
-fn select_piv(transport: &mut dyn TokenTransport) -> Result<ResponseApdu, String> {
+fn select_piv(transport: &mut dyn TokenTransport) -> Result<ResponseApdu, ManagerError> {
     let select_apdu = CommandApdu::with_data(0x00, 0xA4, 0x04, 0x00, aid::PIV.to_vec());
     let raw = transport.transceive(0x03, &select_apdu.to_bytes(), PIV_TIMEOUT)?;
     let resp = ResponseApdu::parse(&raw)?;
     if !resp.is_success() {
-        return Err(format!(
-            "PIV applet selection failed with SW: {:#06X}",
-            resp.sw.0
-        ));
+        return Err(ManagerError::DeviceStatus(resp.sw));
     }
     Ok(resp)
 }
 
 /// Displays information about PIV slots and configuration.
-fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), String> {
+fn run_piv_info(
+    transport: &mut dyn TokenTransport,
+    _args: &[String],
+) -> Result<(), ManagerError> {
     select_piv(transport)?;
 
     println!("PIV version: 5.4.0 (SP 800-73-5 compliant)");
@@ -164,7 +191,10 @@ fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<
 }
 
 /// Handles `cryptick-manager piv access [change-pin|change-puk]`.
-fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_piv_access(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: cryptick-manager piv access [COMMAND] [OPTIONS]\n\n\
@@ -211,17 +241,20 @@ fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result
                     let p1 = prompt_secret("Enter new PIN: ")?;
                     let p2 = prompt_secret("Confirm new PIN: ")?;
                     if p1 != p2 {
-                        return Err("New PIN entries do not match".into());
+                        return Err(ManagerError::InvalidInput(
+                            "New PIN entries do not match".into(),
+                        ));
                     }
                     p1
                 }
             };
 
             let cmd = commands::change_pin(old_pin.as_bytes(), new_pin.as_bytes())
-                .map_err(|e| format!("Invalid PIN format: {e}"))?;
+                .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
             let raw = transport.transceive(
                 0x03,
-                &cmd.encode().map_err(|e| e.to_string())?,
+                &cmd.encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
                 PIV_TIMEOUT,
             )?;
             let resp = ResponseApdu::parse(&raw)?;
@@ -229,19 +262,24 @@ fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result
                 println!("✓ PIN successfully updated.");
                 Ok(())
             } else {
-                Err(format!("Failed to update PIN (SW: {:#06X})", resp.sw.0))
+                Err(ManagerError::DeviceStatus(resp.sw))
             }
         }
         "change-puk" => {
             println!("✓ PUK modification requested. Follow on-screen token prompts.");
             Ok(())
         }
-        unknown => Err(format!("Unknown access command '{unknown}'")),
+        unknown => Err(ManagerError::InvalidInput(format!(
+            "Unknown access command '{unknown}'"
+        ))),
     }
 }
 
 /// Handles `cryptick-manager piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
-fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_piv_provision(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut opts = ProvisionOptions {
         slots: vec![Slot::PivAuthentication],
         dry_run: false,
@@ -265,7 +303,11 @@ fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                             Slot::KeyManagement,
                             Slot::DigitalSignature,
                         ],
-                        s => return Err(format!("Unknown slot '{s}'. Use 9A, 9D, 9C, or ALL.")),
+                        s => {
+                            return Err(ManagerError::InvalidInput(format!(
+                                "Unknown slot '{s}'. Use 9A, 9D, 9C, or ALL."
+                            )))
+                        }
                     };
                 }
             }
@@ -322,7 +364,10 @@ fn run_piv_provision(transport: &mut dyn TokenTransport, args: &[String]) -> Res
 }
 
 /// Handles `cryptick-manager piv certificates [export|delete]`.
-fn run_piv_certificates(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_piv_certificates(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: cryptick-manager piv certificates [COMMAND] [OPTIONS]\n\n\
@@ -363,19 +408,26 @@ fn run_piv_certificates(transport: &mut dyn TokenTransport, args: &[String]) -> 
                 println!("-----END CERTIFICATE-----");
                 Ok(())
             } else {
-                Err("No certificate found in specified slot".into())
+                Err(ManagerError::NotFound(
+                    "No certificate found in specified slot".into(),
+                ))
             }
         }
         "delete" => {
             println!("✓ Certificate slot cleared.");
             Ok(())
         }
-        unknown => Err(format!("Unknown certificates command '{unknown}'")),
+        unknown => Err(ManagerError::InvalidInput(format!(
+            "Unknown certificates command '{unknown}'"
+        ))),
     }
 }
 
 /// Handles `cryptick-manager piv reset`.
-fn run_piv_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), String> {
+fn run_piv_reset(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut force = false;
     for arg in args {
         if arg == "-f" || arg == "--force" {
@@ -407,7 +459,7 @@ fn run_piv_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<
     }
 }
 
-fn prompt_secret(prompt: &str) -> Result<String, String> {
+fn prompt_secret(prompt: &str) -> Result<String, ManagerError> {
     print!("{prompt}");
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut buf = String::new();
