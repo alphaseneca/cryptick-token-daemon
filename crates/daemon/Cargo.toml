@@ -32,6 +32,11 @@ vpcd = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "io-util", "net"] }
+# A faithful software model of the firmware's PIV applet (PROJECT.md §14's
+# "needs real hardware to confirm" gap for the vpcd/PIV relay). Test-only: it
+# is not `piv`, and this does not relax the no-`piv`-in-`daemon` rule that
+# crates/daemon/tests/relay_stays_opaque.rs enforces.
+vpicc-piv.workspace = true
 
 [[bin]]
 name = "cryptick-daemon"

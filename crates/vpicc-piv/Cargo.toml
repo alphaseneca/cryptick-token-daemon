@@ -1,0 +1,19 @@
+[package]
+name = "vpicc-piv"
+version.workspace = true
+description = "A software vicc (virtual ICC) that reproduces the Cryptick Token firmware's PIV applet (core/piv/piv.c) at the APDU level, for driving the daemon's real vpcd relay without hardware"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Intentionally minimal. This crate is a pure APDU state machine — no socket,
+# no async runtime, no BLE — the same "pure, no I/O" shape as `piv` and `vpcd`
+# (PROJECT.md §8). It deliberately does not depend on `piv`: the firmware's
+# `piv_handle_apdu` is a bespoke, minimal parser (not a general TLV library),
+# and this crate is a line-by-line transliteration of that C function, not a
+# client built on top of the host-side `piv` crate's encoder/decoder. Keeping
+# it dependency-free also means it can never be mistaken for the thing
+# `crates/daemon/tests/relay_stays_opaque.rs` guards against.
+
+[dev-dependencies]

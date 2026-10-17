@@ -11,6 +11,7 @@ members = [
     "crates/sk-middleware",
     "crates/piv",
     "crates/vpcd",
+    "crates/vpicc-piv",
     "crates/webauthn-host",
     "crates/token-manager",
 ]
@@ -77,6 +78,7 @@ ipc = { path = "crates/ipc" }
 piv = { path = "crates/piv" }
 transport-ble = { path = "crates/transport-ble" }
 vpcd = { path = "crates/vpcd" }
+vpicc-piv = { path = "crates/vpicc-piv" }
 
 [profile.release]
 opt-level = 3

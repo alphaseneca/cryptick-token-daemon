@@ -311,6 +311,7 @@ dependencies = [
  "tokio",
  "transport-ble",
  "vpcd",
+ "vpicc-piv",
 ]
 
 [[package]]
@@ -1489,6 +1490,10 @@ dependencies = [
  "proptest",
  "thiserror",
 ]
+
+[[package]]
+name = "vpicc-piv"
+version = "0.1.0"
 
 [[package]]
 name = "wait-timeout"

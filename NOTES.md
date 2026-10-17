@@ -748,3 +748,278 @@ this agent wrote. None of it is hardware-verified:
 - Everything PROJECT.md §14 already lists as needing L4 (real ESP32, real
   BLE): golden transcripts, bonding/pairing behavior, power/reconnect
   timing.
+
+---
+
+# NOTES — virtual-PIV test harness (`crates/vpicc-piv`)
+
+Written while building `feature/virtual-piv-test-harness`. Scope: close the
+"needs real hardware to confirm" gap on the PIV/vpcd path, per PROJECT.md §14.
+
+## The problem, restated after reading the actual code
+
+Every prior PIV fix in this project has shipped with "needs real hardware to
+confirm" because nothing in CI can exercise the daemon's PC/SC-facing code
+against anything resembling a real smart-card stack. Before writing anything,
+I read what that code actually is — don't assume, PROJECT.md says, and in
+this case the assumption would have been wrong twice over.
+
+**The daemon already has a real vpcd/vicc relay.** `crates/vpcd` (pure codec,
+no I/O) implements the vpcd wire protocol — a two-byte big-endian length
+prefix, four one-byte control messages (power off/on/reset/get-ATR), anything
+else is an APDU — and `crates/daemon/src/vpcd_relay.rs`'s `VpcdRelay` is a
+real, already-tested TCP **client** that dials the vsmartcard project's
+`vpcd` reader driver on loopback `35963`/`35964`, plays the **vicc** (virtual
+ICC) role, and forwards APDUs opaquely to whatever implements
+`PivCardTransport` — in production, `transport_ble::PivBleTransport`, which
+relays them over BLE to the real firmware. This is not a stub. It already has
+unit tests (`crates/daemon/src/vpcd_relay.rs`) and integration tests
+(`crates/daemon/tests/vpcd_relay.rs`, `vpcd_adversarial_stress.rs`) — but
+every one of them answers APDUs with a hand-picked, fixed response via
+`PivBleTransport::new_mock().set_auto_responder(...)`. None of them is backed
+by anything that behaves like the actual PIV applet. That's the gap: real
+transport code, tested against fake card *behavior*, not just fake card
+*plumbing*.
+
+**`crates/daemon` does not, and must not, depend on `crates/piv`.**
+`crates/daemon/tests/relay_stays_opaque.rs` enforces this by reading the
+daemon's own `Cargo.toml` and failing the build if a line starts with `piv`.
+This is PROJECT.md §8's dependency rule: on the relay path an APDU is an
+opaque `Vec<u8>` from `vpcd` to the radio and back, and `crates/piv` exists
+only for the host-side provisioning tool that has to build APDUs itself.
+`crates/vpicc-piv` (this harness) deliberately does **not** depend on
+`crates/piv` either, for the same reason, even though nothing would currently
+break if it did — keeping it dependency-free means it can never even look
+like what §8 forbids.
+
+## What I built
+
+`crates/vpicc-piv::FirmwareCard` is a line-by-line port of
+`core/piv/piv.c`'s `piv_handle_apdu()` and its helpers, read from the
+`cryptick-token-code` checkout at commit `3002531` (2026-10-17). Every
+method in `crates/vpicc-piv/src/lib.rs` cites the C function and line range
+it mirrors. It implements:
+
+- ISO 7816-4 header parsing for all four short-form cases *and* the
+  extended-length cases 2E/3E/4E (`core/piv/piv.c` lines 757-798) — the
+  firmware's "Extended APDU Support" fix (see `CHANGELOG.md` in
+  `cryptick-token-code`, 2026-09-27), which stops modern smart-card drivers
+  (macOS's `usbsmartcardreaderd` included) getting `6700` on a command they
+  encoded as extended length.
+- Command chaining (`CLA` bit `0x10`), including chain abandonment when a
+  different `INS`/`P1`/`P2` interrupts it.
+- `SELECT` with the right-truncated-AID prefix match CryptoTokenKit and
+  OpenSC actually use, and the application-property-template response body.
+- `GET DATA` / `GET RESPONSE` chunking exactly as the applet does it (256
+  bytes per chunk, `61xx` for "more data", `00` meaning "256 or more"), with
+  CCC and CHUID synthesised on demand when nothing is stored — the two
+  objects a host reads at discovery, without which login never starts.
+- `PUT DATA`, storing the whole `53 LL <value>` container (not just the
+  inner value — a prior firmware bug this applet's comments call out by
+  name), gated on a verified PIN.
+- `VERIFY` and `CHANGE REFERENCE DATA`, including the retry counter, the
+  "wrong PIN clears an earlier verification" rule, and the `P1=0xFF`
+  session-reset form.
+- `GENERATE ASYMMETRIC KEY PAIR` and `GENERAL AUTHENTICATE` (ECDSA sign and
+  ECDH), gated on PIN **then** user presence, in that order, with slot `9E`
+  exempted from the PIN gate (it's the contactless-door-access slot).
+
+**What is synthetic, on purpose:** the public keys, signatures, and ECDH
+shared secrets `FirmwareCard` returns are well-formed (correct TLV shape,
+correct lengths, valid minimal-DER `INTEGER` encoding for signatures) but
+**not cryptographically real** — no elliptic-curve math happens anywhere in
+this crate. This is the same approach `crates/piv::provision::SimulatedCard`
+already takes for dry-run provisioning. Do not use this harness to validate
+a signature against a public key it returned; it will not verify, by
+construction.
+
+**Where it's wired in:** `crates/daemon/tests/vpicc_piv_e2e.rs`. Each test
+builds a `FirmwareCard`, drops it into `PivBleTransport::new_mock()`'s
+auto-responder (so the real BLE fragmentation/reassembly in
+`transport_ble` runs too, not just a bare function call), starts a real
+`VpcdRelay::connect_and_run()`, binds a loopback `TcpListener` standing in
+for the real `vpcd` reader driver, and drives real PIV flows over a real
+TCP socket using the real `vpcd::frame`/`Decoder` wire codec:
+
+```
+test  --TCP, real vpcd wire protocol-->  VpcdRelay::connect_and_run()   (real daemon code, unmodified)
+                                                   |  PivCardTransport
+                                                   v
+                                           PivBleTransport::new_mock()   (real transport-ble fragmentation)
+                                                   |  auto-responder closure
+                                                   v
+                                            vpicc_piv::FirmwareCard       (this harness)
+```
+
+Eight scenarios, all passing:
+
+- `select_verify_generate_and_sign_round_trip_over_vpcd`
+- `wrong_pin_decrements_and_eventually_blocks_over_vpcd`
+- `chuid_and_ccc_are_synthesised_over_vpcd_with_no_provisioning`
+- `a_certificate_too_large_for_one_response_is_chained_through_get_response_over_vpcd`
+- `put_data_command_chain_round_trips_through_get_data_over_vpcd`
+- `extended_length_select_is_accepted_through_vpcd_and_ble`
+- `card_authentication_slot_signs_without_a_pin_over_vpcd`
+- `generate_and_sign_are_refused_without_user_presence_over_vpcd`
+
+Plus 23 unit tests inside `crates/vpicc-piv` itself, testing `FirmwareCard`
+directly (no transport), covering the same ground the firmware's own
+`tests/host/test_piv_apdu.py` (in `cryptick-token-code`) covers for the real
+C — that file is the better, more exhaustive conformance suite; this
+crate's own tests exist mainly so `FirmwareCard` can be trusted as a test
+double before it's wired into anything.
+
+### Actual results (run on this machine, this session)
+
+```
+cargo test -p vpicc-piv --lib                 → 23 passed; 0 failed
+cargo test -p daemon --test vpicc_piv_e2e      → 8 passed; 0 failed
+cargo test --workspace --lib --tests           → every crate green, 0 failed
+RUSTFLAGS="-D warnings" cargo build --workspace --tests   → clean, no warnings
+```
+
+`cargo fmt` and `cargo clippy` are not installed in this sandbox (`rustup
+component add rustfmt clippy` would be needed), so I could not run the exact
+CI lint job locally — worth doing before merge.
+
+## What this proves, and what it does not
+
+**Proves:**
+
+- The vpcd wire protocol (`crates/vpcd`'s codec) round-trips real PIV APDUs,
+  including command chaining and multi-round `GET RESPONSE`, through the
+  daemon's actual, unmodified `VpcdRelay` and `transport_ble::PivBleTransport`
+  fragmentation code, over a real loopback TCP socket.
+- Responses shaped exactly like this device's real applet — not a generic
+  PIV card — including its specific status words, TLV layouts, chaining
+  rules, and PIN-then-presence gating order.
+- The 261-byte vpcd/BLE ceiling (`PROJECT.md` §17, enforced in
+  `crates/vpcd::Decoder` and already tested in
+  `crates/daemon/tests/vpcd_relay.rs`) and the applet's independent 256-byte
+  `GET RESPONSE` chunking are both exercised honestly in the same test
+  (`a_certificate_too_large_for_one_response_is_chained_through_get_response_over_vpcd`),
+  rather than one being faked to avoid hitting the other.
+
+**Does not prove:**
+
+- Anything about real hardware: USB/BLE enumeration, timing, radio
+  behaviour, or the ESP32's actual crypto. The applet-level control flow is
+  faithfully reproduced; nothing below the APDU layer is.
+- That the real `vpcd`/`pcscd` binaries are compatible with this wire
+  protocol transcription — see "What would still be needed" below. The stand
+  -in `TcpListener` in `vpicc_piv_e2e.rs` speaks the same framing
+  `crates/vpcd` implements (which cites `vpcd.h`'s control-byte values and
+  the reference `vicc` loop), but it is not the real `vpcd` process.
+- Cryptographic correctness of anything `FirmwareCard` signs or generates —
+  it is a synthetic card, not a conformance oracle for ECDSA/ECDH.
+- Anything about the real device's three-OS login integration (`sc_auth`,
+  `pam_pkcs11`, the Windows minidriver) — those consume PC/SC, which this
+  harness does not run (see below).
+
+## What would still be needed for a "real pcscd" test
+
+This harness proves the **vpcd ↔ daemon** boundary. It does not prove the
+**pcscd ↔ vpcd** boundary, because that requires the real `vpcd` reader
+driver registered with the OS's PC/SC service, and I deliberately did not
+attempt that from this sandbox:
+
+- On macOS, a non-CCID reader (which is what `vpcd` presents as) is
+  installed as a driver bundle under
+  `/usr/local/libexec/SmartcardServices/drivers` (PROJECT.md §11), a
+  system-wide, privileged change outside a repository worktree.
+- On Linux, it's a PCSC-Lite `IFD_handler` driver registration, similarly
+  system-wide.
+- Both require installing `vpcd` itself. The vsmartcard project ships it as
+  a C binary (`vpcd`) plus a Python reference `vicc` (`virtualsmartcard` /
+  `vpcd` on PyPI provides the Python tooling; the C `vpcd` reader driver is
+  built from the project's `virtualsmartcard` source, documented at
+  <https://frankmorgner.github.io/vsmartcard/virtualsmartcard/README.html>).
+  Neither is installed on this machine (`pcscd` is absent; `brew`/`pip3` are
+  present and network access exists, so `pip install virtualsmartcard` or
+  building `vpcd` from source is plausible on a dev machine, but doing so
+  changes system-level smart-card configuration and needs a human to decide
+  to do it, not a sandboxed agent).
+
+**To actually close that gap**, on a real dev machine:
+
+```
+pip3 install virtualsmartcard          # or build vpcd from vsmartcard source
+# register the vpcd reader driver with pcscd (Linux) or SmartcardServices (macOS)
+cargo run -p daemon --bin cryptick-daemon -- <whatever starts the vpcd relay>
+# then drive it with a real PC/SC client: pcsc_scan, opensc-tool, or ykman piv
+```
+
+That would exercise the real IFD-handler boundary this harness stops short
+of. It's a meaningfully different (and more invasive, machine-specific) test
+than what's here, which is why I scoped this harness to the boundary that's
+testable without touching the host OS's smart-card configuration.
+
+## The "three firmware bug fixes" — what I found, read directly from the code
+
+The task described three fixes already landed in `core/piv/piv.c` /
+`drivers/usb_ccid.cpp`: extended-length APDU rejection, a USB-CCID
+blocking-detection fix for `GENERAL_AUTHENTICATE` routing, and a
+`GENERATE_KEYPAIR` blocking flag. Reading the actual files (not assuming)
+turned up a more precise — and in one case different — picture:
+
+1. **Extended-length APDUs are *accepted*, not rejected, at the applet
+   level.** `core/piv/piv.c` lines 757-798 parse ISO 7816-4 cases 2E/3E/4E.
+   `CHANGELOG.md` (2026-09-27) confirms this was added deliberately, to stop
+   modern drivers getting `6700`. The *comment* in `core/ble_fido/ble_piv.h`
+   ("The applet takes short APDUs only and rejects extended-length encoding
+   with 6700") appears to be stale relative to that change: `piv_ble_dispatch()`
+   in `core/fido2/hal_esp32.cpp` calls `piv_handle_apdu()` directly with no
+   extended-length-specific gate, so an extended-length APDU that still fits
+   the 261-byte BLE/vpcd ceiling is accepted over BLE too, the same as over
+   USB CCID. The only real rejection on the BLE/vpcd path is the independent
+   261-byte message ceiling (enforced in `crates/vpcd::Decoder` on this side,
+   and in the firmware's BLE framing on that side) — which my
+   `extended_length_select_is_accepted_through_vpcd_and_ble` test exercises
+   directly. **This looks like a stale comment in the firmware repo, not a
+   behavior bug** — worth a one-line fix there, but that's a different repo
+   and out of scope for this branch.
+
+2. **The `GENERAL_AUTHENTICATE` USB-CCID routing fix is present and exactly
+   as described.** `drivers/usb_ccid.cpp` lines 436-437: only
+   `PIV_INS_GENERAL_AUTHENTICATE` (`0x87`) is routed to the FIDO task queue
+   (to wait on a fingerprint without stalling the USB task); every other CCID
+   message, including `GET DATA`/`VERIFY`/`SELECT`, answers synchronously.
+   Matches `CHANGELOG.md`'s "Blocking Separation" entry exactly.
+
+3. **The analogous `GENERATE_KEYPAIR` (`0x47`) blocking flag is *not*
+   present in `drivers/usb_ccid.cpp`'s `is_blocking` check** (line 436-437
+   only tests for `0x87`). `generate_keypair()` in `piv.c` (line 538) calls
+   the same `_hal->user_presence()` fingerprint gate `general_authenticate()`
+   does, so on a real device, a `GENERATE ASYMMETRIC KEY PAIR` over **USB
+   CCID** would run synchronously on the USB task and block it for however
+   long the fingerprint wait takes — the exact hazard this file's own header
+   comment warns about ("A PIV signature waits on a fingerprint for up to
+   29s. Doing that on the TinyUSB task would stall CDC and HID with it.").
+   I did not fix this — it's firmware code, a different repository, and out
+   of scope for `feature/virtual-piv-test-harness` — but flagging it here
+   because the task explicitly asked me to verify these fixes rather than
+   assume them, and this one does not match the description. **This has no
+   bearing on `vpicc-piv`'s fidelity**: `FirmwareCard` models the
+   *applet's* APDU-level behavior (which already gates `GENERATE_KEYPAIR` on
+   PIN-then-presence correctly — see `generate_requires_pin_then_presence`
+   in both the unit tests and the e2e suite), not USB task-scheduling, and
+   the vpcd/BLE path this harness tests queues *every* PIV-over-BLE APDU
+   through the FIDO task uniformly (`piv_ble_submit_apdu`), so it never hits
+   this particular USB-only hazard regardless.
+
+I flagged item 3 as a separate task rather than silently absorbing it into
+this branch's scope.
+
+## How to run this harness
+
+```
+cd crates/vpicc-piv && cargo test                      # 23 unit tests, no I/O
+cargo test -p daemon --test vpicc_piv_e2e               # 8 end-to-end tests, real TCP sockets on loopback
+cargo test --workspace                                  # everything, including the above
+```
+
+No external dependencies beyond the existing Rust toolchain and workspace —
+no `pcscd`, no Python, no `vpcd` binary. That's deliberate: see "What this
+proves" above. The "real pcscd" tier described there would add `pip3 install
+virtualsmartcard` (or a source build of `vpcd`) and OS-level reader-driver
+registration, neither of which this harness requires or performs.
