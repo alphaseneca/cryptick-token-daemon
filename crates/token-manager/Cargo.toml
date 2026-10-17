@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 ctap.workspace = true
+ctap-client.workspace = true
 ctaphid.workspace = true
 ipc.workspace = true
 thiserror.workspace = true

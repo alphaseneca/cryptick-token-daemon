@@ -27,10 +27,13 @@
 //!   for" — so there is no PIN value for these specific subcommands to
 //!   take. `fido access change-pin`/`set-pin` still take `-P/--pin`
 //!   because CTAP2 `clientPin` is a real, separate capability this device
-//!   also reports (`pinUvAuthToken: true` in `run_fido_info`'s output).
+//!   also reports (the `clientPin` entry in `run_fido_info`'s `options`
+//!   output, present only once a PIN has actually been set).
 
 use crate::error::ManagerError;
 use crate::transport::TokenTransport;
+use ctap::{Command, Response};
+use ctap_client::GetInfoResponse;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -77,37 +80,63 @@ pub fn print_fido_help() {
 }
 
 /// Displays FIDO2 token capabilities and configuration.
+///
+/// Sends the real `authenticatorGetInfo` (CTAP2 command `0x04`) and prints
+/// what the device actually answers, rather than a fixed block of text —
+/// see this device's firmware (`core/fido2/ctap.c`'s `ctap_get_info`) for
+/// what it does and does not advertise (no CTAP2.1, no `largeBlobKey`, no
+/// `bioEnroll`/`pinUvAuthToken` options).
 fn run_fido_info(
     transport: &mut dyn TokenTransport,
     _args: &[String],
 ) -> Result<(), ManagerError> {
-    // CTAP2 authenticatorGetInfo command is byte 0x04
-    let get_info_cmd = [0x04];
-    let is_connected = transport
-        .transceive(0x10, &get_info_cmd, FIDO_TIMEOUT)
-        .is_ok();
+    let raw = match transport.transceive(0x10, &[Command::GET_INFO.as_u8()], FIDO_TIMEOUT) {
+        Ok(raw) => raw,
+        Err(e) => {
+            println!("Device not reachable: {e}");
+            return Ok(());
+        }
+    };
+
+    let response = match Response::decode(&raw) {
+        Ok(response) => response,
+        Err(e) => {
+            println!("Device not reachable: malformed response ({e})");
+            return Ok(());
+        }
+    };
+
+    if !response.status.is_ok() {
+        let name = response
+            .status
+            .name()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        println!(
+            "FIDO2 info unavailable: device returned status {:#04x}{name}",
+            response.status.as_u8()
+        );
+        return Ok(());
+    }
+
+    let info = match GetInfoResponse::parse(&response.data) {
+        Ok(info) => info,
+        Err(e) => {
+            println!("FIDO2 info unavailable: could not parse device response ({e})");
+            return Ok(());
+        }
+    };
 
     println!(
         "PIN is set: {}",
-        if is_connected {
-            "Yes"
-        } else {
-            "Not configured"
-        }
+        if info.client_pin_set() { "Yes" } else { "No" }
     );
-    println!("PIN minimum length: 6");
-    println!("PIN attempts remaining: 8");
-    println!("Biometrics enrolled: Supported (Capacitive Touch / On-Chip Enclave)");
-    println!("Biometrics touch policy: Enforced (0.2s match required for UV)");
-    println!("FIDO2 protocols: CTAP 2.0, CTAP 2.1");
-    println!("Extensions: credProtect, hmac-secret, largeBlobKey, minPinLength");
+    println!("FIDO2 protocols: {}", info.versions.join(", "));
+    println!("Extensions: {}", info.extensions.join(", "));
     println!("Options:");
-    println!("  • rk (Resident Keys / Passkeys)   : True (LittleFS Encrypted)");
-    println!("  • up (User Presence)              : True (Physical Touch)");
-    println!("  • uv (User Verification)          : True (Fingerprint Biometric)");
-    println!("  • clientPin                       : True");
-    println!("  • bioEnroll                       : True (On-Device Storage)");
-    println!("  • pinUvAuthToken                  : True");
+    for (name, value) in &info.options {
+        println!("  • {name}: {}", if *value { "True" } else { "False" });
+    }
 
     Ok(())
 }
