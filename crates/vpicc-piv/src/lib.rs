@@ -6,7 +6,15 @@
 //!
 //! [`FirmwareCard`] is a line-by-line transliteration of `piv_handle_apdu()`
 //! and its helpers, read from `core/piv/piv.c` on the `cryptick-token-code`
-//! side at commit `3002531` (2026-10-17). It is not a generic PIV card and
+//! side. First transcribed from a checkout at commit `3002531`
+//! (2026-10-17); that checkout turned out to be stale relative to this
+//! machine's actual current firmware tree by exactly one change — a
+//! `diff` against the live file turned up a single hunk, in the
+//! extended-length-APDU branch of the header parser (see
+//! [`parse_header`]'s doc comment for what changed and why). Every other
+//! line of `piv_handle_apdu()` is byte-for-byte identical between the two,
+//! so the rest of this module's transcription stands as originally
+//! written. It is not a generic PIV card and
 //! does not aim to be SP 800-73-5 conformant in general — it reproduces
 //! *this device's* applet: its exact status words, its exact TLV shapes, its
 //! exact command-chaining and `GET RESPONSE` chunking, and its exact gating
@@ -959,8 +967,22 @@ fn der_sequence_of_integers(r: &[u8; 32], s: &[u8; 32]) -> Vec<u8> {
     out
 }
 
-/// Parses the ISO 7816-4 header into `(data, le)`, mirroring `piv.c` lines
-/// 757-798: the four short-form cases plus extended-length cases 2E/3E/4E.
+/// Parses the ISO 7816-4 header into `(data, le)`, mirroring `piv.c`'s
+/// current header-parsing block exactly: the four short-form cases, plus an
+/// **unconditional refusal** of extended-length encoding.
+///
+/// Extended-length APDUs (`cmd[4] == 0 && cmd.len() >= 7`) used to be parsed
+/// here (cases 2E/3E/4E) — that was this device's actual behavior for a
+/// while, and it is *not* what this applet does today. `docs/device-protocol.md`
+/// states the contract plainly: "The applet accepts short APDUs only;
+/// extended-length encoding is rejected with 6700." Accepting it over USB
+/// CCID let that assumption quietly hold for every transport but one: a
+/// certificate too big for a short `Lc` goes through `GET RESPONSE` chaining
+/// (the `61xx` path), the same way on every transport, including PIV-over
+/// -BLE's 261-byte ceiling, which cannot carry an extended APDU intact in the
+/// first place. Parsing it here was a real protocol-contract violation, not
+/// a harmless extra, which is why the fix is an unconditional `6700` and not
+/// a conditional one gated on transport.
 ///
 /// `cmd.len() >= 4` and the CLA check are the caller's responsibility
 /// (checked first in both `piv_handle_apdu` and [`FirmwareCard::handle_apdu`]).
@@ -977,38 +999,10 @@ fn parse_header(cmd: &[u8]) -> Result<ParsedHeader, u16> {
         return Ok(ParsedHeader { data: None, le });
     }
     if cmd[4] == 0 && len >= 7 {
-        // Extended length (ISO 7816-4).
-        let lc = ((cmd[5] as usize) << 8) | cmd[6] as usize;
-        if lc == 0 {
-            // Case 2E: Le only, three bytes wide.
-            if len == 7 {
-                return Ok(ParsedHeader {
-                    data: None,
-                    le: 65536,
-                });
-            }
-            return Err(SW_WRONG_LENGTH);
-        }
-        if len < 7 + lc {
-            return Err(SW_WRONG_LENGTH);
-        }
-        let data = cmd[7..7 + lc].to_vec();
-        if len == 7 + lc {
-            // Case 3E: no Le.
-            return Ok(ParsedHeader {
-                data: Some(data),
-                le: 65536,
-            });
-        }
-        if len == 7 + lc + 2 {
-            // Case 4E: two-byte Le, taken literally — '0000' here means 0,
-            // *not* remapped to 65536, exactly as piv.c leaves it.
-            let le = ((cmd[7 + lc] as usize) << 8) | cmd[7 + lc + 1] as usize;
-            return Ok(ParsedHeader {
-                data: Some(data),
-                le,
-            });
-        }
+        // Extended-length encoding. No case 2E/3E/4E parsing — see the
+        // function doc comment above. Unconditional refusal, matching the
+        // real applet exactly: no inspection of the declared Lc, no partial
+        // acceptance within whatever ceiling a given transport imposes.
         return Err(SW_WRONG_LENGTH);
     }
 
@@ -1319,22 +1313,35 @@ mod tests {
     }
 
     #[test]
-    fn extended_length_select_is_accepted_within_the_261_byte_ceiling() {
-        // Case 3E: CLA INS P1 P2 00 LenHi LenLo <data>, no Le.
+    fn extended_length_case_3e_select_is_unconditionally_rejected() {
+        // Case 3E: CLA INS P1 P2 00 LenHi LenLo <data>, no Le. The applet
+        // refuses this outright — no inspection of the declared length, no
+        // partial acceptance — regardless of whether the whole message
+        // would otherwise fit comfortably under any transport's ceiling.
         let mut card = FirmwareCard::new();
         let mut cmd = vec![0x00, INS_SELECT, 0x04, 0x00, 0x00, 0x00, 0x09];
         cmd.extend_from_slice(&PIV_AID[..9]);
-        assert_eq!(status(&card.handle_apdu(&cmd)), SW_OK);
+        assert_eq!(status(&card.handle_apdu(&cmd)), SW_WRONG_LENGTH);
     }
 
     #[test]
-    fn extended_length_case_4e_is_accepted() {
+    fn extended_length_case_4e_select_is_unconditionally_rejected() {
         // Case 4E: CLA INS P1 P2 00 LenHi LenLo <data> LeHi LeLo.
         let mut card = FirmwareCard::new();
         let mut cmd = vec![0x00, INS_SELECT, 0x04, 0x00, 0x00, 0x00, 0x09];
         cmd.extend_from_slice(&PIV_AID[..9]);
         cmd.extend_from_slice(&[0x00, 0x00]);
-        assert_eq!(status(&card.handle_apdu(&cmd)), SW_OK);
+        assert_eq!(status(&card.handle_apdu(&cmd)), SW_WRONG_LENGTH);
+    }
+
+    #[test]
+    fn extended_length_case_2e_le_only_is_unconditionally_rejected() {
+        // Case 2E: CLA INS P1 P2 00 00 00 — Le only, no data at all. Even
+        // this minimal extended-length form is refused; the applet does not
+        // special-case an empty Lc.
+        let mut card = FirmwareCard::new();
+        let cmd = vec![0x00, INS_SELECT, 0x04, 0x00, 0x00, 0x00, 0x00];
+        assert_eq!(status(&card.handle_apdu(&cmd)), SW_WRONG_LENGTH);
     }
 
     #[test]

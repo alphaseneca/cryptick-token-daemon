@@ -309,22 +309,24 @@ async fn put_data_command_chain_round_trips_through_get_data_over_vpcd() {
 }
 
 #[tokio::test]
-async fn extended_length_select_is_accepted_through_vpcd_and_ble() {
-    // Case 3E encoding: CLA INS P1 P2 00 LenHi LenLo <data>, no Le. Firmware
-    // added ISO 7816-4 extended-length parsing to piv.c to stop modern smart
-    // card drivers (macOS's usbsmartcardreaderd included) getting 0x6700 —
-    // this proves that fix is reachable through the vpcd/BLE path too, not
-    // only USB CCID, as long as the whole message still fits the 261-byte
-    // ceiling that path imposes independently (the two limits are enforced
-    // in different places and this is the test that exercises both at once).
+async fn extended_length_select_is_rejected_through_vpcd_and_ble() {
+    // Case 3E encoding: CLA INS P1 P2 00 LenHi LenLo <data>, no Le.
+    // `docs/device-protocol.md` states the applet's contract plainly: short
+    // APDUs only, extended-length encoding refused with 6700 — no
+    // inspection of the declared length, no partial acceptance under any
+    // transport's ceiling. This proves that refusal is reachable through
+    // the vpcd/BLE path exactly as it is over USB CCID, even for a message
+    // that would otherwise fit comfortably under the 261-byte ceiling that
+    // path imposes independently — the rejection is unconditional, not a
+    // consequence of exceeding that ceiling.
     let (mut stream, _relay_task) = start_relay_with_card(FirmwareCard::new()).await;
 
     let mut cmd = vec![0x00, 0xA4, 0x04, 0x00, 0x00, 0x00, 0x09];
     cmd.extend_from_slice(&[0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00]);
-    assert!(cmd.len() <= 261, "test input must itself respect the ceiling it is proving");
+    assert!(cmd.len() <= 261, "test input must itself respect the ceiling it is not the one being proven here");
 
     let resp = transceive(&mut stream, &cmd).await;
-    assert_eq!(status(&resp), 0x9000, "extended-length SELECT must be accepted");
+    assert_eq!(status(&resp), 0x6700, "extended-length SELECT must be refused, unconditionally");
 }
 
 #[tokio::test]

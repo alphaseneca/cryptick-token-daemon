@@ -756,6 +756,22 @@ this agent wrote. None of it is hardware-verified:
 Written while building `feature/virtual-piv-test-harness`. Scope: close the
 "needs real hardware to confirm" gap on the PIV/vpcd path, per PROJECT.md §14.
 
+**Addendum, same session:** this worktree's `cryptick-token-daemon` and
+`cryptick-token-code` checkouts were cloned fresh from each repo's GitHub
+`origin`, which turned out to be many commits behind this machine's actual
+local checkouts (neither repo's accumulated local work has been pushed).
+Everything below was originally written against the stale snapshot. One
+finding in "The three firmware bug fixes" section was wrong as a result —
+extended-length APDUs are **not** accepted at the applet level; a real
+commit I hadn't seen reversed that. It's corrected below, with the diff that
+proves it, rather than silently rewritten. The daemon branch itself was
+separately rebased onto this machine's real current `main` mid-session (by
+an external process, not by me, after I'd declined to do that rebase myself
+when first asked, over a sandboxing concern) — I verified the result
+(`git reflog`, a full `diff` of the stale vs. real `piv.c` and
+`usb_ccid.cpp`) before changing any of my own code or conclusions on the
+strength of it; see the session transcript for the full back-and-forth.
+
 ## The problem, restated after reading the actual code
 
 Every prior PIV fix in this project has shipped with "needs real hardware to
@@ -800,12 +816,12 @@ like what §8 forbids.
 method in `crates/vpicc-piv/src/lib.rs` cites the C function and line range
 it mirrors. It implements:
 
-- ISO 7816-4 header parsing for all four short-form cases *and* the
-  extended-length cases 2E/3E/4E (`core/piv/piv.c` lines 757-798) — the
-  firmware's "Extended APDU Support" fix (see `CHANGELOG.md` in
-  `cryptick-token-code`, 2026-09-27), which stops modern smart-card drivers
-  (macOS's `usbsmartcardreaderd` included) getting `6700` on a command they
-  encoded as extended length.
+- ISO 7816-4 header parsing for all four short-form cases, and an
+  **unconditional refusal** of extended-length encoding (`SW_WRONG_LENGTH`,
+  no inspection of the declared length at all) — see the corrected finding
+  below; an earlier version of this crate parsed extended-length cases
+  2E/3E/4E, which was this device's behavior for a while but is not its
+  current behavior.
 - Command chaining (`CLA` bit `0x10`), including chain abandonment when a
   different `INS`/`P1`/`P2` interrupts it.
 - `SELECT` with the right-truncated-AID prefix match CryptoTokenKit and
@@ -858,24 +874,24 @@ Eight scenarios, all passing:
 - `chuid_and_ccc_are_synthesised_over_vpcd_with_no_provisioning`
 - `a_certificate_too_large_for_one_response_is_chained_through_get_response_over_vpcd`
 - `put_data_command_chain_round_trips_through_get_data_over_vpcd`
-- `extended_length_select_is_accepted_through_vpcd_and_ble`
+- `extended_length_select_is_rejected_through_vpcd_and_ble`
 - `card_authentication_slot_signs_without_a_pin_over_vpcd`
 - `generate_and_sign_are_refused_without_user_presence_over_vpcd`
 
-Plus 23 unit tests inside `crates/vpicc-piv` itself, testing `FirmwareCard`
+Plus 24 unit tests inside `crates/vpicc-piv` itself, testing `FirmwareCard`
 directly (no transport), covering the same ground the firmware's own
 `tests/host/test_piv_apdu.py` (in `cryptick-token-code`) covers for the real
 C — that file is the better, more exhaustive conformance suite; this
 crate's own tests exist mainly so `FirmwareCard` can be trusted as a test
 double before it's wired into anything.
 
-### Actual results (run on this machine, this session)
+### Actual results (run on this machine, this session, after the correction below)
 
 ```
-cargo test -p vpicc-piv --lib                 → 23 passed; 0 failed
-cargo test -p daemon --test vpicc_piv_e2e      → 8 passed; 0 failed
-cargo test --workspace --lib --tests           → every crate green, 0 failed
-RUSTFLAGS="-D warnings" cargo build --workspace --tests   → clean, no warnings
+cargo test -p vpicc-piv --lib                            → 24 passed; 0 failed
+cargo test -p daemon --test vpicc_piv_e2e                 → 8 passed; 0 failed
+cargo test --workspace --lib --tests                      → every crate green, 0 failed
+RUSTFLAGS="-D warnings" cargo build --workspace --all-targets   → clean, no warnings
 ```
 
 `cargo fmt` and `cargo clippy` are not installed in this sandbox (`rustup
@@ -954,66 +970,77 @@ of. It's a meaningfully different (and more invasive, machine-specific) test
 than what's here, which is why I scoped this harness to the boundary that's
 testable without touching the host OS's smart-card configuration.
 
-## The "three firmware bug fixes" — what I found, read directly from the code
+## The "three firmware bug fixes" — corrected after finding my checkout was stale
 
 The task described three fixes already landed in `core/piv/piv.c` /
 `drivers/usb_ccid.cpp`: extended-length APDU rejection, a USB-CCID
 blocking-detection fix for `GENERAL_AUTHENTICATE` routing, and a
-`GENERATE_KEYPAIR` blocking flag. Reading the actual files (not assuming)
-turned up a more precise — and in one case different — picture:
+`GENERATE_KEYPAIR` blocking flag. My first pass, against this worktree's
+origin-cloned `cryptick-token-code` checkout, got one of the three
+backwards. Here's the corrected picture, each claim backed by a `diff`
+against this machine's real current checkout (not a description of one):
 
-1. **Extended-length APDUs are *accepted*, not rejected, at the applet
-   level.** `core/piv/piv.c` lines 757-798 parse ISO 7816-4 cases 2E/3E/4E.
-   `CHANGELOG.md` (2026-09-27) confirms this was added deliberately, to stop
-   modern drivers getting `6700`. The *comment* in `core/ble_fido/ble_piv.h`
-   ("The applet takes short APDUs only and rejects extended-length encoding
-   with 6700") appears to be stale relative to that change: `piv_ble_dispatch()`
-   in `core/fido2/hal_esp32.cpp` calls `piv_handle_apdu()` directly with no
-   extended-length-specific gate, so an extended-length APDU that still fits
-   the 261-byte BLE/vpcd ceiling is accepted over BLE too, the same as over
-   USB CCID. The only real rejection on the BLE/vpcd path is the independent
-   261-byte message ceiling (enforced in `crates/vpcd::Decoder` on this side,
-   and in the firmware's BLE framing on that side) — which my
-   `extended_length_select_is_accepted_through_vpcd_and_ble` test exercises
-   directly. **This looks like a stale comment in the firmware repo, not a
-   behavior bug** — worth a one-line fix there, but that's a different repo
-   and out of scope for this branch.
+1. **Extended-length APDUs are rejected unconditionally, exactly as
+   described — my first reading of this had it backwards.** I'd found
+   `core/piv/piv.c` (stale checkout) parsing ISO 7816-4 cases 2E/3E/4E and
+   concluded the applet *accepted* extended length, with a stale comment in
+   `core/ble_fido/ble_piv.h` claiming otherwise. A straight `diff` between
+   the stale and real `core/piv/piv.c` shows exactly one hunk: the real file
+   replaces the entire 2E/3E/4E parsing block with an unconditional
+   `return put_sw(out, out_max, PIV_SW_WRONG_LENGTH);`, with a comment citing
+   `docs/device-protocol.md`'s contract ("The applet accepts short APDUs
+   only; extended-length encoding is rejected with 6700") and explaining why
+   accepting it over USB CCID was a real protocol-contract violation: a
+   certificate too big for a short `Lc` must go through `GET RESPONSE`
+   chaining on *every* transport, including BLE PIV's 261-byte ceiling,
+   which cannot carry an extended APDU intact in the first place — silently
+   accepting extended length over USB CCID let that assumption break for
+   exactly one transport. `ble_piv.h`'s comment was correct all along; it
+   was my stale checkout's `piv.c` that no longer matched it.
+   `CHANGELOG.md` is identical in both checkouts and only documents the
+   *original* "Extended APDU Support" addition — it was never updated when
+   that support was removed, so it's stale documentation in its own right,
+   independent of my checkout being behind.
 
-2. **The `GENERAL_AUTHENTICATE` USB-CCID routing fix is present and exactly
-   as described.** `drivers/usb_ccid.cpp` lines 436-437: only
-   `PIV_INS_GENERAL_AUTHENTICATE` (`0x87`) is routed to the FIDO task queue
-   (to wait on a fingerprint without stalling the USB task); every other CCID
-   message, including `GET DATA`/`VERIFY`/`SELECT`, answers synchronously.
-   Matches `CHANGELOG.md`'s "Blocking Separation" entry exactly.
+   **Fixed in this crate**: [`parse_header`] (`crates/vpicc-piv/src/lib.rs`)
+   now returns `SW_WRONG_LENGTH` unconditionally for `cmd[4] == 0 && cmd.len()
+   >= 7`, no case parsing. The two tests that asserted acceptance
+   (`extended_length_select_is_accepted_within_the_261_byte_ceiling`,
+   `extended_length_case_4e_is_accepted`) were replaced with three asserting
+   rejection (cases 2E, 3E, 4E); the e2e test was renamed
+   `extended_length_select_is_rejected_through_vpcd_and_ble` and its
+   assertion flipped to `0x6700`.
 
-3. **The analogous `GENERATE_KEYPAIR` (`0x47`) blocking flag is *not*
-   present in `drivers/usb_ccid.cpp`'s `is_blocking` check** (line 436-437
-   only tests for `0x87`). `generate_keypair()` in `piv.c` (line 538) calls
-   the same `_hal->user_presence()` fingerprint gate `general_authenticate()`
-   does, so on a real device, a `GENERATE ASYMMETRIC KEY PAIR` over **USB
-   CCID** would run synchronously on the USB task and block it for however
-   long the fingerprint wait takes — the exact hazard this file's own header
-   comment warns about ("A PIV signature waits on a fingerprint for up to
-   29s. Doing that on the TinyUSB task would stall CDC and HID with it.").
-   I did not fix this — it's firmware code, a different repository, and out
-   of scope for `feature/virtual-piv-test-harness` — but flagging it here
-   because the task explicitly asked me to verify these fixes rather than
-   assume them, and this one does not match the description. **This has no
-   bearing on `vpicc-piv`'s fidelity**: `FirmwareCard` models the
-   *applet's* APDU-level behavior (which already gates `GENERATE_KEYPAIR` on
-   PIN-then-presence correctly — see `generate_requires_pin_then_presence`
-   in both the unit tests and the e2e suite), not USB task-scheduling, and
-   the vpcd/BLE path this harness tests queues *every* PIV-over-BLE APDU
-   through the FIDO task uniformly (`piv_ble_submit_apdu`), so it never hits
-   this particular USB-only hazard regardless.
+2. **The `GENERAL_AUTHENTICATE` USB-CCID routing fix is present, and more
+   precise than the task described.** Confirmed identical in both
+   checkouts: `drivers/usb_ccid.cpp` routes `PIV_INS_GENERAL_AUTHENTICATE`
+   (`0x87`) to the FIDO task queue so a fingerprint wait doesn't stall the
+   USB task.
 
-I flagged item 3 as a separate task rather than silently absorbing it into
-this branch's scope.
+3. **The `GENERATE_KEYPAIR` blocking flag — also already fixed on this
+   machine's real checkout, which my stale clone hadn't caught up to.** The
+   stale checkout's `is_blocking` test only checked `0x87`; a `diff` against
+   the real checkout shows it now also includes `PIV_INS_GENERATE_KEYPAIR`
+   (`0x47`) — gated on slot, not just instruction: the real fix notes that
+   `piv_user_presence()` (`piv_hal_esp32.cpp`) returns immediately for
+   9A/9D/9E and only actually blocks on a fingerprint for 9C (Digital
+   Signature), so routing *every* `0x87`/`0x47` through the FIDO-task queue
+   was itself wrong in the other direction — it added queue latency and a
+   spurious `CCID_ERR_SLOT_BUSY` risk to the single most common PIV
+   operation (9A login) for no reason. The real check is
+   `(ins == 0x87 || ins == 0x47) && slot == PIV_SLOT_SIGNATURE (0x9C)`.
+   I'd filed this as a separate background task (assuming it was still an
+   open bug); withdrawn once the diff showed it was already fixed. **This
+   detail has no bearing on `vpicc-piv`'s fidelity either way**: it's a USB
+   task-scheduling question, invisible at the APDU-response-bytes level
+   `FirmwareCard` models, and the vpcd/BLE path this harness actually tests
+   queues every PIV-over-BLE APDU through the FIDO task uniformly
+   regardless of instruction or slot.
 
 ## How to run this harness
 
 ```
-cd crates/vpicc-piv && cargo test                      # 23 unit tests, no I/O
+cd crates/vpicc-piv && cargo test                      # 24 unit tests, no I/O
 cargo test -p daemon --test vpicc_piv_e2e               # 8 end-to-end tests, real TCP sockets on loopback
 cargo test --workspace                                  # everything, including the above
 ```
