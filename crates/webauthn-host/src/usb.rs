@@ -1,10 +1,67 @@
 use ctaphid::{ChannelId, PACKET_SIZE};
 use hidapi::{HidApi, HidDevice};
 use std::time::{Duration, Instant};
+use thiserror::Error;
 
 const CRYPTICK_VID: u16 = 0x1209;
 const CRYPTICK_PID: u16 = 0xBEEE;
 const FIDO_USAGE_PAGE: u16 = 0xF1D0;
+
+/// Mirrors [`crate::daemon::HostError`]'s shape for the USB side of
+/// [`crate::usb`] (PROJECT.md §20: typed errors, no stringly-typed failures
+/// across crate lines). `UsbClient::transact`/`transact_preserving_status`
+/// implement the identical interface `DaemonClient`'s do — see the doc
+/// comment on [`UsbClient::transact_preserving_status`] — so the two error
+/// types line up variant-for-variant where the shape is the same
+/// (`Timeout`, `Ctap { status, code }`) and diverge only where the
+/// transports genuinely differ: USB has no daemon to refuse a request or an
+/// `IpcError` to wrap, but it does have a raw HID I/O layer and a
+/// CTAPHID_INIT handshake that can fail before any transaction starts.
+#[derive(Debug, Error)]
+pub enum UsbError {
+    /// A raw HID write or read failed at the `hidapi` layer.
+    #[error("USB HID I/O error: {0}")]
+    Io(#[source] hidapi::HidError),
+
+    /// `CTAPHID_INIT` did not complete: the device timed out or answered
+    /// with something that doesn't look like an init response. Mirrors
+    /// `HostError::NotRunning` in spirit — the connection never reached a
+    /// usable state.
+    #[error("USB CTAPHID handshake failed: {0}")]
+    Handshake(String),
+
+    /// The caller's payload is larger than the CTAPHID sequence framing can
+    /// carry (7609 bytes: a 64-byte init packet plus 128 continuation
+    /// packets of 59 bytes each).
+    #[error("payload exceeds maximum CTAPHID sequence capacity (7609 bytes)")]
+    PayloadTooLarge,
+
+    /// The device sent a `CTAPHID_ERROR` packet.
+    #[error("device reported CTAPHID error {0:#04x}")]
+    DeviceError(u8),
+
+    /// No complete response arrived before the caller's deadline.
+    #[error("operation timed out waiting for a complete response")]
+    Timeout,
+
+    /// A CTAP2 transaction completed but the authenticator returned a
+    /// non-OK status. Mirrors `HostError::Ctap` exactly: same two fields,
+    /// same reason (PROJECT.md §15.8 — a caller that needs to tell failure
+    /// *kinds* apart, such as credential management, must get the real
+    /// status byte instead of a pre-merged string).
+    #[error("CTAP error {status:?} ({code:#x})")]
+    Ctap {
+        /// The CTAP status code the authenticator returned.
+        status: ctap::StatusCode,
+        /// The same status, as the raw byte, for display.
+        code: u8,
+    },
+
+    /// A response did not have the shape the caller expected (too short, a
+    /// non-success OATH status word, an unrecognized TLV layout).
+    #[error("malformed response: {0}")]
+    Protocol(String),
+}
 
 pub struct UsbClient {
     device: HidDevice,
@@ -52,7 +109,7 @@ impl UsbClient {
         None
     }
 
-    pub fn init_channel(&mut self) -> Result<(), String> {
+    pub fn init_channel(&mut self) -> Result<(), UsbError> {
         let mut nonce = [0u8; 8];
         for (i, b) in nonce.iter_mut().enumerate() {
             *b = (0x42 + i * 7) as u8;
@@ -68,10 +125,16 @@ impl UsbClient {
         self.write_packet(&pkt)?;
         let resp = match self.read_slice(Duration::from_millis(100))? {
             Some(r) => r,
-            None => return Err("Timeout waiting for CTAPHID_INIT".into()),
+            None => {
+                return Err(UsbError::Handshake(
+                    "timeout waiting for CTAPHID_INIT".into(),
+                ))
+            }
         };
         if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
-            return Err("Invalid CTAPHID_INIT response".into());
+            return Err(UsbError::Handshake(
+                "invalid CTAPHID_INIT response".into(),
+            ));
         }
 
         let mut cid = [0u8; 4];
@@ -80,24 +143,24 @@ impl UsbClient {
         Ok(())
     }
 
-    fn write_packet(&self, pkt: &[u8; PACKET_SIZE]) -> Result<(), String> {
+    fn write_packet(&self, pkt: &[u8; PACKET_SIZE]) -> Result<(), UsbError> {
         let mut buf = [0u8; PACKET_SIZE + 1];
         buf[0] = 0x00;
         buf[1..].copy_from_slice(pkt);
-        self.device
-            .write(&buf)
-            .map_err(|e| format!("USB write failed: {e}"))?;
+        self.device.write(&buf).map_err(UsbError::Io)?;
         Ok(())
     }
 
-    fn read_slice(&self, timeout: Duration) -> Result<Option<[u8; PACKET_SIZE]>, String> {
+    fn read_slice(&self, timeout: Duration) -> Result<Option<[u8; PACKET_SIZE]>, UsbError> {
         let mut buf = [0u8; PACKET_SIZE];
         let timeout_ms = timeout.as_millis().max(1) as i32;
         match self.device.read_timeout(&mut buf, timeout_ms) {
             Ok(n) if n == PACKET_SIZE => Ok(Some(buf)),
             Ok(0) => Ok(None),
-            Ok(n) => Err(format!("Unexpected USB packet length: {n}")),
-            Err(e) => Err(format!("USB read error: {e}")),
+            Ok(n) => Err(UsbError::Protocol(format!(
+                "unexpected USB packet length: {n}"
+            ))),
+            Err(e) => Err(UsbError::Io(e)),
         }
     }
 
@@ -106,9 +169,9 @@ impl UsbClient {
         cmd: u8,
         payload: &[u8],
         timeout: Duration,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Vec<u8>, UsbError> {
         if payload.len() > 7609 {
-            return Err("Payload too large".into());
+            return Err(UsbError::PayloadTooLarge);
         }
 
         // Init packet
@@ -163,7 +226,7 @@ impl UsbClient {
             // 0x3F = CTAPHID_ERROR
             if opcode == 0x3F {
                 let err = raw.get(7).copied().unwrap_or(0);
-                return Err(format!("Device reported CTAPHID error {:#04x}", err));
+                return Err(UsbError::DeviceError(err));
             }
 
             if let Some(total) = total_len {
@@ -191,55 +254,56 @@ impl UsbClient {
             }
         }
 
-        Err("Device read timed out".into())
+        Err(UsbError::Timeout)
     }
 
     pub fn transact(
         &mut self,
         request: &ctap::Request,
         timeout: Duration,
-    ) -> Result<ctap::Response, String> {
+    ) -> Result<ctap::Response, UsbError> {
         let response = self.transact_preserving_status(request, timeout)?;
         if !response.status.is_ok() {
-            return Err(format!(
-                "CTAP error {:?} ({:#x})",
-                response.status,
-                response.status.as_u8()
-            ));
+            return Err(UsbError::Ctap {
+                status: response.status,
+                code: response.status.as_u8(),
+            });
         }
         Ok(response)
     }
 
     /// Same as [`Self::transact`], but a non-OK CTAP status is returned as
-    /// `Ok` rather than collapsed into a formatted `Err(String)` that throws
-    /// the status byte away. See the identical note on
-    /// `DaemonClient::transact_preserving_status` (`crates/webauthn-host/src/daemon.rs`)
-    /// for why credential management needs this and `create`/`get`/`totp_code`
-    /// do not.
+    /// `Ok` rather than collapsed into `Err(UsbError::Ctap)`, which would
+    /// throw the status byte away as a mere message. See the identical note
+    /// on `DaemonClient::transact_preserving_status`
+    /// (`crates/webauthn-host/src/daemon.rs`) for why credential management
+    /// needs this and `create`/`get`/`totp_code` do not.
     pub fn transact_preserving_status(
         &mut self,
         request: &ctap::Request,
         timeout: Duration,
-    ) -> Result<ctap::Response, String> {
+    ) -> Result<ctap::Response, UsbError> {
         let payload = request.encode();
         let body = self.transact_raw(0x10, &payload, timeout)?;
         if body.is_empty() {
-            return Err("Empty CTAP response".into());
+            return Err(UsbError::Protocol("empty CTAP response".into()));
         }
         let status = ctap::StatusCode(body[0]);
         Ok(ctap::Response::new(status, body[1..].to_vec()))
     }
 
-    pub fn oath_list(&mut self, timeout: Duration) -> Result<Vec<String>, String> {
+    pub fn oath_list(&mut self, timeout: Duration) -> Result<Vec<String>, UsbError> {
         // INS_LIST = 0xA1
         let apdu = [0x00, 0xA1, 0x00, 0x00, 0x00];
         let resp = self.transact_raw(0x63, &apdu, timeout)?;
         if resp.len() < 2 {
-            return Err("Short OATH response".into());
+            return Err(UsbError::Protocol("short OATH response".into()));
         }
         let sw = u16::from_be_bytes([resp[resp.len() - 2], resp[resp.len() - 1]]);
         if sw != 0x9000 {
-            return Err(format!("OATH LIST returned error {sw:#06x}"));
+            return Err(UsbError::Protocol(format!(
+                "OATH LIST returned error {sw:#06x}"
+            )));
         }
 
         let mut names = Vec::new();
@@ -268,7 +332,7 @@ impl UsbClient {
         name: &str,
         counter: u64,
         timeout: Duration,
-    ) -> Result<String, String> {
+    ) -> Result<String, UsbError> {
         // INS_CALCULATE = 0xA2
         let name_bytes = name.as_bytes();
         let chal_bytes = counter.to_be_bytes();
@@ -287,17 +351,21 @@ impl UsbClient {
 
         let resp = self.transact_raw(0x63, &apdu, timeout)?;
         if resp.len() < 2 {
-            return Err("Short OATH response".into());
+            return Err(UsbError::Protocol("short OATH response".into()));
         }
         let sw = u16::from_be_bytes([resp[resp.len() - 2], resp[resp.len() - 1]]);
         if sw != 0x9000 {
             if sw == 0x6985 {
-                return Err("User verification failed or timed out (touch sensor)".into());
+                return Err(UsbError::Protocol(
+                    "user verification failed or timed out (touch sensor)".into(),
+                ));
             }
             if sw == 0x6A82 {
-                return Err("Account not found on token".into());
+                return Err(UsbError::Protocol("account not found on token".into()));
             }
-            return Err(format!("OATH CALCULATE returned {sw:#06x}"));
+            return Err(UsbError::Protocol(format!(
+                "OATH CALCULATE returned {sw:#06x}"
+            )));
         }
 
         // Response format: TAG_RESPONSE (0x75) | len (5) | digits (6) | code_be (4) | 90 00
@@ -307,21 +375,25 @@ impl UsbClient {
             return Ok(format!("{:06}", code_num));
         }
 
-        Err("Invalid OATH CALCULATE response format".into())
+        Err(UsbError::Protocol(
+            "invalid OATH CALCULATE response format".into(),
+        ))
     }
 
-    pub fn oath_set_time(&mut self, utc_secs: u64, timeout: Duration) -> Result<(), String> {
+    pub fn oath_set_time(&mut self, utc_secs: u64, timeout: Duration) -> Result<(), UsbError> {
         let ts = (utc_secs as u32).to_be_bytes();
         let mut apdu = vec![0x00, 0x04, 0x00, 0x00, 0x04];
         apdu.extend_from_slice(&ts);
 
         let resp = self.transact_raw(0x63, &apdu, timeout)?;
         if resp.len() < 2 {
-            return Err("Short OATH response".into());
+            return Err(UsbError::Protocol("short OATH response".into()));
         }
         let sw = u16::from_be_bytes([resp[resp.len() - 2], resp[resp.len() - 1]]);
         if sw != 0x9000 {
-            return Err(format!("OATH SET_TIME returned error {sw:#06x}"));
+            return Err(UsbError::Protocol(format!(
+                "OATH SET_TIME returned error {sw:#06x}"
+            )));
         }
         Ok(())
     }

@@ -283,8 +283,17 @@ impl HostResponse {
 }
 
 fn get_local_tz_offset() -> (i32, String) {
+    // SAFETY: `libc::time` with a null `time_t*` out-pointer has no output
+    // parameter to write through; it only returns the current time by
+    // value, so there is no buffer for the call to misuse.
     let t = unsafe { libc::time(std::ptr::null_mut()) };
+    // SAFETY: `libc::tm` is a plain C struct of integers; the all-zero bit
+    // pattern is a valid (if not yet meaningful) value for every field, and
+    // `localtime_r` below fully populates it before it's read.
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: `&t` and `&mut tm` are both valid, live, non-overlapping
+    // pointers to correctly-sized objects (a `time_t` and a `libc::tm`),
+    // which is everything `localtime_r` requires of its two out-parameters.
     unsafe { libc::localtime_r(&t, &mut tm) };
     #[cfg(unix)]
     let offset_secs = tm.tm_gmtoff;
@@ -342,7 +351,7 @@ fn cbor_alg(alg: i64) -> Value {
 fn transact_with_fallback(request: &Request, timeout: Duration) -> Result<Response, String> {
     // 1. Direct USB CTAPHID first: instantaneous, zero BLE latency or pairing needed
     if let Some(mut usb) = UsbClient::try_connect() {
-        return usb.transact(request, timeout);
+        return usb.transact(request, timeout).map_err(|e| e.to_string());
     }
 
     // If USB is present on the bus, retry USB with brief backoffs in case of enumeration lag
@@ -350,7 +359,7 @@ fn transact_with_fallback(request: &Request, timeout: Duration) -> Result<Respon
         for _ in 0..3 {
             std::thread::sleep(Duration::from_millis(150));
             if let Some(mut usb) = UsbClient::try_connect() {
-                return usb.transact(request, timeout);
+                return usb.transact(request, timeout).map_err(|e| e.to_string());
             }
         }
     }
@@ -375,14 +384,18 @@ fn transact_with_fallback_preserving_status(
     timeout: Duration,
 ) -> Result<Response, String> {
     if let Some(mut usb) = UsbClient::try_connect() {
-        return usb.transact_preserving_status(request, timeout);
+        return usb
+            .transact_preserving_status(request, timeout)
+            .map_err(|e| e.to_string());
     }
 
     if check_usb_device() {
         for _ in 0..3 {
             std::thread::sleep(Duration::from_millis(150));
             if let Some(mut usb) = UsbClient::try_connect() {
-                return usb.transact_preserving_status(request, timeout);
+                return usb
+                    .transact_preserving_status(request, timeout)
+                    .map_err(|e| e.to_string());
             }
         }
     }
@@ -779,7 +792,9 @@ fn parse_oath_code(data: &[u8]) -> Result<String, String> {
 
 fn handle_totp_list() -> Result<Vec<String>, String> {
     if let Some(mut usb) = UsbClient::try_connect() {
-        return usb.oath_list(Duration::from_secs(3));
+        return usb
+            .oath_list(Duration::from_secs(3))
+            .map_err(|e| e.to_string());
     }
 
     let mut client = DaemonClient::connect(Duration::from_millis(500))
@@ -794,7 +809,9 @@ fn handle_totp_list() -> Result<Vec<String>, String> {
 
 fn handle_totp_code(name: &str, counter: u64) -> Result<String, String> {
     if let Some(mut usb) = UsbClient::try_connect() {
-        return usb.oath_calculate(name, counter, Duration::from_secs(25));
+        return usb
+            .oath_calculate(name, counter, Duration::from_secs(25))
+            .map_err(|e| e.to_string());
     }
 
     let mut client = DaemonClient::connect(Duration::from_millis(500))
@@ -827,7 +844,9 @@ fn parse_oath_sw(data: &[u8]) -> Result<(), String> {
 
 fn handle_sync_time(utc_secs: u64) -> Result<(), String> {
     if let Some(mut usb) = UsbClient::try_connect() {
-        return usb.oath_set_time(utc_secs, Duration::from_secs(3));
+        return usb
+            .oath_set_time(utc_secs, Duration::from_secs(3))
+            .map_err(|e| e.to_string());
     }
 
     let mut client = DaemonClient::connect(Duration::from_millis(500))
@@ -1150,11 +1169,16 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
         Ok(HostRequest::Restart) => {
             #[cfg(target_os = "macos")]
             {
+                // SAFETY: `getuid()` takes no arguments and has no
+                // preconditions — it cannot fail or misbehave regardless of
+                // process state, so there is nothing for the caller to
+                // uphold beyond calling it.
+                let uid = unsafe { libc::getuid() };
                 let _ = std::process::Command::new("launchctl")
                     .args([
                         "kickstart",
                         "-k",
-                        &format!("gui/{}/com.cryptick.daemon", unsafe { libc::getuid() }),
+                        &format!("gui/{uid}/com.cryptick.daemon"),
                     ])
                     .output();
             }
