@@ -1283,3 +1283,267 @@ available in this sandbox. Specifically unverified:
 - Did not port the credential-management, PIN-protocol, or PIV/BLE
   cross-platform work visible in the other checkout's `NOTES.md` — out of
   scope for "make select_device hot-retarget," and unreviewed.
+
+# Agent pass — coding-standards conventions audit (typed errors, SAFETY
+# comments, `missing_docs`) and a real ykman CLI-parity check
+
+A prior read-only critic audit flagged two generic code-standards findings
+as likely targets for a conventions pass, plus a lower-priority one. This
+pass fixed all three, hands-on, and then did the ykman CLI-parity check the
+task asked for separately — verified against `ykman`'s actual source, not
+memory. `cargo build --workspace --all-targets` and `cargo test --workspace
+--features fake-transport --lib --bins --tests` are both clean: 42 test
+binaries, 535 tests, 0 failures (full output captured during this pass).
+
+## Finding 1 — `Result<_, String>` across crate lines (PROJECT.md §20)
+
+**`crates/token-manager`** declared `thiserror.workspace = true`
+(`Cargo.toml:21`) and never used it — every module returned bare
+`Result<_, String>`. Added `crates/token-manager/src/error.rs`:
+`ManagerError` (`#[derive(Debug, Error)]`), with variants `InvalidInput`,
+`NotFound`, `DeviceStatus(StatusWord)`, `Transport`, `Config`,
+`Io(#[from] std::io::Error)`, `Json(#[from] serde_json::Error)`, and a
+catch-all `Other` for messages with no further structure worth a variant.
+Deliberately also implemented `From<String>`/`From<&str>` for
+`ManagerError` (mapping to `Other`): the large majority of the ~130 error
+*construction* sites were already `.map_err(|e| format!(...))?` or
+`.ok_or_else(|| "...".to_string())?` — since `?` calls `From::from` on its
+operand, every one of those compiled unchanged once the function
+*signature* changed from `String` to `ManagerError`, and needed no edit at
+all. Only bare `Err(string_expr)` constructions not routed through `?`
+needed rewriting to name a real variant (`ManagerError::DeviceStatus` for
+`check_success()`'s non-success status word, `ManagerError::NotFound` for
+"account not found", `ManagerError::InvalidInput` for CLI/parse validation,
+etc.) — this is what most of the diff actually touches.
+
+Converted every module: `access.rs`, `apdu.rs` (`CommandApdu::parse`,
+`ResponseApdu::parse`, `check_success`, `parse_hex`), `config.rs`,
+`oath.rs`, `otpauth.rs`, `script.rs`, `tlv.rs`, `transport::{mod, usb,
+daemon}` (including the `TokenTransport` trait itself — every
+implementor's `transceive` signature changed with it), and all of
+`cli/{mod,apdu_cli,base_cli,config_cli,devices_cli,fido_cli,oath_cli,
+piv_cli}.rs`. Updated the two tests that compared error text directly
+(`devices_cli.rs`'s `err.contains(...)` → `err.to_string().contains(...)`)
+and `tests/oath_tests.rs`'s simulated `TokenTransport` impl (its
+`transceive` signature, and its `.ok_or("...")?` sites kept working
+unedited thanks to the `From<&str>` impl).
+
+**`crates/piv/src/cli.rs`** was the one 100%-`String` module in an
+otherwise all-`thiserror` crate (`ApduError`, `TlvError`, `ChainError`,
+`CertError`, `PublicKeyError`, `ObjectError`, `ProvisionError`, `PinError`
+all already real enums). Added `CliError` in the same file, same derive
+style (`#[derive(Debug, Clone, PartialEq, Eq, Error)]`) as the crate's
+other error types: `UnknownSlot(String)`, `MissingArgument { flag:
+&'static str, expected: &'static str }`, `EmptyCommonName`,
+`UnknownOption(String)`, `Provision { slot: Slot, #[source] source:
+ProvisionError }`, `Cert(#[from] CertError)`. `parse_slot`, `parse_args`,
+and `run_provision` all now return `Result<_, CliError>`; exported from
+`piv::lib.rs` alongside the existing re-exports. `crates/piv/src/bin/
+cryptick-piv.rs` and `crates/piv/tests/cli_tests.rs` needed no changes —
+the former only ever did `eprintln!("Error: {err}")` (works via `Display`
+on any error type) and the latter only ever asserted `.is_err()`.
+
+**`crates/webauthn-host/src/usb.rs`**: added `UsbError`, deliberately
+mirroring `crate::daemon::HostError`'s shape variant-for-variant where the
+two transports are the same shape (`Timeout`; `Ctap { status, code }` —
+literally identical fields, for literally the same PROJECT.md §15.8 reason
+the doc comment on `HostError::Ctap`/`UsbClient::transact_preserving_status`
+already gives) and diverging only where USB and the daemon IPC genuinely
+differ (`UsbError::Io(#[source] hidapi::HidError)` / `Handshake(String)`
+for the raw HID layer and `CTAPHID_INIT` handshake that have no daemon-IPC
+analog; `PayloadTooLarge`, `DeviceError(u8)`, `Protocol(String)` similarly
+have no `HostError` counterpart because the daemon path doesn't speak raw
+CTAPHID framing or vendor OATH APDUs itself). Converted every
+`UsbClient` method (`init_channel`, `write_packet`, `read_slice`,
+`transact_raw`, `transact`, `transact_preserving_status`, `oath_list`,
+`oath_calculate`, `oath_set_time`). `crates/webauthn-host/src/main.rs`'s
+seven call sites (`transact_with_fallback`,
+`transact_with_fallback_preserving_status`, `handle_totp_list`,
+`handle_totp_code`, `handle_sync_time`) each `return usb.foo(...)` directly
+into a function that still returns `Result<_, String>` (matching how the
+same functions already convert `DaemonClient`'s `HostError` via
+`.map_err(|e| format!("{e}"))`); added the matching `.map_err(|e|
+e.to_string())` at each site rather than re-plumbing all of `main.rs` to a
+typed error, which was out of this finding's scope.
+
+## Finding 7 — `webauthn-host/src/main.rs`'s unsafe blocks had no SAFETY comments
+
+PROJECT.md §20 requires a safety comment per `unsafe` block outside the
+four pure crates. `sk-middleware/{ffi.rs,alloc.rs}` already did this
+correctly (confirmed: 15/15 and 9/9). `webauthn-host/src/main.rs` had four
+unsafe blocks and zero comments; added one `// SAFETY: ...` above each,
+explaining *why* each is actually safe rather than just restating that it
+is:
+
+- `libc::time(null)` (line ~286): no out-pointer to misuse — it only
+  returns a value.
+- `std::mem::zeroed::<libc::tm>()` (line ~290): all-zero is a valid bit
+  pattern for a struct of plain integers, and every field is overwritten
+  by `localtime_r` immediately after.
+- `libc::localtime_r(&t, &mut tm)` (line ~294): both pointers are valid,
+  live, correctly-sized, non-overlapping — exactly what the call needs.
+- `libc::getuid()` (line ~1157, inside the macOS `Restart` handler): no
+  arguments, no preconditions, cannot fail — nothing for a caller to
+  uphold.
+
+No behavior changed; this is pure annotation, confirmed by `cargo check -p
+webauthn-host --all-targets` passing unchanged before and after.
+
+## Finding 9 — `token-manager/src/lib.rs` missing `#![deny(missing_docs)]`
+
+Every other crate's `lib.rs` has `#![forbid(unsafe_code)]` +
+`#![deny(missing_docs)]` or just the latter (`sk-middleware`, which isn't
+one of the four pure crates). `token-manager/src/lib.rs` had neither.
+Added `#![deny(missing_docs)]` (no `forbid(unsafe_code)`: this crate isn't
+one of the ones PROJECT.md §20 names, and it has none anyway — confirmed by
+grep). Building with the lint on turned up exactly 5 undocumented public
+items — fewer than the critic's ~11 estimate, likely because several
+others already had doc comments from earlier passes — all `print_*_help()`
+functions across `cli/{mod,config_cli,fido_cli,oath_cli,piv_cli}.rs`.
+Documented each with a one-line doc comment naming the command it prints
+help for. `cargo check -p cryptick-manager --lib` is clean under the new
+lint.
+
+## ykman CLI-parity audit
+
+First, the user-facing-leak check the task asked for: grepped the whole
+workspace (not just `token-manager`) for `yubikey`/`ykman`, case
+insensitive. Every remaining hit is in a `//!`/`///` doc comment or a code
+comment explaining a design reference or an interop path
+(`fido_cli.rs:3`, `piv_cli.rs:3`, `ctap/src/lib.rs:117`,
+`daemon/src/login.rs:245,711` — the latter two are `pam_u2f`'s own
+documented default config directory, `~/.config/Yubico`, checked for
+interop with pre-existing PAM U2F setups, already commented as such and
+unrelated to this project's own branding). Nothing in a `println!`,
+`eprintln!`, error message, or printed help string. `NOTES.md`'s own
+section 4 from an earlier pass already recorded finding and fixing a real
+instance of this (`ykman` in printed usage text, a `cryptick ykman`
+subcommand, an installed binary literally named `ykman`) — confirmed that
+fix is still in place; nothing new to fix here.
+
+Second, the parity claim itself. This CLI is **hand-rolled argument
+parsing** (`std::env::args` + manual `match`/`while` loops) — there is no
+`clap` anywhere in this workspace (`grep -rn clap` found none); the task
+description's framing around "clap `about`/help strings" doesn't apply
+literally, but the equivalent check (hand-written `println!` usage/help
+text, and manual flag-matching `match` arms) does, and was done.
+
+I did not rely on memory for ykman's actual command surface — fetched
+`ykman`'s real source from `Yubico/yubikey-manager` on GitHub
+(`ykman/_cli/{fido,oath,piv,config,info,__main__}.py`, default branch,
+2026-10) and read every `click.command()`/`click.option()` definition for
+the three groups `fido_cli.rs`/`piv_cli.rs`/`oath_cli.rs` implement, rather
+than asserting flag names from recollection. Concrete, confirmed divergences:
+
+**Fixed (real bugs, not naming choices):**
+
+- `oath_cli.rs`'s `accounts code` had a flag literally named `-H,
+  --hover` that did nothing (`"-H" | "--hover" => {}`) — not a ykman flag
+  at all. Real ykman: `-H, --show-hidden`, "include hidden accounts",
+  filtering on `is_hidden()` (`ykman/oath.py`: `credential.issuer ==
+  "_hidden"` exactly — not a prefix, confirmed by reading the function
+  rather than guessing). Implemented the same rule as a new
+  `is_hidden_account()` helper (account names here are already the
+  canonical `Issuer:Account` string, so the issuer is recovered by
+  splitting on the first `:`) and wired real filtering into both
+  `accounts list` and `accounts code`, matching real ykman's behavior on
+  both commands. Added a unit test
+  (`hidden_account_matches_ykmans_issuer_equals_underscore_hidden_rule`).
+- `oath_cli.rs`'s `accounts list` used `-H` for `--oath-type` (ykman:
+  `-o, --oath-type` — `-H` there is reserved for `--show-hidden`, see
+  above). Renamed to `-o`/`--oath-type` and gave `-H` its real meaning.
+- `oath_cli.rs`'s `accounts add` had `-p`/`-P` backwards: `-p` was
+  `--period` and `-P` was `--password`. Real ykman uses `-p, --password`
+  (matching every *other* oath subcommand in this same file —
+  `access change`, `accounts list/code/delete/rename/uri/import` all
+  already used `-p` for password) and `-P, --period`. Swapped to match
+  both ykman and this file's own established convention; `accounts add`
+  was the one place that broke it.
+- `fido_cli.rs`'s `access change-pin`/`set-pin` took **no flags at all** —
+  any `-P`/`-n` a scripted caller passed was silently ignored and the
+  command always fell back to an interactive prompt. Real ykman's
+  `change-pin` takes `-P, --pin` (current) and `-n, --new-pin`, prompting
+  for whichever is omitted; this crate's own `piv access change-pin`
+  already had exactly this pattern. Added the same flag parsing to
+  `fido access`, keeping the interactive fallback for either flag.
+
+**Checked and left as deliberate, documented divergences** (module doc
+comments on `fido_cli.rs`, `piv_cli.rs`, and `base_cli.rs` now cite the
+specific ykman source file and explain why, rather than silently
+diverging):
+
+- No `fido credentials` or `fido config` (`toggle-always-uv`,
+  `enable-ep-attestation`) group. Both need real CTAP2
+  `credentialManagement`/`authenticatorConfig` wiring (PIN/UV auth
+  tokens) that lives in `ctap-client::cred_mgmt` + `webauthn-host` today,
+  not in `cryptick-manager`. Building a CLI surface here with no backing
+  implementation would be worse than the gap.
+- No `-P/--pin` on `fido fingerprints list/add/delete`. PROJECT.md §17
+  records this device's UV as the on-chip fingerprint sensor
+  (`ctap_user_presence_test`, R557) rather than a transmitted PIN —
+  "stronger than §15.4 asks for." `fido access change-pin`/`set-pin` still
+  take `-P/--pin` because CTAP2 `clientPin` is a real, separate,
+  independently-reported capability (`pinUvAuthToken: true` in
+  `run_fido_info`'s own output) — only the fingerprint-specific commands
+  have no PIN concept to take a flag for.
+- `piv provision` has no ykman-named equivalent: it deliberately
+  consolidates what ykman splits into two commands (`piv keys generate`
+  then `piv certificates generate`/`request`+`import`) into the one
+  atomic operation this device's firmware actually performs
+  (`GENERATE ASYMMETRIC KEY PAIR` + chained `PUT DATA`,
+  `piv::provision::provision_slot`). Splitting it to match ykman's shape
+  would invent a two-step UX with no matching intermediate device state.
+- No `piv keys`/`piv objects` groups; `piv access`
+  `change-management-key`/`set-retries`/`unblock-pin` are absent and
+  `change-puk` is a non-functional stub. Confirmed by reading
+  `piv::commands`: only `select`, `get_data`, `put_data`, `verify_pin`,
+  `verify_retries`, `clear_security_status`, `change_pin`, `sign`, and
+  `generate_key_pair` exist — the APDU builders these ykman commands need
+  (`CHANGE REFERENCE DATA` for PUK, `SET MANAGEMENT KEY`, `RESET RETRY
+  COUNTER`, arbitrary-object import/export/attestation) were never
+  written. This is missing lower-layer functionality, not a CLI naming or
+  flag mismatch — out of scope for a conventions/parity pass to build.
+- `cryptick-manager info`'s `-c/--check` and `-s/--serial` are this
+  crate's own flags, not copied from ykman: real `ykman info` takes only
+  `-c, --check-fips` (checks for a real, distinct FIPS-certified YubiKey
+  hardware variant). Copying that literally would be actively wrong on
+  hardware with no FIPS variant; `cryptick-manager`'s `-c/--check` means
+  something unrelated and harmless ("is a token reachable at all").
+  `list -s/--serials` does match ykman's `list` exactly, confirmed against
+  `ykman/_cli/__main__.py`.
+- Root options (`-d/--device`, `-l/--log-level`, `-v/--version`,
+  `-h/--help` in `cli/mod.rs::dispatch`) match ykman's equivalents exactly;
+  ykman's SCP/smart-card-reader-specific root options (`-r/--reader`,
+  `-t/--scp-ca`, etc.) correctly have no equivalent, matching this
+  project's own device-identity model (`devices.list`/`devices.select`,
+  `crates/daemon/src/devices.rs`) rather than ykman's.
+
+**Not checked in depth, flagged rather than guessed at:** `config_cli.rs`
+(neither `fido_cli.rs` nor `piv_cli.rs`, the two modules whose doc comments
+actually claimed ykman parity) has a `usb -k/--lock-code` where real
+ykman's `config usb`/`nfc` use capital `-L` (lowercase `-l` is `--list` in
+both, so there's no internal collision in cryptick-manager, just a
+naming mismatch against ykman). Did not change this: `config_cli.rs` never
+carried the "complete ykman parity" claim the critic's finding and this
+task were about, and `config mode`'s preset-based design (`FIDO+OATH+PIV`,
+`CCID`, `ALL`, …) vs. ykman's granular per-app `--enable`/`--disable`
+flags is a larger, likely-deliberate design difference I did not have
+budget to chase down against the actual `config.py` source in this pass.
+
+## Verification
+
+- `cargo check -p cryptick-manager --all-targets`, `cargo check -p piv
+  --all-targets`, `cargo check -p webauthn-host --all-targets`, and
+  `cargo check --workspace --all-targets` all clean at every step of this
+  pass (not just at the end).
+- `cargo test -p cryptick-manager --lib --bins --tests`: all passing,
+  including the new `is_hidden_account` test and the two updated
+  `devices_cli` tests.
+- `cargo build --workspace --all-targets`: clean.
+- `cargo test --workspace --features fake-transport --lib --bins --tests`:
+  42 test binaries, 535 tests total, 0 failures.
+- `cargo fmt`/`cargo clippy` are not installed as components in this
+  sandbox (`cargo fmt`/`cargo clippy` both report "no such command") —
+  could not run either; relied on `cargo check`'s type/borrow checking and
+  manual review for style instead. Flagging this rather than claiming a
+  clippy-clean pass I could not actually run.
