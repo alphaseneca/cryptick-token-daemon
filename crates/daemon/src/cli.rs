@@ -62,8 +62,6 @@ pub struct LoginSetupOptions {
     pub lock_on_removal: bool,
     /// Force pairing even if already paired.
     pub force: bool,
-    /// Token PIN if required for authentication.
-    pub pin: Option<String>,
 }
 
 /// Options for `login status`.
@@ -395,14 +393,6 @@ fn parse_login_setup_options(args: &[String]) -> Result<CliCommand, ParseError> 
                 opts.force = true;
                 i += 1;
             }
-            "-p" | "--pin" => {
-                i += 1;
-                if i >= args.len() {
-                    return Err(ParseError("flag '--pin' requires a PIN argument".into()));
-                }
-                opts.pin = Some(args[i].clone());
-                i += 1;
-            }
             "-h" | "--help" | "help" => return Ok(CliCommand::Help),
             unknown => {
                 return Err(ParseError(format!(
@@ -574,7 +564,6 @@ mod tests {
                 dry_run: true,
                 lock_on_removal: true,
                 force: true,
-                pin: None,
             }))
         );
     }

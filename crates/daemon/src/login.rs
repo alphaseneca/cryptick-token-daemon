@@ -637,8 +637,10 @@ fn run_macos_login_setup(user: &str, opts: &LoginSetupOptions) -> Result<(), Str
                 if err_msg.contains("already paired") || opts.force {
                     println!("        ✓ User '{user}' is already paired with token identity");
                 } else {
-                    println!("        • sc_auth note: {}", err_msg.trim());
-                    println!("        ✓ Paired token identity registered for '{user}'");
+                    return Err(format!(
+                        "sc_auth pair failed for '{user}': {}",
+                        err_msg.trim()
+                    ));
                 }
             }
             Err(e) => {
@@ -826,7 +828,6 @@ mod tests {
             user: Some("testuser".to_string()),
             hash: Some("3B564922614AFE0917FB12449A9E62EE36863CC9".to_string()),
             dry_run: true,
-            pin: None,
             force: false,
             lock_on_removal: true,
         };
