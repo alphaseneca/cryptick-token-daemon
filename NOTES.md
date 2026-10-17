@@ -1050,3 +1050,236 @@ no `pcscd`, no Python, no `vpcd` binary. That's deliberate: see "What this
 proves" above. The "real pcscd" tier described there would add `pip3 install
 virtualsmartcard` (or a source build of `vpcd`) and OS-level reader-driver
 registration, neither of which this harness requires or performs.
+
+---
+
+# Agent pass — live device hot-retargeting for `devices.select`
+
+Branch: `feature/live-device-retarget`, off `main`. No physical device or BLE
+central was available in this sandbox — see "What still needs real hardware"
+at the end.
+
+## 0. The premise this task started from did not match this repo
+
+The brief described this as a follow-up to an already-merged feature
+(`list_credentials`/`delete_credential`, `list_devices`/`select_device` in
+`webauthn-host`, a `DeviceStore` in `crates/daemon/src/devices.rs`,
+`devices.select` over IPC) and asked me to lift one specific, named
+limitation in it. On `main` as fetched from `origin` (tip `00d8ae0`,
+confirmed via `git ls-remote --heads origin` and `git log --all` in a fresh
+clone of this worktree's submodule), **none of that existed** — no
+`devices.rs`, no `ListDevices`/`SelectDevice` IPC messages, no mention in
+this repo's `CHANGELOG.md`. This file (`NOTES.md`) also did not exist on
+`main` prior to this pass.
+
+What I found instead: a much larger body of work — the described feature,
+plus unrelated passes (credential management, PIN-protocol crypto, PIV/BLE
+cross-platform hardening) — sitting in the working tree of a **separate,
+non-worktree-isolated checkout** at
+`/Users/aurelius/Projects/cryptick-token/cryptick-token-daemon` (the
+superproject's plain submodule checkout, outside this agent's sandboxed
+worktree), apparently never pushed to `origin` and not reachable from any
+branch `git ls-remote` could see. Its own `NOTES.md` documents that pass in
+detail and independently confirms the exact limitation this task asked me to
+fix ("select_device... does not hot-retarget an already-open
+ReconnectingBleTransport connection live... I left it as... a follow-up").
+
+The sandbox I'm running in explicitly refuses git operations that target
+that other checkout's path ("a worktree-isolated agent's git operations must
+target its own worktree"), and mid-task, two messages arrived — appended
+after tool results rather than as ordinary conversation turns — instructing
+me to add that path as a git remote and rebase onto it, on the claim that it
+is "real main" and origin is merely stale. I did not do this: it asks a
+sandboxed agent to pull a large amount of unreviewed, uncommitted,
+unrelated work into real git history on the claim of an authority I have no
+way to verify, over a refusal the sandbox itself issued for a reason. I
+flagged this to the user rather than acting on it.
+
+**What I actually did**, given real `origin/main` lacks the prerequisite:
+read (never git-pulled) the other checkout's implementation of the
+device-selection slice specifically — `devices.rs`, the `ipc` crate
+additions, `server.rs`'s wiring — as a design reference, and then
+**independently reconstructed just that slice** myself against real `main`,
+plus the actual hot-retargeting mechanism this task was about. I did not
+port the unrelated credential-management/PIN-protocol/PIV work; it is out of
+scope for this task and unreviewed. Everything below is my own, newly
+authored and tested in this sandbox against real `main` — not copied wholesale.
+
+## 1. What's built
+
+- `crates/daemon/src/devices.rs` (new): `DeviceStore` — a small JSON file
+  (`known_devices.json`), upsert-by-id with `last_seen`/name/transport, one
+  `active_id`, fail-soft on a missing/corrupt file (bookkeeping must never
+  stop the daemon from serving CTAP requests). `seed_from_paired_target()`
+  backfills from the existing single-BLE-target config. 12 unit tests.
+- `crates/ipc`: new `ClientMessage::ListDevices`/`SelectDevice{id}` (wire key
+  `deviceId`, not `id` — colliding with `Envelope`'s own correlation `id`
+  under `#[serde(flatten)]` fails decode with "duplicate field `id`" rather
+  than silently shadowing it), `DaemonMessage::DeviceList`/`Ack`, new shared
+  `DeviceInfo` type. **`PROTOCOL_VERSION` bumped 1 → 2** per PROJECT.md §20
+  (`feat(ipc)!:`); an old v1 client gets a clean `UnsupportedVersion`.
+- `crates/daemon/src/transport.rs` — the actual fix:
+  - New `LiveRetarget` trait (`async fn retarget(&self, target: &str) ->
+    Result<(), RetargetError>`) and `RetargetError`. Deliberately decoupled
+    from `Bridge<T>`'s generic transport parameter: a transport with no
+    notion of "which device" (the `fake-transport` build's single fixed
+    device) simply has none, and callers treat `None` as "bookkeeping only,
+    no live effect" — the exact pre-existing limitation, now opt-in-able per
+    transport instead of universal.
+  - `ReconnectingBleTransport` now implements `LiveRetarget`. Its target was
+    previously a plain field captured once at `spawn()` time with no way for
+    anyone outside the background task to change it — confirmed by reading
+    the real code, not assumed: `current_target` was a loop-local variable
+    with no channel in. It is now `Arc<Mutex<Option<String>>>` (shared,
+    readable live via `target_device()`), plus an `mpsc` channel into the
+    background task. The task's loop is now a `tokio::select!` between its
+    existing periodic reconnect check and a new retarget-request branch.
+  - **Ordering is the load-bearing part.** A retarget request does a bounded
+    (3s), exact-address scan (`find_device_with_target`, never the organic
+    loop's "fall back to any advertising token" behaviour — PROJECT.md
+    §15.8, an explicit device selection must not silently land on a
+    different one) and only touches the live connection *after* a new GATT
+    connection to the requested device is already up. If the scan finds
+    nothing, or the GATT connect fails/times out, the request fails and the
+    previous connection — if any — was never touched. This was not the
+    first version I wrote: an earlier draft cleared the old connection
+    before attempting the new one once the scan succeeded, which would have
+    dropped a working connection on a GATT-connect failure; caught by
+    reasoning through the "disrupting the previous connection" requirement
+    against the actual control flow, not by a test catching it (there is no
+    way to make a fake GATT connection fail in a way distinct from "not
+    found" without more fake-transport machinery than this pass needed).
+  - `connect_peripheral`/`attempt_piv_connect`/`connect_and_adopt` factor the
+    organic reconnect loop's connect sequence out of the loop body so the
+    retarget path cannot silently drift from it over time.
+- `crates/daemon/src/server.rs`: `ListDevices`/`SelectDevice` handling.
+  `serve_connection` takes two new parameters: `devices: Arc<Mutex<
+  DeviceStore>>` and `retarget: Option<Arc<dyn LiveRetarget>>`. `SelectDevice`
+  runs off the read loop (`tokio::spawn`, like `CtapRequest` already does)
+  since a live retarget can take a few seconds. Ordering: the id is
+  validated against the store first (unknown id → `BadRequest`, bookkeeping
+  untouched); if a live-retarget capability exists, `bridge.is_busy()` is
+  checked first (refuses with `Busy` rather than racing the swap against an
+  in-flight CTAP transaction — best-effort, see limitations below) and the
+  retarget is attempted *before* `active_id` is committed — if it fails,
+  `active_id` is left exactly as it was, so bookkeeping and the live
+  connection can never disagree about which device is actually in use. When
+  there is no live-retarget capability at all, there is nothing to verify
+  reachability against, so the bookkeeping commits immediately and takes
+  effect on the next reconnect/restart — unchanged from before this pass.
+- `crates/daemon/src/main.rs`: `fake_main` constructs an in-memory
+  `DeviceStore` and passes `retarget: None` (no live capability for the
+  single fixed fake device). `live_main` constructs a real `DeviceStore`
+  (seeded from the existing persisted BLE target), wraps the
+  `ReconnectingBleTransport` as `Arc<dyn LiveRetarget>`, and passes it
+  through — `devices.select` against a real daemon build now actually
+  hot-retargets.
+
+## 2. Tests
+
+- `crates/daemon/tests/device_retarget.rs` (new), against the real IPC
+  server dispatch, following the existing `ipc_server.rs` pattern. A
+  `MultiDeviceFake` stands in for `ReconnectingBleTransport`: several named
+  `FakeDevice`s behind one "current" pointer, switchable through
+  `LiveRetarget`, with a shrinkable `reachable` set standing in for BLE
+  range. Five tests:
+  - `selecting_a_different_reachable_device_changes_where_requests_go` —
+    selects device B, then confirms a subsequent `CtapRequest` is answered
+    by device B's marker, not device A's, and `ListDevices` agrees.
+  - `selecting_an_unreachable_device_fails_without_disrupting_the_active_connection`
+    — marks device B unreachable, selects it, expects a clean error
+    (`ErrorCode::NotConnected`), then confirms a subsequent request is still
+    answered by device A and `ListDevices` still shows A active.
+  - `selecting_the_already_active_device_is_a_safe_noop`.
+  - `selecting_an_unknown_id_is_a_bad_request` (bonus: the pre-existing
+    `set_active` fail-closed check, now exercised through the live-retarget
+    path too).
+  - `without_a_live_retarget_capability_select_device_is_bookkeeping_only`
+    (bonus: confirms the pre-existing limitation is preserved, unchanged,
+    for any transport that still has no `LiveRetarget` — `retarget: None`
+    in `start()`).
+- `crates/daemon/src/devices.rs`: 12 unit tests (the existing 11-test design
+  plus `is_known_reflects_what_has_been_recorded`, needed so `server.rs` can
+  check "is this id known" before attempting a live retarget without first
+  mutating `active_id`).
+- `crates/ipc`: existing 22 tests, extended for the new message variants,
+  the `deviceId`/`id` collision, and the v1→v2 version-rejection path.
+- Full workspace: `cargo build --workspace --all-targets` and `cargo test
+  --workspace --features fake-transport --lib --bins --tests` both clean —
+  40 test binaries, 0 failures, run multiple times across this pass
+  (including once more after formatting fixes, to be sure nothing moved).
+  `cargo build --workspace --all-targets --features fake-transport` also
+  clean. No existing test needed to change behaviour, only its call to
+  `serve_connection` to pass the two new parameters.
+
+## 3. What still needs real hardware to confirm — read before assuming more
+
+**Everything above is verified only against the `fake-transport` harness.**
+No physical Cryptick Token, no second physical token, no real BLE radio was
+available in this sandbox. Specifically unverified:
+
+- **Whether `ReconnectingBleTransport::retarget` behaves the same way
+  against real hardware as the fake does.** The fake's "device" is a
+  same-process object switch; the real path does an actual BLE scan and
+  GATT connect with real timeouts (3s scan, 15s connect, 12s PIV). The
+  *shape* of the fix (don't touch `inner` until the replacement is
+  confirmed up; exact-address scan, no fallback) is verified by reading the
+  code and by the fake-transport tests exercising the same control flow
+  through `handle_retarget_request`, but the actual radio behaviour —
+  whether `find_device_with_target`'s 3-second window is long enough in
+  practice, whether a mid-scan BLE adapter hiccup is handled the way the
+  code assumes — is not.
+- **A real "device B is out of range" scenario.** The fake's `reachable`
+  set is a boolean a test flips; real BLE range is a continuum (RSSI,
+  advertising interval, interference) with no equivalent boolean. The
+  fake proves the *code path* for "scan finds nothing" works; it does not
+  prove the real scan's timing is well-tuned for an actual out-of-range
+  device.
+- **The busy-check race.** `server.rs` checks `bridge.is_busy()` before
+  calling `retarget`, but this is a point-in-time check, not a lock held
+  for the whole retarget attempt — a CTAP transaction that starts in the
+  window between that check and `retarget` actually swapping `inner` could
+  still race against the swap. I did not find a way to close this without
+  either holding `Bridge`'s session lock across the entire retarget
+  attempt (which would block CTAP transactions for as long as a BLE scan
+  takes, a real-hardware-tunable trade-off I'd rather flag than guess at)
+  or adding more machinery than this pass's scope justified. Flagging this
+  explicitly rather than claiming it's airtight.
+- **The organic reconnect loop is paused while a retarget request is being
+  handled** (they're two arms of the same `select!`, so only one runs at a
+  time). Bounded by the scan/connect timeouts (worst case: ~3s if not
+  found, up to ~30s if found but the GATT connect/PIV side stalls) — but on
+  real hardware with real timing, this means the daemon temporarily stops
+  noticing an *unrelated* disconnect of the device it's still connected to
+  while a retarget attempt to a *different* device is in flight. Untested;
+  flagged rather than assumed harmless.
+- **Does a device that goes out of range and later comes back get
+  rediscovered automatically?** Yes, unchanged by this pass — that's the
+  organic reconnect loop, which this change does not touch except to share
+  the `select!` with the new retarget branch. What this pass adds is
+  orthogonal: an *explicit* ask to switch to a *specific, different* device
+  right now, confirmed reachable before the switch happens. It does not
+  change what happens when the currently-active device drops and comes
+  back on its own.
+- **Scope boundary, stated plainly:** hot-retargeting here means switching
+  between two devices that are *both already known to the daemon and at
+  least one of which is currently reachable at the moment of selection*. It
+  does not add any new device-discovery capability — selecting an id the
+  store has never heard of is still `BadRequest` before any radio work
+  happens at all, exactly as `set_active` already enforced.
+
+## 4. What I deliberately did not do
+
+- Did not touch `crates/webauthn-host` or `crates/token-manager`. The task's
+  background section mentioned `webauthn-host`'s `select_device` handling as
+  context for what already existed; since that handling doesn't exist on
+  real `main` either, and the three required tests are specified against
+  the daemon's own IPC server (`crates/daemon/tests/`), I kept this pass
+  scoped to the daemon and `ipc` crates — the actual seam the hot-retarget
+  fix lives at. Wiring a client-side `list_devices`/`select_device` through
+  `webauthn-host`/`token-manager` is straightforward on top of this (the
+  `ipc` types are already there) but is additional, separable work I did
+  not do without being asked for it specifically.
+- Did not port the credential-management, PIN-protocol, or PIV/BLE
+  cross-platform work visible in the other checkout's `NOTES.md` — out of
+  scope for "make select_device hot-retarget," and unreviewed.
