@@ -1,8 +1,7 @@
 # cryptick-token-daemon
 
-Host-side daemon for the [Cryptick token](https://github.com/alphaseneca/cryptick-token-code):
-an ESP32-S3 that is a FIDO2 authenticator and a PIV smart card over **both USB
-and BLE**.
+Host-side daemon for the Cryptick Token: an ESP32-S3 hardware security key
+that is a FIDO2 authenticator and a PIV smart card over **both USB and BLE**.
 
 Over USB the device needs no host software at all — every OS already speaks
 CTAPHID and CCID. **This daemon exists to make the BLE transport look like the
