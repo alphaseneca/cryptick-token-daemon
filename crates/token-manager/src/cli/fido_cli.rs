@@ -93,7 +93,11 @@ fn run_fido_info(
     let raw = match transport.transceive(0x10, &[Command::GET_INFO.as_u8()], FIDO_TIMEOUT) {
         Ok(raw) => raw,
         Err(e) => {
-            println!("Device not reachable: {e}");
+            // `e`'s Display already carries the exact cause: which USB step
+            // failed, or (via `DaemonTransport`) the daemon's own stable
+            // `ErrorCode` (`NotConnected`, `NotBonded`, `Busy`, `Timeout`, …)
+            // plus its human-readable detail — never a bare "unreachable".
+            eprintln!("fido info: authenticatorGetInfo request did not reach the device — {e}");
             return Ok(());
         }
     };
@@ -101,7 +105,9 @@ fn run_fido_info(
     let response = match Response::decode(&raw) {
         Ok(response) => response,
         Err(e) => {
-            println!("Device not reachable: malformed response ({e})");
+            eprintln!(
+                "fido info: transport sent an empty authenticatorGetInfo response ({e})"
+            );
             return Ok(());
         }
     };
@@ -111,9 +117,9 @@ fn run_fido_info(
             .status
             .name()
             .map(|n| format!(" ({n})"))
-            .unwrap_or_default();
-        println!(
-            "FIDO2 info unavailable: device returned status {:#04x}{name}",
+            .unwrap_or_else(|| "unrecognised status".to_string());
+        eprintln!(
+            "fido info: device refused authenticatorGetInfo with CTAP2 status {:#04x} — {name}",
             response.status.as_u8()
         );
         return Ok(());
@@ -122,7 +128,9 @@ fn run_fido_info(
     let info = match GetInfoResponse::parse(&response.data) {
         Ok(info) => info,
         Err(e) => {
-            println!("FIDO2 info unavailable: could not parse device response ({e})");
+            eprintln!(
+                "fido info: authenticatorGetInfo response did not decode as valid CBOR — {e}"
+            );
             return Ok(());
         }
     };

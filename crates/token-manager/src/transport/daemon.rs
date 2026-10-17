@@ -5,7 +5,7 @@
 
 use super::TokenTransport;
 use crate::error::ManagerError;
-use ctap::{Command, Request, StatusCode};
+use ctap::StatusCode;
 use ipc::{ClientMessage, DaemonMessage, Envelope, FrameDecoder};
 use std::{
     io::{ErrorKind, Write},
@@ -20,6 +20,13 @@ use std::{io::Read, os::unix::net::UnixStream};
 use windows_pipe::PipeStream;
 
 const READ_SLICE: Duration = Duration::from_millis(500);
+
+/// `CTAPHID_CRYPTICK_OATH`, the vendor command `oath.rs` sends as `cmd`.
+///
+/// The one CTAPHID command whose relayed payload needs an extra
+/// discriminator byte in front of it on this wire — see `transceive`'s doc
+/// for why.
+const VENDOR_OATH_CMD: u8 = 0x63;
 
 /// A blocking client connection to a Windows named pipe.
 ///
@@ -347,6 +354,32 @@ impl DaemonTransport {
 }
 
 impl TokenTransport for DaemonTransport {
+    /// Relays one CTAPHID-shaped command over the Daemon Bridge.
+    ///
+    /// **Framing note — read before changing the `cmd == VENDOR_OATH_CMD`
+    /// split below.** `ClientMessage::CtapRequest` carries one flat byte
+    /// string (`cbor`), with no separate field for *which* CTAPHID command
+    /// (`0x10` CBOR, `0x63` vendor OATH, `0x03` raw MSG/APDU) this is. Over
+    /// USB, that distinction lives in the CTAPHID packet header (`pkt[4]` in
+    /// `UsbTransport::transceive`) — a field entirely separate from the
+    /// payload bytes, which `UsbTransport` therefore sends completely
+    /// unmodified, already starting with the real CTAP2 command / APDU `CLA`
+    /// byte `payload` itself carries.
+    ///
+    /// The firmware's daemon-bridge dispatcher
+    /// (`core/fido2/hal_esp32.cpp`'s `ble_dispatch`) has exactly **one**
+    /// special case for an extra discriminator byte in front of a relayed
+    /// payload: `ctap_cmd == 0xE3 || ctap_cmd == 0x63` routes to the vendor
+    /// OATH applet and strips it first. Every other command — CTAP2 CBOR
+    /// included — falls through to `ctap_request()`, which reads its *own*
+    /// first byte as the real CTAP2 command with no such stripping. Sending
+    /// a CBOR request wrapped the same way OATH needs (as this code
+    /// previously did unconditionally) puts the wrong byte in front of
+    /// `ctap_request()`'s input on every non-OATH command relayed over this
+    /// transport, which is CTAP2-shaped and corrupted for every caller of
+    /// it — some of it later swallowed into
+    /// `error.response not valid CBOR`-style messages that gave no hint
+    /// this was a framing bug rather than a device or firmware problem.
     #[cfg(any(unix, windows))]
     fn transceive(
         &mut self,
@@ -354,31 +387,24 @@ impl TokenTransport for DaemonTransport {
         payload: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>, ManagerError> {
-        let cmd_byte = cmd | 0x80;
-        let ctap_req = Request::new(Command(cmd_byte), payload.to_vec());
         let id = self.take_id();
 
         self.send(
             &id,
             ClientMessage::CtapRequest {
-                cbor: ctap_req.encode(),
+                cbor: encode_daemon_request(cmd, payload),
                 timeout_ms: timeout.as_millis().min(u64::MAX as u128) as u64,
             },
         )?;
 
         match self.recv(&id, Instant::now() + timeout)? {
-            DaemonMessage::CtapResponse { status, cbor } => {
-                let status_code = StatusCode(status);
-                if !status_code.is_ok() && cbor.is_empty() {
-                    return Err(ManagerError::Transport(format!(
-                        "CTAP error from token: {status_code:?} ({status:#04X})"
-                    )));
-                }
-                Ok(cbor)
+            DaemonMessage::CtapResponse { status, cbor } => decode_daemon_response(cmd, status, cbor),
+            DaemonMessage::Error { code, message } => {
+                eprintln!("cryptick-manager: daemon reported error ({code:?}): {message}");
+                Err(ManagerError::Transport(format!(
+                    "Daemon reported error ({code:?}): {message}"
+                )))
             }
-            DaemonMessage::Error { code, message } => Err(ManagerError::Transport(format!(
-                "Daemon reported error ({code:?}): {message}"
-            ))),
             _ => Err(ManagerError::Transport(
                 "Unexpected message response from daemon".to_string(),
             )),
@@ -403,5 +429,108 @@ impl TokenTransport for DaemonTransport {
 
     fn serial(&self) -> Option<String> {
         None
+    }
+}
+
+/// Builds the bytes sent as `ClientMessage::CtapRequest`'s `cbor` field for
+/// one `cmd`/`payload` pair. See `transceive`'s doc comment for why only
+/// vendor OATH gets an extra discriminator byte in front of it.
+fn encode_daemon_request(cmd: u8, payload: &[u8]) -> Vec<u8> {
+    if cmd == VENDOR_OATH_CMD {
+        let mut v = Vec::with_capacity(1 + payload.len());
+        v.push(cmd | 0x80);
+        v.extend_from_slice(payload);
+        v
+    } else {
+        payload.to_vec()
+    }
+}
+
+/// Turns one `DaemonMessage::CtapResponse { status, cbor }` into the bytes
+/// `transceive` hands back to its caller for this `cmd`. See `transceive`'s
+/// doc comment for why only vendor OATH strips the status byte away.
+fn decode_daemon_response(cmd: u8, status: u8, cbor: Vec<u8>) -> Result<Vec<u8>, ManagerError> {
+    if cmd == VENDOR_OATH_CMD {
+        let status_code = StatusCode(status);
+        if !status_code.is_ok() && cbor.is_empty() {
+            return Err(ManagerError::Transport(format!(
+                "CTAP error from token: {status_code:?} ({status:#04X})"
+            )));
+        }
+        Ok(cbor)
+    } else {
+        let mut raw = Vec::with_capacity(1 + cbor.len());
+        raw.push(status);
+        raw.extend_from_slice(&cbor);
+        Ok(raw)
+    }
+}
+
+#[cfg(test)]
+mod framing_tests {
+    use super::*;
+
+    const CBOR_CMD: u8 = 0x10;
+    const MSG_CMD: u8 = 0x03;
+
+    #[test]
+    fn cbor_requests_are_sent_unprefixed_like_usb_sends_them() {
+        // The real CTAP2 command byte (0x04 = authenticatorGetInfo) must end
+        // up first on the wire, with nothing in front of it — the firmware's
+        // generic `ctap_request()` has no discriminator-stripping step,
+        // unlike the vendor OATH special case.
+        let payload = [0x04u8];
+        assert_eq!(encode_daemon_request(CBOR_CMD, &payload), vec![0x04]);
+    }
+
+    #[test]
+    fn msg_requests_are_sent_unprefixed_too() {
+        let apdu = [0x00u8, 0xA4, 0x04, 0x00];
+        assert_eq!(encode_daemon_request(MSG_CMD, &apdu), apdu.to_vec());
+    }
+
+    #[test]
+    fn vendor_oath_requests_keep_their_discriminator_byte() {
+        // Firmware's `ble_dispatch` specifically detects and strips this
+        // byte (`ctap_cmd == 0xE3`) before routing to the OATH applet.
+        let apdu = [0x00u8, 0xA4, 0x04, 0x00];
+        let mut expected = vec![VENDOR_OATH_CMD | 0x80];
+        expected.extend_from_slice(&apdu);
+        assert_eq!(encode_daemon_request(VENDOR_OATH_CMD, &apdu), expected);
+    }
+
+    #[test]
+    fn a_successful_cbor_response_comes_back_with_its_status_byte_attached() {
+        // Matches exactly what `UsbTransport` returns for the same command:
+        // a leading status byte, then the CBOR body — so a caller decoding
+        // via `ctap::Response::decode` sees identical bytes either way.
+        let cbor_body = vec![0xa1, 0x01, 0x18, 0x20];
+        let raw = decode_daemon_response(CBOR_CMD, 0x00, cbor_body.clone()).unwrap();
+        assert_eq!(raw[0], 0x00);
+        assert_eq!(&raw[1..], &cbor_body[..]);
+    }
+
+    #[test]
+    fn a_failed_cbor_response_still_comes_back_with_its_status_byte_so_the_caller_can_see_it() {
+        // Unlike OATH, a non-OK CBOR status must reach the caller rather than
+        // short-circuiting into a generic transport error — `fido_cli.rs`
+        // needs the real CTAP2 status code to report what actually happened.
+        let raw = decode_daemon_response(CBOR_CMD, 0x01, Vec::new()).unwrap();
+        assert_eq!(raw, vec![0x01]);
+    }
+
+    #[test]
+    fn a_successful_oath_response_has_its_synthetic_status_byte_stripped() {
+        // `oath.rs`'s parsers expect the raw APDU-style response directly,
+        // with no extra leading byte — matching what `UsbTransport` gives
+        // them, since the real OATH wire protocol has no such byte at all.
+        let oath_body = vec![0x71, 0x02, 0xAB, 0xCD, 0x90, 0x00];
+        let raw = decode_daemon_response(VENDOR_OATH_CMD, 0x00, oath_body.clone()).unwrap();
+        assert_eq!(raw, oath_body);
+    }
+
+    #[test]
+    fn a_failed_oath_response_with_no_body_is_a_transport_error() {
+        assert!(decode_daemon_response(VENDOR_OATH_CMD, 0x01, Vec::new()).is_err());
     }
 }

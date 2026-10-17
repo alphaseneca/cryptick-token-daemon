@@ -47,6 +47,13 @@ fn send<T: serde::Serialize>(out: &Outbox, message: &Envelope<T>) {
 }
 
 fn send_error(out: &Outbox, id: &str, code: ErrorCode, message: &str) {
+    // Local log of record for "why did a transaction fail" — PROJECT.md
+    // §15.5: detail belongs here, not only in the (already coarse-coded)
+    // reply handed to whatever process opened the socket. `message` is
+    // already guaranteed never to carry payload contents, PINs, or key
+    // material at every call site below, so logging it is no less safe than
+    // sending it.
+    eprintln!("cryptick-daemon: [{id}] {code:?}: {message}");
     send(
         out,
         &Envelope::new(
