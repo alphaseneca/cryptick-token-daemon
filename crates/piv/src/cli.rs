@@ -6,10 +6,11 @@
 //! - `cryptick-piv help` / `--help` / `-h`
 //! - `cryptick-piv version` / `--version` / `-V`
 
-use crate::cert::parse_certificate;
+use crate::cert::{parse_certificate, CertError};
 use crate::commands;
 use crate::objects::Slot;
-use crate::provision::{provision_slot, ProvisionOptions, ProvisionReport, SimulatedCard};
+use crate::provision::{provision_slot, ProvisionError, ProvisionOptions, ProvisionReport, SimulatedCard};
+use thiserror::Error;
 
 /// Parsed CLI commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,21 +23,71 @@ pub enum CliCommand {
     Version,
 }
 
+/// An error encountered while parsing `cryptick-piv` CLI arguments or
+/// running the provisioning flow they describe.
+///
+/// PROJECT.md §20 ("typed errors with `thiserror`; no stringly-typed
+/// failures across crate lines") — this module was the one place in the
+/// `piv` crate that still returned bare `Result<_, String>`, inconsistent
+/// with every other module (`ApduError`, `TlvError`, `ChainError`,
+/// `CertError`, `PublicKeyError`, `ObjectError`, `ProvisionError`,
+/// `PinError`), all of which are real `thiserror` enums.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum CliError {
+    /// A `--slot` value (or bare positional slot argument) did not name a
+    /// known PIV slot.
+    #[error(
+        "unknown slot '{0}'. Supported slots: 9A (Authentication), 9D (Key Management), 9C, 9E"
+    )]
+    UnknownSlot(String),
+
+    /// A flag that takes a value (`--slot`, `--pin`, `--cn`/`--common-name`)
+    /// was given with no following argument.
+    #[error("flag '{flag}' requires a {expected} argument")]
+    MissingArgument {
+        /// The flag that was missing its value, e.g. `"--slot"`.
+        flag: &'static str,
+        /// A short description of what the flag expects, for the error text.
+        expected: &'static str,
+    },
+
+    /// `--cn` / `--common-name` was given an empty or whitespace-only value.
+    #[error("flag '--common-name' argument cannot be empty")]
+    EmptyCommonName,
+
+    /// An argument that was not a recognized flag or a valid slot name.
+    #[error("unknown option '{0}'. Run 'cryptick-piv --help' for usage.")]
+    UnknownOption(String),
+
+    /// Provisioning a slot failed.
+    #[error("failed provisioning slot {slot:?}: {source}")]
+    Provision {
+        /// The slot that failed to provision.
+        slot: Slot,
+        /// The underlying provisioning failure.
+        #[source]
+        source: ProvisionError,
+    },
+
+    /// The certificate just written to a slot could not be parsed back for
+    /// the success summary printed to the user.
+    #[error("failed to parse certificate: {0}")]
+    Cert(#[from] CertError),
+}
+
 /// Parses a slot string (`9A`, `9D`, `9C`, `9E`, or names) into a [`Slot`].
-pub fn parse_slot(s: &str) -> Result<Slot, String> {
+pub fn parse_slot(s: &str) -> Result<Slot, CliError> {
     match s.to_ascii_uppercase().as_str() {
         "9A" | "AUTHENTICATION" | "PIV_AUTHENTICATION" => Ok(Slot::PivAuthentication),
         "9D" | "KEY_MANAGEMENT" | "KEYMANAGEMENT" => Ok(Slot::KeyManagement),
         "9C" | "SIGNATURE" | "DIGITAL_SIGNATURE" => Ok(Slot::DigitalSignature),
         "9E" | "CARD_AUTHENTICATION" => Ok(Slot::CardAuthentication),
-        _ => Err(format!(
-            "unknown slot '{s}'. Supported slots: 9A (Authentication), 9D (Key Management), 9C, 9E"
-        )),
+        _ => Err(CliError::UnknownSlot(s.to_string())),
     }
 }
 
 /// Parses command-line arguments.
-pub fn parse_args<I, T>(args: I) -> Result<CliCommand, String>
+pub fn parse_args<I, T>(args: I) -> Result<CliCommand, CliError>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
@@ -77,7 +128,10 @@ where
             "--slot" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("flag '--slot' requires a slot argument (e.g. 9A, 9C, 9D, 9E, or all-slots)".into());
+                    return Err(CliError::MissingArgument {
+                        flag: "--slot",
+                        expected: "slot (e.g. 9A, 9C, 9D, 9E, or all-slots)",
+                    });
                 }
                 for part in args[i].split(',') {
                     let part = part.trim();
@@ -117,7 +171,10 @@ where
             "--pin" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("flag '--pin' requires a PIN argument (e.g. 123456)".into());
+                    return Err(CliError::MissingArgument {
+                        flag: "--pin",
+                        expected: "PIN (e.g. 123456)",
+                    });
                 }
                 opts.pin = Some(args[i].clone());
                 i += 1;
@@ -125,11 +182,14 @@ where
             "--cn" | "--common-name" => {
                 i += 1;
                 if i >= args.len() {
-                    return Err("flag '--common-name' requires a string argument".into());
+                    return Err(CliError::MissingArgument {
+                        flag: "--common-name",
+                        expected: "string",
+                    });
                 }
                 let cn = &args[i];
                 if cn.trim().is_empty() {
-                    return Err("flag '--common-name' argument cannot be empty".into());
+                    return Err(CliError::EmptyCommonName);
                 }
                 opts.common_name = Some(cn.clone());
                 i += 1;
@@ -157,9 +217,7 @@ where
                 i += 1;
             }
             unknown => {
-                return Err(format!(
-                    "unknown option '{unknown}'. Run 'cryptick-piv --help' for usage."
-                ));
+                return Err(CliError::UnknownOption(unknown.to_string()));
             }
         }
     }
@@ -198,7 +256,7 @@ pub fn help_text() -> &'static str {
 }
 
 /// Runs the CLI application logic with given options.
-pub fn run_provision(opts: ProvisionOptions) -> Result<(), String> {
+pub fn run_provision(opts: ProvisionOptions) -> Result<(), CliError> {
     println!("=== Cryptick Token PIV Provisioning ===");
     if opts.dry_run {
         println!("Mode: Simulated dry-run");
@@ -219,7 +277,7 @@ pub fn run_provision(opts: ProvisionOptions) -> Result<(), String> {
 
         let report: ProvisionReport =
             provision_slot(&mut card, slot, pin_bytes, opts.common_name.as_deref())
-                .map_err(|e| format!("failed provisioning slot {slot:?}: {e}"))?;
+                .map_err(|source| CliError::Provision { slot, source })?;
 
         println!("  [OK] EC P-256 key pair generated on-token.");
         println!(
@@ -228,8 +286,7 @@ pub fn run_provision(opts: ProvisionOptions) -> Result<(), String> {
             hex_slice(&report.public_key[1..9.min(report.public_key.len())])
         );
 
-        let parsed = parse_certificate(&report.certificate_der)
-            .map_err(|e| format!("failed to parse certificate: {e}"))?;
+        let parsed = parse_certificate(&report.certificate_der)?;
         println!("  [OK] Self-signed X.509 v3 certificate constructed:");
         println!("       Subject CN: {}", parsed.common_name);
         println!(
