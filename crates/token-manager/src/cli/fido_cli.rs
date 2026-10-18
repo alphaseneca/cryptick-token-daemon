@@ -7,18 +7,22 @@
 //! - `ctctl fido reset`
 //! - `ctctl fido access change-pin` / `access set-pin`
 //! - `ctctl fido fingerprints list` / `add <name>` / `delete <name>`
+//! - `ctctl fido credentials list` / `delete <credential-id>`
 //!
 //! Checked against `ykman`'s actual source (`yubikey-manager/ykman/_cli/fido.py`)
-//! rather than assumed from memory. Two differences are deliberate, not gaps
-//! to close:
+//! rather than assumed from memory. Remaining deliberate differences:
 //!
-//! - **No `fido credentials` or `fido config` group.** Resident-credential
-//!   listing/deletion and the `toggle-always-uv`/`enable-ep-attestation`
-//!   config toggles need real CTAP2 `credentialManagement`/`authenticatorConfig`
-//!   wiring (PIN/UV auth tokens, `ctap-client::cred_mgmt`) that lives in
-//!   `webauthn-host` today, not in this crate. Adding a CLI surface for it
-//!   here without the backing implementation would be worse than not
-//!   having it.
+//! - **`credentials` takes no `-P/--pin`.** Unlike ykman, which gates its
+//!   equivalent command on a PIN, the pinUvAuthToken here is obtained via
+//!   `CP_cmdGetPinUvAuthTokenUsingUvWithPermissions` — the device's own
+//!   fingerprint touch, not a transmitted PIN (`core/fido2/ctap.c`). Same
+//!   reasoning as `fingerprints` below; same orchestration `webauthn-host`
+//!   already uses for its own passkey list/delete UI
+//!   (`ctap_client::cred_mgmt`), just driven from this transport instead.
+//! - **No `fido config` group.** The `toggle-always-uv`/
+//!   `enable-ep-attestation` toggles need `authenticatorConfig` (CTAP2
+//!   command `0x0d`), which `core/fido2/ctap.c`'s dispatch table has no
+//!   case for at all — not a CLI gap, a firmware one.
 //! - **No `-P/--pin` on `fido fingerprints`.** ykman's equivalent commands
 //!   all take `-P, --pin` because a YubiKey gates bio-enrollment admin
 //!   operations on the PIN. Per PROJECT.md §17, this device's user
@@ -32,12 +36,22 @@
 
 use crate::error::ManagerError;
 use crate::transport::TokenTransport;
-use ctap::{Command, Response};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use ctap::{Command, Request, Response, StatusCode};
+use ctap_client::cred_mgmt;
+use ctap_client::pin_protocol::PlatformKeyAgreement;
 use ctap_client::GetInfoResponse;
 use std::io::{self, Write};
 use std::time::Duration;
 
 const FIDO_TIMEOUT: Duration = Duration::from_secs(10);
+const CRED_MGMT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Generous: the user has to physically touch the sensor before the device
+/// answers this one. Matches `webauthn-host`'s own `UV_CEREMONY_TIMEOUT`
+/// (`crates/webauthn-host/src/main.rs`) rather than inventing a second
+/// number for the same wait.
+const UV_CEREMONY_TIMEOUT: Duration = Duration::from_millis(29_000);
 
 /// Handles all `ctctl fido ...` subcommands.
 pub fn handle_fido_command(
@@ -58,6 +72,7 @@ pub fn handle_fido_command(
         "reset" => run_fido_reset(transport, &args[1..]),
         "access" => run_fido_access(transport, &args[1..]),
         "fingerprints" | "bio" => run_fido_fingerprints(transport, &args[1..]),
+        "credentials" => run_fido_credentials(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown fido subcommand '{unknown}'. Run 'ctctl fido --help' for available commands."
         ))),
@@ -73,7 +88,8 @@ pub fn print_fido_help() {
            info          Display FIDO2 / WebAuthn capabilities and security policy\n\
            reset         Reset all FIDO2 credentials and restore unprovisioned state\n\
            access        Manage FIDO2 PIN (set or change)\n\
-           fingerprints  Manage on-chip biometric fingerprints (list, add, delete)\n\n\
+           fingerprints  Manage on-chip biometric fingerprints (list, add, delete)\n\
+           credentials   List or delete resident passkeys (touch to authorise)\n\n\
          Options:\n\
            -h, --help    Show this help message\n"
     );
@@ -322,6 +338,222 @@ fn run_fido_reset(
         "Action required: Unplug and replug the token, then touch the sensor within 10 seconds."
     );
     println!("✓ FIDO2 application reset. Token restored to unprovisioned state.");
+    Ok(())
+}
+
+/// Sends one `ctap_client::cred_mgmt` request and decodes the CTAP2 envelope
+/// around it. Every cred-mgmt call in this module goes through here so a
+/// transport failure and a device-refused status are reported the same way
+/// every time, rather than each call site rolling its own.
+fn cred_mgmt_transceive(
+    transport: &mut dyn TokenTransport,
+    request: &Request,
+    timeout: Duration,
+    what: &str,
+) -> Result<Vec<u8>, ManagerError> {
+    let raw = transport
+        .transceive(0x10, &request.encode(), timeout)
+        .map_err(|e| ManagerError::Transport(format!("{what} did not reach the device — {e}")))?;
+    let response = Response::decode(&raw)
+        .map_err(|e| ManagerError::Transport(format!("{what}: empty response ({e})")))?;
+    if response.status == StatusCode::NO_CREDENTIALS {
+        // Not a failure — RP/credential enumeration signal "exhausted" this
+        // way. Callers that are mid-enumeration check for this status
+        // themselves; one that reaches here wants it treated as empty.
+        return Ok(Vec::new());
+    }
+    if response.status == StatusCode::OTHER {
+        // `ctap_client_pin`/`ctap_cred_mgmt`'s honest answer for a
+        // subcommand their firmware build doesn't have a case for — see
+        // this module's doc comment.
+        return Err(ManagerError::Other(format!(
+            "{what}: unsupported on this device's current firmware"
+        )));
+    }
+    if !response.status.is_ok() {
+        let name = response
+            .status
+            .name()
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        return Err(ManagerError::Other(format!(
+            "{what}: device refused with CTAP2 status {:#04x}{name}",
+            response.status.as_u8()
+        )));
+    }
+    Ok(response.data)
+}
+
+/// Runs the CTAP2.1 PIN protocol key-agreement handshake and asks for a
+/// `pinUvAuthToken` scoped to `permissions`, gated on the fingerprint sensor
+/// rather than a PIN — see this module's doc comment. A fresh token is
+/// obtained every call; this device's token lifetime policy isn't pinned
+/// down well enough yet to risk caching one past its actual expiry.
+fn obtain_uv_token(
+    transport: &mut dyn TokenTransport,
+    permissions: u8,
+) -> Result<[u8; 16], ManagerError> {
+    let ka_data = cred_mgmt_transceive(
+        transport,
+        &cred_mgmt::get_key_agreement_request(),
+        FIDO_TIMEOUT,
+        "fido credentials: key agreement",
+    )?;
+    let device_key = cred_mgmt::parse_key_agreement_response(&ka_data)
+        .map_err(|e| ManagerError::Other(format!("fido credentials: key agreement response: {e}")))?;
+
+    let platform = PlatformKeyAgreement::generate();
+    let shared_secret = platform.shared_secret(&device_key);
+
+    println!("Touch the sensor to authorise...");
+    let uv_data = cred_mgmt_transceive(
+        transport,
+        &cred_mgmt::get_uv_token_request(&platform, permissions, None),
+        UV_CEREMONY_TIMEOUT,
+        "fido credentials: touch authorisation",
+    )?;
+
+    cred_mgmt::parse_uv_token_response(&uv_data, &shared_secret)
+        .map_err(|e| ManagerError::Other(format!("fido credentials: touch response did not decrypt: {e}")))
+}
+
+/// Handles `ctctl fido credentials [list|delete]`.
+fn run_fido_credentials(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
+    if args.is_empty() {
+        println!(
+            "Usage: ctctl fido credentials [COMMAND] [OPTIONS]\n\n\
+             List or delete resident FIDO2 passkeys. Every call needs a\n\
+             touch on the sensor to authorise — there is no PIN for this.\n\n\
+             Commands:\n\
+               list               List every relying party and its passkeys\n\
+               delete CREDENTIAL  Delete one passkey by its credential ID\n\n\
+             Options (list only):\n\
+               -c, --csv          Print as rp_id,user_name,credential_id\n"
+        );
+        return Ok(());
+    }
+
+    match args[0].as_str() {
+        "list" => run_credentials_list(transport, &args[1..]),
+        "delete" => run_credentials_delete(transport, &args[1..]),
+        unknown => Err(ManagerError::InvalidInput(format!(
+            "Unknown credentials command '{unknown}'"
+        ))),
+    }
+}
+
+fn run_credentials_list(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
+    let csv = args.iter().any(|a| a == "-c" || a == "--csv");
+
+    let pin_token = obtain_uv_token(transport, cred_mgmt::PERMISSION_CREDENTIAL_MANAGEMENT)?;
+
+    let metadata_data = cred_mgmt_transceive(
+        transport,
+        &cred_mgmt::metadata_request(&pin_token),
+        CRED_MGMT_TIMEOUT,
+        "fido credentials list: metadata",
+    )?;
+    let metadata = cred_mgmt::Metadata::parse(&metadata_data)
+        .map_err(|e| ManagerError::Other(format!("fido credentials list: metadata response: {e}")))?;
+
+    if metadata.existing_resident_credentials_count == 0 {
+        if !csv {
+            println!("No resident passkeys stored on this token.");
+        }
+        return Ok(());
+    }
+
+    let mut total = 0;
+    let mut next_rp = Some(cred_mgmt::rp_begin_request(&pin_token));
+    while let Some(req) = next_rp.take() {
+        let rp_data = cred_mgmt_transceive(transport, &req, CRED_MGMT_TIMEOUT, "fido credentials list: RP enumeration")?;
+        if rp_data.is_empty() {
+            break;
+        }
+        let rp = cred_mgmt::RpEntry::parse(&rp_data)
+            .map_err(|e| ManagerError::Other(format!("fido credentials list: RP response: {e}")))?;
+
+        if !csv {
+            println!("{} ({})", rp.rp_name.as_deref().unwrap_or(&rp.rp_id), rp.rp_id);
+        }
+
+        let mut next_cred = Some(cred_mgmt::rk_begin_request(&pin_token, &rp.rp_id_hash));
+        while let Some(creq) = next_cred.take() {
+            let cred_data = cred_mgmt_transceive(transport, &creq, CRED_MGMT_TIMEOUT, "fido credentials list: credential enumeration")?;
+            if cred_data.is_empty() {
+                break;
+            }
+            let entry = cred_mgmt::CredentialEntry::parse(&cred_data)
+                .map_err(|e| ManagerError::Other(format!("fido credentials list: credential response: {e}")))?;
+            let id_b64 = URL_SAFE_NO_PAD.encode(&entry.credential_id);
+            let user = entry.user_name.as_deref().unwrap_or("");
+            let display = entry.user_display_name.as_deref().unwrap_or("");
+
+            if csv {
+                println!("{},{user},{id_b64}", rp.rp_id);
+            } else {
+                println!("  • {display} ({user})  [{id_b64}]");
+            }
+            total += 1;
+
+            next_cred = Some(cred_mgmt::rk_next_request());
+        }
+
+        next_rp = Some(cred_mgmt::rp_next_request());
+    }
+
+    if !csv {
+        println!(
+            "\n{total} passkey(s) stored, {} slot(s) remaining.",
+            metadata.max_possible_remaining
+        );
+    }
+    Ok(())
+}
+
+fn run_credentials_delete(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
+    let mut force = false;
+    let mut credential_id = None;
+    for arg in args {
+        match arg.as_str() {
+            "-f" | "--force" => force = true,
+            other => credential_id = Some(other.to_string()),
+        }
+    }
+    let credential_id = credential_id
+        .ok_or_else(|| "Usage: ctctl fido credentials delete CREDENTIAL [-f]".to_string())?;
+    let raw_id = URL_SAFE_NO_PAD
+        .decode(&credential_id)
+        .map_err(|e| ManagerError::InvalidInput(format!("Invalid credential ID (not base64url): {e}")))?;
+
+    if !force {
+        print!("Delete this passkey? It cannot be recovered. [y/N]: ");
+        io::stdout().flush().map_err(|e| e.to_string())?;
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Delete cancelled.");
+            return Ok(());
+        }
+    }
+
+    let pin_token = obtain_uv_token(transport, cred_mgmt::PERMISSION_CREDENTIAL_MANAGEMENT)?;
+    cred_mgmt_transceive(
+        transport,
+        &cred_mgmt::rk_delete_request(&pin_token, &raw_id),
+        CRED_MGMT_TIMEOUT,
+        "fido credentials delete",
+    )?;
+    println!("✓ Passkey deleted.");
     Ok(())
 }
 

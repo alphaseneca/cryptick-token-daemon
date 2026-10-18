@@ -29,7 +29,10 @@ pub fn dispatch(args: &[String]) -> Result<(), ManagerError> {
                 return Ok(());
             }
             "-v" | "--version" if command_args.is_empty() => {
-                println!("ctctl {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "ctctl {} — Cryptick Token's own, not someone else's.",
+                    env!("CARGO_PKG_VERSION")
+                );
                 return Ok(());
             }
             "-d" | "--device" => {

@@ -121,3 +121,71 @@ fn fido_info_degrades_gracefully_when_the_device_is_unreachable() {
     let mut token = UnreachableToken;
     assert!(handle_fido_command(&mut token, &["info".to_string()]).is_ok());
 }
+
+/// A token that answers every `authenticatorClientPIN`/credential-management
+/// request with CTAP1_ERR_OTHER (`0x7f`) and nothing else — the real
+/// firmware's own answer for a subcommand its build has no case for yet
+/// (`core/fido2/ctap.c`'s `ctap_client_pin` default arm). The actual
+/// key-agreement/encryption handshake is `ctap-client`'s own concern, tested
+/// there; this is purely "does the CLI surface that status honestly instead
+/// of panicking or hanging."
+struct UnsupportedCredMgmtToken;
+
+impl TokenTransport for UnsupportedCredMgmtToken {
+    fn transceive(
+        &mut self,
+        cmd: u8,
+        _payload: &[u8],
+        _timeout: Duration,
+    ) -> Result<Vec<u8>, ManagerError> {
+        if cmd == 0x10 {
+            return Ok(vec![0x7f]); // CTAP1_ERR_OTHER, no body
+        }
+        Ok(vec![0x01])
+    }
+
+    fn transport_name(&self) -> &'static str {
+        "Simulated Cryptick Token (no cred-mgmt firmware)"
+    }
+
+    fn serial(&self) -> Option<String> {
+        Some("SIM-FIDO-02".to_string())
+    }
+}
+
+#[test]
+fn fido_credentials_list_reports_unsupported_firmware_honestly() {
+    let mut token = UnsupportedCredMgmtToken;
+    let err = handle_fido_command(
+        &mut token,
+        &["credentials".to_string(), "list".to_string()],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("unsupported on this device's current firmware"));
+}
+
+#[test]
+fn fido_credentials_delete_rejects_a_non_base64_credential_id() {
+    let mut token = UnsupportedCredMgmtToken;
+    let err = handle_fido_command(
+        &mut token,
+        &[
+            "credentials".to_string(),
+            "delete".to_string(),
+            "not valid base64url!!".to_string(),
+            "-f".to_string(),
+        ],
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Invalid credential ID"));
+}
+
+#[test]
+fn fido_credentials_degrades_gracefully_when_the_device_is_unreachable() {
+    let mut token = UnreachableToken;
+    assert!(handle_fido_command(
+        &mut token,
+        &["credentials".to_string(), "list".to_string()]
+    )
+    .is_err());
+}
