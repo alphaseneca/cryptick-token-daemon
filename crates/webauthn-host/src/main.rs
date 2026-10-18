@@ -36,8 +36,6 @@ enum HostRequest {
     TotpCode(TotpCodeRequest),
     #[serde(rename = "sync_time")]
     SyncTime,
-    #[serde(rename = "totp_sync_time")]
-    TotpSyncTime,
     #[serde(rename = "list_credentials")]
     ListCredentials,
     #[serde(rename = "delete_credential")]
@@ -1228,7 +1226,7 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                 Err(e) => HostResponse::error(format!("TOTP calculate failed: {e}")),
             }
         }
-        Ok(HostRequest::SyncTime) | Ok(HostRequest::TotpSyncTime) => {
+        Ok(HostRequest::SyncTime) => {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
