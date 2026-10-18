@@ -1,6 +1,6 @@
 //! Comprehensive tests for RFC 4648 Base32 and RFC 6238 / RFC 4226 URI parsing.
 
-use tickctl::otpauth::{
+use ctctl::otpauth::{
     decode_base32, encode_base32, url_decode, HashAlgorithm, OathType, OtpAuthUri,
 };
 

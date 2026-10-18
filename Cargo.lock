@@ -279,6 +279,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctctl"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ctap",
+ "ctap-client",
+ "ctaphid",
+ "hidapi",
+ "ipc",
+ "piv",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
+
+[[package]]
 name = "daemon"
 version = "0.1.0"
 dependencies = [
@@ -1353,24 +1371,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
-]
-
-[[package]]
-name = "tickctl"
-version = "0.1.0"
-dependencies = [
- "base64",
- "ctap",
- "ctap-client",
- "ctaphid",
- "hidapi",
- "ipc",
- "piv",
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
 ]
 
 [[package]]

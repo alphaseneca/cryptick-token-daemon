@@ -1,9 +1,9 @@
 //! Test suite covering CLI argument parsing, script tokenizer, and mode validation.
 
-use tickctl::cli::apdu_cli::resolve_aid;
-use tickctl::cli::dispatch;
-use tickctl::config::DeviceMode;
-use tickctl::script::{substitute_args, tokenize_line};
+use ctctl::cli::apdu_cli::resolve_aid;
+use ctctl::cli::dispatch;
+use ctctl::config::DeviceMode;
+use ctctl::script::{substitute_args, tokenize_line};
 
 #[test]
 fn test_help_and_version_flags() {

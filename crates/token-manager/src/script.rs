@@ -1,6 +1,6 @@
-//! Batch script execution runner for `tickctl script`.
+//! Batch script execution runner for `ctctl script`.
 //!
-//! Executes a file containing lines of tickctl commands in sequence,
+//! Executes a file containing lines of ctctl commands in sequence,
 //! supporting comments (`#`), whitespace, quotes, and positional parameter substitution.
 
 use std::fs;

@@ -1,4 +1,4 @@
-//! CLI handler for raw APDU commands: `tickctl apdu`.
+//! CLI handler for raw APDU commands: `ctctl apdu`.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu};
 use crate::error::ManagerError;
@@ -19,7 +19,7 @@ pub fn resolve_aid(alias: &str) -> Result<Vec<u8>, ManagerError> {
     }
 }
 
-/// Handles `tickctl apdu [OPTIONS] [APDU]`.
+/// Handles `ctctl apdu [OPTIONS] [APDU]`.
 pub fn run_apdu_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -33,7 +33,7 @@ pub fn run_apdu_command(
         match args[i].as_str() {
             "-h" | "--help" => {
                 println!(
-                    "Usage: tickctl apdu [OPTIONS] [APDU]\n\n\
+                    "Usage: ctctl apdu [OPTIONS] [APDU]\n\n\
                      Send raw ISO 7816 APDUs to the token.\n\n\
                      Options:\n\
                        -a, --applet <AID>    Select applet before transmitting (e.g. oath, piv, mgmt, or hex AID)\n\

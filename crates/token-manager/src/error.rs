@@ -1,4 +1,4 @@
-//! Typed error type for `tickctl`.
+//! Typed error type for `ctctl`.
 //!
 //! PROJECT.md §20: "Typed errors with `thiserror`; no stringly-typed
 //! failures across crate lines." Every public function in this crate used
@@ -30,7 +30,7 @@
 use crate::apdu::StatusWord;
 use thiserror::Error;
 
-/// The error type returned by every fallible operation in `tickctl`.
+/// The error type returned by every fallible operation in `ctctl`.
 #[derive(Debug, Error)]
 pub enum ManagerError {
     /// A caller-supplied value failed validation or parsing: a CLI

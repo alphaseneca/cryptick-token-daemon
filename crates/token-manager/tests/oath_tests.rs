@@ -1,15 +1,15 @@
 //! OATH protocol unit tests, cryptographic vectors, and simulated token exchanges.
 
-use tickctl::access::{derive_access_key, hmac_sha1, sha1};
-use tickctl::apdu::{aid, format_hex, CommandApdu};
-use tickctl::error::ManagerError;
-use tickctl::oath::{
+use ctctl::access::{derive_access_key, hmac_sha1, sha1};
+use ctctl::apdu::{aid, format_hex, CommandApdu};
+use ctctl::error::ManagerError;
+use ctctl::oath::{
     calculate_code, delete_account, list_accounts, put_account, reset_oath, select_oath,
     AddAccountOptions,
 };
-use tickctl::otpauth::{HashAlgorithm, OathType};
-use tickctl::tlv::{tags, Tlv};
-use tickctl::transport::TokenTransport;
+use ctctl::otpauth::{HashAlgorithm, OathType};
+use ctctl::tlv::{tags, Tlv};
+use ctctl::transport::TokenTransport;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -138,7 +138,7 @@ impl TokenTransport for SimulatedOathToken {
                     self.authenticated = true;
                 }
 
-                let mut out = tickctl::tlv::encode_tlvs(&tlvs);
+                let mut out = ctctl::tlv::encode_tlvs(&tlvs);
                 out.extend_from_slice(&[0x90, 0x00]);
                 return Ok(out);
             } else {
@@ -246,7 +246,7 @@ impl TokenTransport for SimulatedOathToken {
                 // Tag 0x78: remaining validity seconds (22s)
                 resp_tlvs.push(Tlv::new(tags::TAG_PROPERTY, vec![22]));
 
-                let mut out = tickctl::tlv::encode_tlvs(&resp_tlvs);
+                let mut out = ctctl::tlv::encode_tlvs(&resp_tlvs);
                 out.extend_from_slice(&[0x90, 0x00]);
                 return Ok(out);
             } else {

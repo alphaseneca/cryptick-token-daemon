@@ -1,4 +1,4 @@
-//! CLI handlers for base tickctl commands: `info`, `list`, and `script`.
+//! CLI handlers for base ctctl commands: `info`, `list`, and `script`.
 //!
 //! `list -s/--serials` matches `ykman list` exactly
 //! (`yubikey-manager/ykman/_cli/__main__.py`). `info`'s `-c/--check` and
@@ -14,7 +14,7 @@ use crate::script::{read_script_lines, substitute_args, tokenize_line};
 use crate::transport::usb::UsbTransport;
 use crate::transport::{DualTransport, TokenTransport};
 
-/// Handles `tickctl info [OPTIONS]`.
+/// Handles `ctctl info [OPTIONS]`.
 pub fn run_base_info(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -63,7 +63,7 @@ pub fn run_base_info(
     Ok(())
 }
 
-/// Handles `tickctl list [OPTIONS]`.
+/// Handles `ctctl list [OPTIONS]`.
 pub fn run_base_list(args: &[String]) -> Result<(), ManagerError> {
     let mut serials_only = false;
     for arg in args {
@@ -110,14 +110,14 @@ pub fn run_base_list(args: &[String]) -> Result<(), ManagerError> {
     Ok(())
 }
 
-/// Handles `tickctl script [OPTIONS] FILE [ARGUMENTS]`.
+/// Handles `ctctl script [OPTIONS] FILE [ARGUMENTS]`.
 pub fn run_base_script(
     args: &[String],
     executor: fn(&[String]) -> Result<(), ManagerError>,
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         return Err(ManagerError::InvalidInput(
-            "Usage: tickctl script [OPTIONS] FILE [ARGUMENTS...]".to_string(),
+            "Usage: ctctl script [OPTIONS] FILE [ARGUMENTS...]".to_string(),
         ));
     }
 

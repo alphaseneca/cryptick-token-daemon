@@ -1,15 +1,15 @@
-//! CLI subcommand handlers for `tickctl piv`.
+//! CLI subcommand handlers for `ctctl piv`.
 //!
 //! Modeled on YubiKey Manager's `piv` command group as a design reference
 //! for CLI ergonomics (subcommand names, flag names/shorthand) — never
 //! user-facing, per this project's convention:
-//! - `tickctl piv info`
-//! - `tickctl piv reset`
-//! - `tickctl piv access change-pin`
-//! - `tickctl piv access change-puk`
-//! - `tickctl piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
-//! - `tickctl piv certificates export <slot>`
-//! - `tickctl piv certificates delete <slot>`
+//! - `ctctl piv info`
+//! - `ctctl piv reset`
+//! - `ctctl piv access change-pin`
+//! - `ctctl piv access change-puk`
+//! - `ctctl piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
+//! - `ctctl piv certificates export <slot>`
+//! - `ctctl piv certificates delete <slot>`
 //!
 //! Checked against `ykman`'s actual source (`yubikey-manager/ykman/_cli/piv.py`)
 //! rather than assumed from memory. Confirmed, deliberate differences:
@@ -84,7 +84,7 @@ fn slot_tag(slot: Slot) -> u32 {
     }
 }
 
-/// Handles all `tickctl piv ...` subcommands.
+/// Handles all `ctctl piv ...` subcommands.
 pub fn handle_piv_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -105,15 +105,15 @@ pub fn handle_piv_command(
         "provision" => run_piv_provision(transport, &args[1..]),
         "certificates" => run_piv_certificates(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown piv subcommand '{unknown}'. Run 'tickctl piv --help' for available commands."
+            "Unknown piv subcommand '{unknown}'. Run 'ctctl piv --help' for available commands."
         ))),
     }
 }
 
-/// Prints `tickctl piv --help` usage text.
+/// Prints `ctctl piv --help` usage text.
 pub fn print_piv_help() {
     println!(
-        "Usage: tickctl piv [COMMAND] [OPTIONS]\n\n\
+        "Usage: ctctl piv [COMMAND] [OPTIONS]\n\n\
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
@@ -201,20 +201,20 @@ fn run_piv_info(
     }
 
     if configured_count == 0 {
-        println!("\nHint: Run 'tickctl piv provision --slot 9A' to configure macOS / Linux login.");
+        println!("\nHint: Run 'ctctl piv provision --slot 9A' to configure macOS / Linux login.");
     }
 
     Ok(())
 }
 
-/// Handles `tickctl piv access [change-pin|change-puk]`.
+/// Handles `ctctl piv access [change-pin|change-puk]`.
 fn run_piv_access(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: tickctl piv access [COMMAND] [OPTIONS]\n\n\
+            "Usage: ctctl piv access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                change-pin   Change the 6-8 digit user PIN\n\
                change-puk   Change the 8 digit PIN Unlock Key (PUK)\n"
@@ -292,7 +292,7 @@ fn run_piv_access(
     }
 }
 
-/// Handles `tickctl piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
+/// Handles `ctctl piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
 fn run_piv_provision(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -380,14 +380,14 @@ fn run_piv_provision(
     Ok(())
 }
 
-/// Handles `tickctl piv certificates [export|delete] SLOT`.
+/// Handles `ctctl piv certificates [export|delete] SLOT`.
 fn run_piv_certificates(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: tickctl piv certificates [COMMAND] SLOT\n\n\
+            "Usage: ctctl piv certificates [COMMAND] SLOT\n\n\
              Commands:\n\
                export SLOT   Export a certificate from a slot to stdout (9A, 9C, 9D, or 9E)\n\
                delete SLOT   Delete a certificate stored in a slot\n"
@@ -401,7 +401,7 @@ fn run_piv_certificates(
         "export" => {
             let slot = parse_slot_arg(
                 args.get(1)
-                    .ok_or_else(|| "Usage: tickctl piv certificates export SLOT".to_string())?,
+                    .ok_or_else(|| "Usage: ctctl piv certificates export SLOT".to_string())?,
             )?;
             let tag = slot_tag(slot);
             let get_apdu = CommandApdu::with_data(
@@ -436,7 +436,7 @@ fn run_piv_certificates(
         "delete" => {
             let slot = parse_slot_arg(
                 args.get(1)
-                    .ok_or_else(|| "Usage: tickctl piv certificates delete SLOT".to_string())?,
+                    .ok_or_else(|| "Usage: ctctl piv certificates delete SLOT".to_string())?,
             )?;
             let tag = slot_tag(slot);
             // A zero-length PUT DATA is the applet's own convention for
@@ -465,7 +465,7 @@ fn run_piv_certificates(
     }
 }
 
-/// Handles `tickctl piv reset`.
+/// Handles `ctctl piv reset`.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],

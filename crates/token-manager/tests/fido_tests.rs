@@ -1,4 +1,4 @@
-//! `tickctl fido` unit tests against a simulated CTAP2 device.
+//! `ctctl fido` unit tests against a simulated CTAP2 device.
 //!
 //! The actual `authenticatorGetInfo` CBOR parsing is covered exhaustively by
 //! `ctap-client`'s own `get_info` tests (including the exact shape this
@@ -8,9 +8,9 @@
 //! without erroring out, whether the device answers or not — matching the
 //! `SimulatedOathToken` pattern in `oath_tests.rs`.
 
-use tickctl::cli::fido_cli::handle_fido_command;
-use tickctl::error::ManagerError;
-use tickctl::transport::TokenTransport;
+use ctctl::cli::fido_cli::handle_fido_command;
+use ctctl::error::ManagerError;
+use ctctl::transport::TokenTransport;
 use ctap_client::Value;
 use std::time::Duration;
 

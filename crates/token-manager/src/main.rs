@@ -1,6 +1,6 @@
-//! `tickctl`: Production Hardware Token Manager command suite for Cryptick Token.
+//! `ctctl`: Production Hardware Token Manager command suite for Cryptick Token.
 
-use tickctl::cli::dispatch;
+use ctctl::cli::dispatch;
 use std::env;
 use std::process::ExitCode;
 

@@ -168,7 +168,7 @@ impl DaemonTransport {
     fn take_id(&mut self) -> String {
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        format!("tickctl-{id}")
+        format!("ctctl-{id}")
     }
 
     #[cfg(any(unix, windows))]
@@ -400,7 +400,7 @@ impl TokenTransport for DaemonTransport {
         match self.recv(&id, Instant::now() + timeout)? {
             DaemonMessage::CtapResponse { status, cbor } => decode_daemon_response(cmd, status, cbor),
             DaemonMessage::Error { code, message } => {
-                eprintln!("tickctl: daemon reported error ({code:?}): {message}");
+                eprintln!("ctctl: daemon reported error ({code:?}): {message}");
                 Err(ManagerError::Transport(format!(
                     "Daemon reported error ({code:?}): {message}"
                 )))

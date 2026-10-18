@@ -1,4 +1,4 @@
-//! CLI subcommand handlers for `tickctl config`.
+//! CLI subcommand handlers for `ctctl config`.
 
 use crate::config::{
     configure_usb_applications, get_config_status, reset_config, set_lock_code, set_mode,
@@ -8,7 +8,7 @@ use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
 
-/// Handles `tickctl config ...` subcommands.
+/// Handles `ctctl config ...` subcommands.
 pub fn handle_config_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -29,15 +29,15 @@ pub fn handle_config_command(
         "set-lock-code" => run_config_set_lock_code(transport, &args[1..]),
         "usb" => run_config_usb(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown config subcommand '{unknown}'. Run 'tickctl config --help' for usage."
+            "Unknown config subcommand '{unknown}'. Run 'ctctl config --help' for usage."
         ))),
     }
 }
 
-/// Prints `tickctl config --help` usage text.
+/// Prints `ctctl config --help` usage text.
 pub fn print_config_help() {
     println!(
-        "Usage: tickctl config [COMMAND] [OPTIONS]\n\n\
+        "Usage: ctctl config [COMMAND] [OPTIONS]\n\n\
          Configure device connection modes, USB applications, and lock codes.\n\n\
          Commands:\n\
            mode           Configure enabled connection modes (e.g. FIDO+OATH+PIV, CCID, ALL)\n\
@@ -96,7 +96,7 @@ fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
     Ok(())
 }
 
-/// Handles `tickctl config ble`.
+/// Handles `ctctl config ble`.
 ///
 /// This device's only wireless radio is Bluetooth Low Energy — there is no
 /// NFC hardware, so this reports the BLE GATT services directly rather than

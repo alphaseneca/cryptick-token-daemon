@@ -1,4 +1,4 @@
-//! Top-level CLI router and dispatcher for `tickctl`.
+//! Top-level CLI router and dispatcher for `ctctl`.
 
 pub mod apdu_cli;
 pub mod base_cli;
@@ -29,7 +29,7 @@ pub fn dispatch(args: &[String]) -> Result<(), ManagerError> {
                 return Ok(());
             }
             "-v" | "--version" if command_args.is_empty() => {
-                println!("tickctl {}", env!("CARGO_PKG_VERSION"));
+                println!("ctctl {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
             }
             "-d" | "--device" => {
@@ -86,15 +86,15 @@ pub fn dispatch(args: &[String]) -> Result<(), ManagerError> {
         "apdu" => apdu_cli::run_apdu_command(transport.active(), sub_args),
         "config" => config_cli::handle_config_command(transport.active(), sub_args),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown command '{unknown}'. Run 'tickctl --help' for available commands."
+            "Unknown command '{unknown}'. Run 'ctctl --help' for available commands."
         ))),
     }
 }
 
-/// Prints the top-level `tickctl --help` usage text.
+/// Prints the top-level `ctctl --help` usage text.
 pub fn print_main_help() {
     println!(
-        "Usage: tickctl [OPTIONS] COMMAND [ARGS]...\n\n\
+        "Usage: ctctl [OPTIONS] COMMAND [ARGS]...\n\n\
          Configure and manage Cryptick Token (0x1209:0xBEEE) over USB and Bluetooth Low Energy.\n\n\
          Commands:\n\
            info          Show information about the connected token\n\
