@@ -1790,7 +1790,7 @@ follow-up pass rather than silently leaving it undiscovered.
 `cargo check`/`cargo test` clean for `piv`, `ctctl`, and the full
 workspace at every step of this pass, not just at the end. `cargo test
 --workspace`: every suite passing (counts unchanged from the daemon-
-identity pass's own note above, plus this pass's additions: 72 `piv`
+identity pass's own note above, plus this pass's additions: 73 `piv`
 lib tests including 12 new ones for the builders, `ManagementKey`'s AES
 round-trip, and its "two different keys must disagree" sanity check; 15
 `ctctl` lib tests including 4 new ones for this module's own pure glue —
