@@ -58,6 +58,19 @@ pub enum ProvisionError {
     /// Expected EC public key but received RSA or unknown type.
     #[error("expected EC P-256 public key, received another key type")]
     UnexpectedKeyType,
+
+    /// The card did not sign the certificate's `TBSCertificate`.
+    ///
+    /// Provisioning stops here rather than substituting a locally built
+    /// signature; see `provision_slot` step 6 and PROJECT.md §15.8.
+    #[error("card did not sign the certificate for slot {slot:?}: {source}")]
+    CardSignatureFailed {
+        /// The slot being provisioned when signing failed.
+        slot: Slot,
+        /// The underlying failure reported by the signing step.
+        #[source]
+        source: Box<ProvisionError>,
+    },
 }
 
 /// A transport-agnostic smart card APDU transceiver.
@@ -114,7 +127,7 @@ pub struct ProvisionReport {
 /// 3. `GENERATE ASYMMETRIC KEY PAIR` in slot with algorithm P-256 (`0x11`)
 /// 4. Parse returned EC public key
 /// 5. Construct self-signed X.509 v3 certificate (with slot-specific KeyUsage)
-/// 6. Sign certificate (via card `GENERAL AUTHENTICATE` or self-signature)
+/// 6. Sign certificate on the card (`GENERAL AUTHENTICATE`); fails if it cannot
 /// 7. Wrap certificate in SP 800-73-5 container (`0x53`)
 /// 8. Write certificate using chained `PUT DATA` (`0xDB`, `Lc <= 255`)
 pub fn provision_slot<T: CardTransceiver>(
@@ -162,12 +175,38 @@ pub fn provision_slot<T: CardTransceiver>(
         builder = builder.with_common_name(cn)?;
     }
 
-    // 6. Sign certificate
+    // 6. Sign certificate — on the card, or not at all.
+    //
+    // This step used to fall back to `builder.build_self_signed()` on any
+    // error. That is a §15.8 violation: `build_self_signed` does not sign, it
+    // fabricates `(r, s)` from the digest, so the fallback wrote a certificate
+    // whose signature verifies against nothing into the slot's certificate
+    // container and then reported the slot provisioned. Every distinguishable
+    // failure was swallowed by the `Err(_)` — transport loss, a refused PIN, a
+    // declined user-presence check (`general_authenticate` requires one,
+    // `core/piv/piv.c`), a malformed signature — and turned into apparent
+    // success, which is precisely the "guess in the user's favour" the
+    // invariant forbids.
+    //
+    // It also hid the failure it was most likely to meet: an applet without
+    // `GENERAL AUTHENTICATE` would fail every signature and provision every
+    // slot "successfully" with a junk certificate. Slot 9D is the case to
+    // watch — it is a key-management (ECDH) slot, so if its key cannot
+    // produce an ECDSA signature then a *self*-signed 9D certificate is
+    // impossible by construction and the right answer is a visible error
+    // here, not a forged one written to the card.
+    //
+    // `build_self_signed` stays public for callers that genuinely have no card
+    // and want an offline certificate; it is simply no longer reachable by
+    // accident from a path that does have one.
     let tbs_hash = builder.tbs_digest()?;
-    let cert_der = match try_card_sign(card, slot, &tbs_hash) {
-        Ok(sig_der) => builder.build(&sig_der)?,
-        Err(_) => builder.build_self_signed()?,
-    };
+    let sig_der = try_card_sign(card, slot, &tbs_hash).map_err(|source| {
+        ProvisionError::CardSignatureFailed {
+            slot,
+            source: Box::new(source),
+        }
+    })?;
+    let cert_der = builder.build(&sig_der)?;
 
     // 7. Encode into SP 800-73-5 certificate container (Tag 53)
     let container = objects::encode_certificate(&cert_der);
@@ -538,6 +577,59 @@ mod tests {
         assert!(
             card.put_data_buffer.is_empty(),
             "buffer must be cleared on reset"
+        );
+    }
+
+    /// A card that provisions normally but refuses to sign, which is what a
+    /// declined user-presence check or an applet without `GENERAL
+    /// AUTHENTICATE` looks like from the host.
+    #[derive(Debug, Clone)]
+    struct CardThatWillNotSign {
+        inner: SimulatedCard,
+    }
+
+    impl CardTransceiver for CardThatWillNotSign {
+        fn transceive(&mut self, command: &[u8]) -> Result<Vec<u8>, ProvisionError> {
+            if command.len() >= 2 && command[1] == commands::INS_GENERAL_AUTHENTICATE {
+                // 0x6982: security status not satisfied.
+                return Ok(vec![0x69, 0x82]);
+            }
+            self.inner.transceive(command)
+        }
+    }
+
+    /// PROJECT.md §15.8. The previous code answered a refused signature by
+    /// calling `build_self_signed()`, which fabricates `(r, s)` from the
+    /// digest rather than signing, and then wrote that certificate to the
+    /// card and reported success. Provisioning must fail instead.
+    #[test]
+    fn a_card_that_refuses_to_sign_fails_provisioning_rather_than_forging() {
+        let mut card = CardThatWillNotSign {
+            inner: SimulatedCard::new(),
+        };
+        let err = provision_slot(&mut card, Slot::PivAuthentication, Some(b"123456"), None)
+            .expect_err("a refused signature must not provision the slot");
+
+        match err {
+            ProvisionError::CardSignatureFailed { slot, ref source } => {
+                assert_eq!(slot, Slot::PivAuthentication);
+                // The real status word survives, so the caller can tell a
+                // refused signature from a transport failure.
+                assert!(
+                    matches!(**source, ProvisionError::CardStatus(_)),
+                    "expected the card's own status word, got {source}"
+                );
+            }
+            other => panic!("expected CardSignatureFailed, got {other}"),
+        }
+
+        // And nothing was written: no certificate container reached the slot.
+        assert_eq!(
+            card.inner
+                .get_certificate(Slot::PivAuthentication)
+                .expect("certificate lookup succeeds"),
+            None,
+            "a slot whose certificate could not be signed must be left empty"
         );
     }
 }
