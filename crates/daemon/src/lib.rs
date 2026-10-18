@@ -6,7 +6,18 @@
 //! authenticator on one side and the browser or OS on the other
 //! (PROJECT.md §4, §15, §21).
 
-#![forbid(unsafe_code)]
+// Unsafe stays forbidden outright on every target that can manage it. Windows
+// is the one that cannot: §15.7's restrictive DACL on the named pipe and the
+// `GetNamedPipeClientProcessId` peer check are raw Win32 calls with no safe
+// binding anywhere in the ecosystem (see `server::windows`). So on that target
+// the lint drops from `forbid` to `deny` — still an error everywhere by
+// default — and exactly one module carries a scoped `#[allow(unsafe_code)]`.
+// That is PROJECT.md §20's "unsafe is confined to FFI boundaries, with a
+// safety comment per block", kept as narrow as the lint system allows:
+// `forbid` cannot be relaxed per-module, which is the only reason this line
+// is conditional rather than absolute.
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 #![deny(missing_docs)]
 
 pub mod bridge;

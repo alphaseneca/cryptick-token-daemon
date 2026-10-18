@@ -30,6 +30,18 @@ tokio = { workspace = true, features = ["sync", "time", "macros", "rt", "net", "
 transport-ble = { workspace = true }
 vpcd = { workspace = true }
 
+# §15.7's DACL and peer-SID check on the named pipe (`server::windows`).
+# Windows-only, and already in the lockfile via tokio — see the workspace
+# manifest for the §20 dependency discussion.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util", "io-util", "net"] }
 # A faithful software model of the firmware's PIV applet (PROJECT.md §14's
@@ -37,6 +49,16 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "te
 # is not `piv`, and this does not relax the no-`piv`-in-`daemon` rule that
 # crates/daemon/tests/relay_stays_opaque.rs enforces.
 vpicc-piv.workspace = true
+
+# `tests/windows_pipe.rs` reads the live pipe's DACL back out of the kernel
+# and asserts Everyone is absent from it. Same crate and version as the
+# `cfg(windows)` dependency above; nothing new enters the lockfile.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
 
 [[bin]]
 name = "cryptick-daemon"

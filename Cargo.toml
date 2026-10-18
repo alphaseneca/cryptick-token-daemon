@@ -67,6 +67,28 @@ aes = "=0.8.4"
 # time in this codebase (`crates/token-manager/src/access.rs` already does
 # once, for OATH, with its own from-scratch SHA-1/HMAC).
 hmac = "=0.12.1"
+# Win32 bindings, used by `daemon` on Windows only, for exactly two things
+# §15.7 requires and for which no safe Rust binding exists: the named pipe's
+# restrictive DACL, and the `GetNamedPipeClientProcessId` peer-identity check
+# (`crates/daemon/src/server.rs`'s `windows` module).
+#
+# §20 asks for new daemon dependencies to be discussed rather than added
+# quietly. The discussion is short because this one is free: `tokio` already
+# declares `windows-sys = "0.61"` for `cfg(windows)` in its own manifest
+# (verified against tokio 1.53.1, this workspace's pinned version, at
+# `Cargo.toml:971`), so 0.61.2 is already in Cargo.lock and already compiled
+# into every Windows build of this daemon. Naming it here adds no crate, no
+# version, and no new code to the Windows build — it only makes a dependency
+# the daemon already links against visible to the audit. On macOS and Linux
+# it is not compiled at all.
+#
+# Not pinned exactly: §7's pin-exactly rule is written for
+# `webauthn-authenticator-rs` and the `soft-fido2*` crates, which are
+# pre-1.0, alpha-quality and unaudited. This is Microsoft's own generated
+# binding layer, and pinning it tighter than tokio pins it would just
+# guarantee the duplicate-version warning `deny.toml`'s `[bans]` section
+# exists to catch.
+windows-sys = "0.61"
 
 # Local crates
 ble-framing = { path = "crates/ble-framing" }

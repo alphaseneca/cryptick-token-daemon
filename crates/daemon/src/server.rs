@@ -563,6 +563,7 @@ pub mod unix {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 pub mod windows {
     //! Binding the IPC endpoint to a Windows named pipe (PROJECT.md §13).
     //!
@@ -571,47 +572,398 @@ pub mod windows {
     //! client has connected — the whole point of keeping that function generic
     //! over the stream type.
     //!
-    //! **Known gap, not yet hardware-verified (PROJECT.md §17 applies in
-    //! spirit even though this isn't `[HW]`):** §15.7 asks for a restrictive
-    //! DACL and peer-credential validation equivalent to Unix's
-    //! `SO_PEERCRED`/`peer_cred()` check (there, "validate the connecting
-    //! UID equals the socket owner"; here, the Windows analogue is
-    //! `GetNamedPipeClientProcessId` plus a token/SID comparison). Neither is
-    //! implemented yet — this listener currently relies only on
-    //! [`reject_remote_clients`](ServerOptions::reject_remote_clients), which
-    //! blocks the pipe from being reached over SMB from another host but does
-    //! **not** restrict which *local* user can open a client handle. Do not
-    //! assume parity with the Unix listener's owner-only guarantee until this
-    //! is closed and verified against a real Windows session.
+    //! # §15.7 on this platform
+    //!
+    //! §15.7 asks for an owner-only endpoint *and* a peer check where the
+    //! platform allows one. Both are implemented here, in the same
+    //! defence-in-depth shape as [`unix`](super::unix) — bind permissions
+    //! first, peer identity second, neither standing in for the other:
+    //!
+    //! 1. **A restrictive DACL, applied at pipe creation.** Every instance is
+    //!    created through tokio's
+    //!    [`create_with_security_attributes_raw`](ServerOptions::create_with_security_attributes_raw)
+    //!    with a `SECURITY_ATTRIBUTES` carrying the security descriptor built
+    //!    by [`owner_only_sddl`] — `D:P(A;;GA;;;<our SID>)`, one
+    //!    access-allowed ACE granting `GENERIC_ALL` to the SID of the user
+    //!    this process runs as, on a protected (non-inheriting) DACL, and
+    //!    nothing else. This replaces the default, which is the whole bug:
+    //!    Microsoft documents the default named-pipe descriptor as granting
+    //!    "full control to the LocalSystem account, administrators, and the
+    //!    creator owner. They also grant **read access to members of the
+    //!    Everyone group and the anonymous account**" (CreateNamedPipeW,
+    //!    `lpSecurityAttributes`). Every local user could read this daemon's
+    //!    IPC traffic; now none but its owner can open the pipe at all.
+    //!
+    //! 2. **A peer-identity check after `connect()`**, the analogue of the
+    //!    Unix listener's `peer_cred()`/UID comparison:
+    //!    `GetNamedPipeClientProcessId` → `OpenProcess` →
+    //!    `OpenProcessToken` → `GetTokenInformation(TokenUser)` → compare the
+    //!    client's user SID against our own. Mismatch rejects, and so does
+    //!    *any* failure to establish either SID (§15.8 — the connection is
+    //!    refused rather than served on an unproven identity).
+    //!
+    //! `reject_remote_clients(true)` stays, and is a third, orthogonal axis:
+    //! it blocks SMB reach from another host, which the DACL does not
+    //! (Microsoft's `PIPE_ACCEPT_REMOTE_CLIENTS` is documented as accepting
+    //! remote connections and *then* checking them "against the security
+    //! descriptor for the pipe" — so a remote principal holding our SID would
+    //! otherwise pass). PROJECT.md §5/§15.6.
+    //!
+    //! ## Why SDDL rather than a hand-built ACL
+    //!
+    //! The descriptor is assembled as an SDDL string and handed to
+    //! `ConvertStringSecurityDescriptorToSecurityDescriptorW` rather than
+    //! built with `InitializeAcl`/`AddAccessAllowedAce`. Both are supported
+    //! Win32; the string form keeps the unsafe surface to one call and no
+    //! hand-laid ACL memory, and the only variable in it — the SID — comes
+    //! from `ConvertSidToStringSidW` rather than from us assembling SID bytes
+    //! by hand. Field meanings are from Microsoft's "Security Descriptor
+    //! String Format" and "ACE Strings": `D:` sets `SE_DACL_PRESENT`, `P` is
+    //! `SDDL_PROTECTED` (`SE_DACL_PROTECTED`, so no inherited ACE can widen
+    //! it), `A` is `SDDL_ACCESS_ALLOWED` and `GA` is `SDDL_GENERIC_ALL`. A
+    //! DACL that is *present* but lists nobody else denies everybody else; it
+    //! is the **absent/NULL** DACL that grants all access, and SDDL cannot
+    //! express one, which is a useful property here.
+    //!
+    //! `GENERIC_ALL` and not something narrower, deliberately: creating the
+    //! second and later instances of an existing pipe needs
+    //! `FILE_CREATE_PIPE_INSTANCE` on the pipe object ("the user must have
+    //! FILE_CREATE_PIPE_INSTANCE access to the named pipe object" —
+    //! CreateNamedPipeW Remarks), which a read/write-only grant would not
+    //! carry, and this listener creates a fresh instance per connection.
+    //!
+    //! Only the daemon's own user is granted. LocalSystem and Administrators
+    //! are deliberately *not* in the ACE: nothing in this project needs them,
+    //! and their omission is not a security claim either way, since an
+    //! administrator can take ownership of the object and rewrite the DACL
+    //! regardless. The boundary this buys is against *peer* local users, which
+    //! is exactly the one the default descriptor gave away.
+    //!
+    //! # What is verified, and what is not
+    //!
+    //! Written 2026-10-18, and **compile-time verified only**. This module was
+    //! developed on macOS and checked by cross-compiling to
+    //! `x86_64-pc-windows-msvc`; no line of it has ever run on Windows, and
+    //! `tests/windows_pipe.rs` has never been executed. The Win32 contracts
+    //! above are quoted from Microsoft's current documentation (read
+    //! 2026-10-18) and every signature was checked against the exact crate
+    //! versions in this workspace's `Cargo.lock` — `windows-sys` 0.61.2 and
+    //! tokio 1.53.1, whose `create_with_security_attributes_raw` is
+    //! `unsafe fn(&self, impl AsRef<OsStr>, *mut c_void)`.
+    //!
+    //! Still wanted from a human on a real Windows session, before §15.7 is
+    //! called closed here:
+    //!
+    //! - **The DACL as the kernel actually stored it.** `tests/windows_pipe.rs`
+    //!   reads it back with `GetSecurityInfo` and asserts Everyone is gone;
+    //!   that assertion has never run.
+    //! - **A genuine cross-user rejection.** Both halves can only be proved by
+    //!   a second local account connecting. Note the expected failure mode is
+    //!   not a SID mismatch but an `OpenProcess` denial: Microsoft documents
+    //!   that inspecting a process started by a different account needs
+    //!   `SE_DEBUG_NAME`, which this daemon neither has nor wants — so the
+    //!   peer check rejects such a client by *failing to identify it*, which
+    //!   is the §15.8 path and should be confirmed to behave that way rather
+    //!   than erroring the accept loop.
+    //! - **Whether the descriptor on later instances behaves as assumed.** The
+    //!   documentation defines the DACL for the case where "a new named pipe
+    //!   is being created" and is silent on instances two and up; this code
+    //!   passes the same descriptor on every instance, which is correct under
+    //!   either reading, but only a readback on a live second instance shows
+    //!   which reading is true.
+    //! - **Service-context operation.** If this daemon is ever run under a
+    //!   service account rather than as the logged-in user, the SID it grants
+    //!   is the service's, and every client is then a different user. That is
+    //!   a packaging decision (§16 step 9) this module cannot check.
+    //!
+    //! ## The PID lookup has a race the Unix side does not
+    //!
+    //! `peer_cred()` reads credentials the kernel captured at connect time.
+    //! `GetNamedPipeClientProcessId` returns a PID, and a PID is a reusable
+    //! name: between the client's connect and our `OpenProcess`, that client
+    //! could exit and its PID be reissued to a process of ours, which would
+    //! then pass the comparison. It is a narrow window and the attacker does
+    //! not choose PIDs, but it is a real difference and is recorded here
+    //! rather than papered over.
+    //!
+    //! `ImpersonateNamedPipeClient` has no such race — the kernel hands over
+    //! the client's own token — and was rejected anyway: it swaps the *calling
+    //! thread's* token, and this is a shared tokio worker thread. A panic, or
+    //! any yield, between impersonate and `RevertToSelf` would leave unrelated
+    //! tasks running under a borrowed identity. Trading a PID-reuse race for a
+    //! thread-identity hazard in an authenticator path is not a trade worth
+    //! making, and the DACL — which has no such race — is the primary control
+    //! regardless. §15.7 names `GetNamedPipeClientProcessId` for this reason.
     use std::{
+        ffi::{c_void, OsStr},
         io,
+        os::windows::{ffi::OsStrExt, io::AsRawHandle},
         path::{Path, PathBuf},
     };
     use tokio::net::windows::named_pipe::{NamedPipeServer, PipeMode, ServerOptions};
+    use windows_sys::{
+        core::PWSTR,
+        Win32::{
+            Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL},
+            Security::{
+                Authorization::{
+                    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+                    SDDL_REVISION_1,
+                },
+                GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+                TOKEN_QUERY, TOKEN_USER,
+            },
+            System::{
+                Pipes::GetNamedPipeClientProcessId,
+                Threading::{
+                    GetCurrentProcess, OpenProcess, OpenProcessToken,
+                    PROCESS_QUERY_LIMITED_INFORMATION,
+                },
+            },
+        },
+    };
+
+    /// A `HANDLE` closed exactly once, on drop.
+    struct ScopedHandle(HANDLE);
+
+    impl Drop for ScopedHandle {
+        fn drop(&mut self) {
+            // SAFETY: the only constructors of this type are the two call
+            // sites below, each wrapping a handle a successful `OpenProcess`
+            // or `OpenProcessToken` just produced. The type is not `Clone`,
+            // so the handle is closed here and nowhere else.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A security descriptor allocated by Win32 and released with `LocalFree`.
+    struct LocalSecurityDescriptor(PSECURITY_DESCRIPTOR);
+
+    impl Drop for LocalSecurityDescriptor {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` was allocated by
+            // `ConvertStringSecurityDescriptorToSecurityDescriptorW`, which
+            // documents `LocalFree` as its matching deallocator. Not `Clone`,
+            // so this runs once.
+            unsafe { LocalFree(self.0 as HLOCAL) };
+        }
+    }
+
+    /// A NUL-terminated UTF-16 copy of `s`, for the `W` entry points.
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    /// Copies a NUL-terminated UTF-16 string out of Win32-owned memory.
+    ///
+    /// # Safety
+    ///
+    /// `raw` must be non-null and point at a NUL-terminated UTF-16 string that
+    /// stays valid for the duration of the call.
+    unsafe fn pwstr_to_string(raw: PWSTR) -> String {
+        let mut len = 0usize;
+        while *raw.add(len) != 0 {
+            len += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(raw, len))
+    }
+
+    /// The textual (`S-1-5-…`) form of a SID.
+    ///
+    /// Comparing these strings is equivalent to `EqualSid`, because
+    /// `ConvertSidToStringSidW` is a deterministic, injective rendering of the
+    /// SID's bytes. Strings are used instead so that nothing in this module
+    /// has to keep a raw `PSID` alive across a call boundary.
+    ///
+    /// # Safety
+    ///
+    /// `sid` must point at a valid SID that stays valid for the call.
+    unsafe fn sid_to_string(sid: PSID) -> io::Result<String> {
+        let mut raw: PWSTR = std::ptr::null_mut();
+        if ConvertSidToStringSidW(sid, &mut raw) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let owned = pwstr_to_string(raw);
+        LocalFree(raw as HLOCAL);
+        Ok(owned)
+    }
+
+    /// The user SID of the token `token`, as a string.
+    fn token_user_sid(token: HANDLE) -> io::Result<String> {
+        let mut needed: u32 = 0;
+        // SAFETY: the documented size probe — a null buffer of length 0 makes
+        // `GetTokenInformation` fail with ERROR_INSUFFICIENT_BUFFER and write
+        // the required byte count to `needed`. The failure is expected, so
+        // the return value is ignored in favour of checking `needed`.
+        unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+        if needed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // A `TOKEN_USER` is pointer-aligned and this buffer is cast to one, so
+        // it is allocated as `u64`s rather than bytes — `Vec<u8>` guarantees
+        // only byte alignment.
+        let words = (needed as usize).div_ceil(std::mem::size_of::<u64>());
+        let mut buf = vec![0u64; words];
+        let capacity = (words * std::mem::size_of::<u64>()) as u32;
+
+        // SAFETY: `buf` is `capacity` writable bytes, `capacity >= needed`,
+        // and the pointer is 8-byte aligned by construction.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                buf.as_mut_ptr().cast::<c_void>(),
+                capacity,
+                &mut needed,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: on success the buffer holds a `TOKEN_USER` whose `User.Sid`
+        // points into that same buffer, which outlives this block.
+        unsafe {
+            let user = &*buf.as_ptr().cast::<TOKEN_USER>();
+            sid_to_string(user.User.Sid)
+        }
+    }
+
+    /// The SID of the user this process is running as.
+    fn current_user_sid() -> io::Result<String> {
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: `GetCurrentProcess` returns a pseudo-handle that needs no
+        // close and is always valid; `token` is a live out-param.
+        let ok = unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let token = ScopedHandle(token);
+        token_user_sid(token.0)
+    }
+
+    /// The SID of the user owning the process at the far end of `pipe`.
+    ///
+    /// Every step can fail, and every failure is the caller's cue to refuse
+    /// the connection (§15.8) — in particular `OpenProcess` is expected to be
+    /// denied for a client owned by another account, which is the case this
+    /// check exists to catch.
+    fn client_user_sid(pipe: HANDLE) -> io::Result<String> {
+        let mut pid: u32 = 0;
+        // SAFETY: `pipe` is a live server-end named-pipe handle owned by the
+        // caller, which is what this entry point requires.
+        if unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // PROCESS_QUERY_LIMITED_INFORMATION and nothing more: it is exactly
+        // what `OpenProcessToken` documents as its requirement, and unlike
+        // PROCESS_QUERY_INFORMATION it does not need the target to be at or
+        // below our integrity level.
+        // SAFETY: a plain scalar call; the returned handle is checked below.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        let process = ScopedHandle(process);
+
+        let mut token: HANDLE = std::ptr::null_mut();
+        // SAFETY: `process.0` is the live handle just opened; `token` is a
+        // live out-param.
+        let ok = unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let token = ScopedHandle(token);
+        token_user_sid(token.0)
+    }
+
+    /// The SDDL for "this SID, and nobody else".
+    ///
+    /// Split out from the descriptor it builds so the string itself can be
+    /// asserted on without a live pipe — see this module's tests. Field
+    /// meanings are cited in the module documentation.
+    fn owner_only_sddl(owner_sid: &str) -> String {
+        format!("D:P(A;;GA;;;{owner_sid})")
+    }
+
+    /// Builds the owner-only security descriptor for `owner_sid`.
+    fn owner_only_descriptor(owner_sid: &str) -> io::Result<LocalSecurityDescriptor> {
+        let sddl = wide(&owner_only_sddl(owner_sid));
+        let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        // SAFETY: `sddl` is NUL-terminated UTF-16 and outlives the call;
+        // `descriptor` is a live out-param; a null size out-param is
+        // documented as "don't report the size".
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(LocalSecurityDescriptor(descriptor))
+    }
 
     /// A listener bound to a Windows named pipe.
     #[derive(Debug)]
     pub struct IpcListener {
         pipe_name: String,
         display_path: PathBuf,
+        /// The SID every client is checked against, read once at bind time.
+        owner_sid: String,
         // The next waiting instance, created ahead of time so a second client
         // is never refused while the first is being handed off to a task.
         next: Option<NamedPipeServer>,
     }
 
-    fn new_instance(pipe_name: &str, first: bool) -> io::Result<NamedPipeServer> {
-        ServerOptions::new()
-            .pipe_mode(PipeMode::Byte)
-            .first_pipe_instance(first)
-            // Named pipes are reachable over SMB from a remote host unless
-            // this is set; PROJECT.md §5/§15.6 forbid any non-local reach.
-            .reject_remote_clients(true)
-            .create(pipe_name)
+    fn new_instance(pipe_name: &str, first: bool, owner_sid: &str) -> io::Result<NamedPipeServer> {
+        let descriptor = owner_only_descriptor(owner_sid)?;
+        let mut attrs = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            // The daemon spawns no children, and an inheritable pipe handle
+            // would hand one a connection it never opened.
+            bInheritHandle: 0,
+        };
+
+        // SAFETY: `attrs` is a fully initialised `SECURITY_ATTRIBUTES` whose
+        // `lpSecurityDescriptor` points at `descriptor`, still owned and alive
+        // here. `CreateNamedPipeW` copies the descriptor into the kernel
+        // object, so the explicit `drop` below — after the call returns — is
+        // not a use-after-free for the created pipe.
+        let server = unsafe {
+            ServerOptions::new()
+                .pipe_mode(PipeMode::Byte)
+                .first_pipe_instance(first)
+                // Named pipes are reachable over SMB from a remote host unless
+                // this is set; PROJECT.md §5/§15.6 forbid any non-local reach.
+                // Orthogonal to the DACL — see the module documentation.
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    pipe_name,
+                    std::ptr::addr_of_mut!(attrs).cast::<c_void>(),
+                )
+        };
+        drop(descriptor);
+        server
     }
 
     impl IpcListener {
         /// Creates the first instance of the named pipe at `path` (typically
         /// `ipc::WINDOWS_NAMED_PIPE`, e.g. `\\.\pipe\cryptick-daemon`).
+        ///
+        /// The owner-only DACL is applied by the creating call itself, so
+        /// there is no window in which the pipe exists under the permissive
+        /// default descriptor — the Windows counterpart of the Unix listener
+        /// creating its directory `0700` *before* binding.
         ///
         /// `first_pipe_instance(true)` makes this fail if another process
         /// already owns the name, which is the Windows equivalent of the
@@ -619,13 +971,18 @@ pub mod windows {
         /// Unix socket file, a named pipe leaves nothing behind for a crashed
         /// daemon to clean up: the kernel destroys the object once every
         /// handle to it is closed, so there is no stale-path removal step.
+        ///
+        /// Fails if the daemon's own user SID cannot be read, rather than
+        /// falling back to a weaker descriptor (§15.8).
         pub fn bind(path: impl AsRef<Path>) -> io::Result<Self> {
             let display_path = path.as_ref().to_path_buf();
             let pipe_name = display_path.to_string_lossy().into_owned();
-            let server = new_instance(&pipe_name, true)?;
+            let owner_sid = current_user_sid()?;
+            let server = new_instance(&pipe_name, true, &owner_sid)?;
             Ok(Self {
                 pipe_name,
                 display_path,
+                owner_sid,
                 next: Some(server),
             })
         }
@@ -635,28 +992,114 @@ pub mod windows {
             &self.display_path
         }
 
-        /// Waits for one client to connect and returns the connected instance.
+        /// The SID this listener grants access to and checks clients against.
+        pub fn owner_sid(&self) -> &str {
+            &self.owner_sid
+        }
+
+        /// Waits for one client to connect and returns the connected instance,
+        /// rejecting any peer that is not owned by the same user as this
+        /// process.
         ///
-        /// Returns `Ok(None)` for a transient accept failure so the caller can
-        /// keep serving, mirroring `unix::IpcListener::accept`'s shape even
-        /// though named pipes have no peer-credential check to fail here yet.
+        /// Returns `Ok(None)` when a connection was refused or an accept
+        /// failed transiently, so the caller can keep serving — the same shape
+        /// as `unix::IpcListener::accept`. A refusal covers both a SID
+        /// mismatch and any failure to establish either SID: an unidentifiable
+        /// peer is not served (§15.8).
+        ///
+        /// The DACL should already make a foreign client unable to open the
+        /// pipe at all; this check means a descriptor that was wrong, or an
+        /// instance created without one, is still not enough on its own —
+        /// exactly the reasoning behind the Unix listener doing `0600` *and*
+        /// `peer_cred()`.
         pub async fn accept(&mut self) -> io::Result<Option<NamedPipeServer>> {
             let server = match self.next.take() {
                 Some(server) => server,
-                None => new_instance(&self.pipe_name, false)?,
+                None => new_instance(&self.pipe_name, false, &self.owner_sid)?,
             };
 
             if let Err(err) = server.connect().await {
                 // Queue a fresh instance before surfacing the error so one
                 // bad connection attempt cannot wedge every later one.
-                self.next = new_instance(&self.pipe_name, false).ok();
+                self.next = new_instance(&self.pipe_name, false, &self.owner_sid).ok();
                 return Err(err);
             }
 
-            self.next = Some(new_instance(&self.pipe_name, false)?);
-            Ok(Some(server))
+            let verdict = client_user_sid(server.as_raw_handle() as HANDLE);
+            self.next = Some(new_instance(&self.pipe_name, false, &self.owner_sid)?);
+
+            match verdict {
+                Ok(sid) if sid == self.owner_sid => Ok(Some(server)),
+                Ok(_) => {
+                    // A SID, but not ours. Nothing identifying is logged;
+                    // that the refusal happened is the useful part.
+                    eprintln!("cryptick-daemon: refused a pipe client owned by another user");
+                    let _ = server.disconnect();
+                    Ok(None)
+                }
+                Err(err) => {
+                    // Could not establish who the peer is — refuse rather
+                    // than serve an unproven identity (§15.8). Expected for a
+                    // client owned by another account, whose process this
+                    // daemon has no right to inspect.
+                    eprintln!(
+                        "cryptick-daemon: refused a pipe client of unverifiable identity: {err}"
+                    );
+                    let _ = server.disconnect();
+                    Ok(None)
+                }
+            }
         }
     }
 
     pub use ipc::default_socket_path;
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Never executed in the sandbox this was written in (macOS); see the
+        /// module documentation.
+        #[test]
+        fn the_dacl_names_our_own_sid_and_nobody_else() {
+            let sid = current_user_sid().expect("our own SID must be readable");
+            assert!(sid.starts_with("S-1-"), "not a SID string: {sid}");
+
+            let sddl = owner_only_sddl(&sid);
+            assert_eq!(sddl, format!("D:P(A;;GA;;;{sid})"));
+
+            // One ACE, and it is ours.
+            assert_eq!(sddl.matches('(').count(), 1, "{sddl}");
+            assert!(sddl.contains(&sid), "{sddl}");
+
+            // None of the SDDL aliases that would widen this past our user.
+            // `WD` is Everyone, `AU` Authenticated Users, `BU` Users, `BA`
+            // Administrators, `AN` Anonymous, `S-1-1-0` Everyone spelled out.
+            for wide_open in [";WD)", ";AU)", ";BU)", ";BA)", ";AN)", "S-1-1-0"] {
+                assert!(
+                    !sddl.contains(wide_open),
+                    "DACL grants {wide_open}, which defeats the point: {sddl}"
+                );
+            }
+        }
+
+        /// Proves the SDDL is well-formed against the OS parser rather than
+        /// against our own expectations of the syntax (PROJECT.md §20:
+        /// verify against the specification, not against the other side).
+        #[test]
+        fn the_generated_descriptor_is_accepted_by_win32() {
+            let sid = current_user_sid().expect("our own SID must be readable");
+            let descriptor = owner_only_descriptor(&sid).expect("Win32 must parse our SDDL");
+            assert!(!descriptor.0.is_null());
+        }
+
+        /// The comparison the peer check rests on is a string equality, so a
+        /// SID must render identically every time it is read.
+        #[test]
+        fn our_sid_renders_stably() {
+            let first = current_user_sid().expect("SID");
+            let second = current_user_sid().expect("SID");
+            assert_eq!(first, second);
+        }
+    }
 }
