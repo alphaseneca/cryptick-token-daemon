@@ -26,7 +26,8 @@
 //!   under `panic = "abort"` the barrier cannot work and a panic takes
 //!   `ssh-sk-helper` with it.
 //! - **Nothing on stdout or stderr.** `ssh-sk-helper` uses both to talk to
-//!   `ssh-keygen`; a stray `println!` corrupts that protocol.
+//!   `ssh-keygen`; a stray `println!` corrupts that protocol. Diagnostics go
+//!   to an opt-in file instead — see [`debug`].
 //!
 //! # Memory ownership
 //!
@@ -42,10 +43,12 @@
 
 pub mod alloc;
 pub mod client;
+pub mod debug;
 pub mod ffi;
 pub mod usb;
 
 pub use client::{ClientError, DaemonClient};
+pub use debug::DebugLog;
 pub use usb::UsbClient;
 
 /// The SK API version this middleware implements, from OpenSSH's `sk-api.h`

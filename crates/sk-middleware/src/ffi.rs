@@ -8,6 +8,7 @@
 use crate::{
     alloc::{free, to_c_buffer, zeroed_struct},
     client::DaemonClient,
+    debug::DebugLog,
     CONNECT_TIMEOUT, OPERATION_TIMEOUT, SSH_SK_ECDSA, SSH_SK_ED25519, SSH_SK_ERR_DEVICE_NOT_FOUND,
     SSH_SK_ERR_GENERAL, SSH_SK_ERR_UNSUPPORTED, SSH_SK_RESIDENT_KEY, SSH_SK_USER_VERIFICATION_REQD,
     SSH_SK_VERSION_MAJOR,
@@ -144,15 +145,10 @@ pub enum ActiveTransport {
 /// Connects and confirms the token is actually usable.
 /// Prioritizes USB HID when plugged in, falling back to BLE via the daemon.
 fn reachable_device() -> Result<ActiveTransport, i32> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/sk_debug.log")
-        .ok();
-    if let Some(f) = &mut f {
-        let _ = writeln!(f, "reachable_device called, checking USB first...");
-    }
+    let mut log = DebugLog::open();
+    log.line(format_args!(
+        "reachable_device called, checking USB first..."
+    ));
 
     let force_ble = std::env::var("CRYPTICK_TRANSPORT").as_deref() == Ok("ble")
         || std::env::var("SSH_SK_FORCE_BLE").is_ok();
@@ -160,45 +156,33 @@ fn reachable_device() -> Result<ActiveTransport, i32> {
     // 1. Prioritize direct USB CTAPHID if token is plugged in (and BLE not forced)
     if !force_ble {
         if let Some(usb) = UsbClient::try_connect() {
-            if let Some(f) = &mut f {
-                let _ = writeln!(f, "reachable_device: connected via USB CTAPHID");
-            }
+            log.line(format_args!("reachable_device: connected via USB CTAPHID"));
             return Ok(ActiveTransport::Usb(usb));
         }
     }
 
     // 2. Fall back to BLE via daemon bridge
-    if let Some(f) = &mut f {
-        let _ = writeln!(
-            f,
-            "reachable_device: using BLE daemon bridge (force_ble={force_ble})..."
-        );
-    }
+    log.line(format_args!(
+        "reachable_device: using BLE daemon bridge (force_ble={force_ble})..."
+    ));
     let mut client = match DaemonClient::connect(CONNECT_TIMEOUT) {
         Ok(c) => c,
         Err(e) => {
-            if let Some(f) = &mut f {
-                let _ = writeln!(f, "DaemonClient::connect error: {:?}", e);
-            }
+            log.line(format_args!("DaemonClient::connect error: {e}"));
             return Err(e.sk_error());
         }
     };
     let status = match client.device_status() {
         Ok(s) => s,
         Err(e) => {
-            if let Some(f) = &mut f {
-                let _ = writeln!(f, "device_status error: {:?}", e);
-            }
+            log.line(format_args!("device_status error: {e}"));
             return Err(e.sk_error());
         }
     };
-    if let Some(f) = &mut f {
-        let _ = writeln!(
-            f,
-            "device_status: in_range={}, bonded={}",
-            status.in_range, status.bonded
-        );
-    }
+    log.line(format_args!(
+        "device_status: in_range={}, bonded={}",
+        status.in_range, status.bonded
+    ));
     if !status.in_range || !status.bonded {
         return Err(SSH_SK_ERR_DEVICE_NOT_FOUND);
     }
@@ -216,30 +200,25 @@ fn cose_alg(alg: u32) -> Option<i64> {
 
 /// Runs one CTAP transaction against the active transport (USB or BLE).
 fn transact(request: &ctap::Request) -> Result<ctap::Response, i32> {
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/sk_debug.log")
-        .ok();
-    if let Some(f) = &mut f {
-        let _ = writeln!(
-            f,
+    let mut log = DebugLog::open();
+    // The request's *length*, never its body: the CBOR carries the
+    // clientDataHash, rp id and any PIN/UV material (PROJECT.md §15.5).
+    if log.is_enabled() {
+        log.line(format_args!(
             "transact called with request len {}",
             request.encode().len()
-        );
+        ));
     }
     let mut transport = reachable_device()?;
     let response = match &mut transport {
         ActiveTransport::Usb(usb) => {
             let r = usb.transact(request, OPERATION_TIMEOUT)?;
-            if let Some(f) = &mut f {
-                let _ = writeln!(f, "transact USB Ok: status={:?}", r.status);
-            }
+            log.line(format_args!("transact USB Ok: status={:?}", r.status));
             if !r.status.is_ok() {
-                if let Some(f) = &mut f {
-                    let _ = writeln!(f, "transact USB returned error status: {:?}", r.status);
-                }
+                log.line(format_args!(
+                    "transact USB returned error status: {:?}",
+                    r.status
+                ));
                 return Err(SSH_SK_ERR_GENERAL);
             }
             r
@@ -247,15 +226,14 @@ fn transact(request: &ctap::Request) -> Result<ctap::Response, i32> {
         ActiveTransport::Daemon(client) => {
             let r = match client.transact(request, OPERATION_TIMEOUT) {
                 Ok(r) => {
-                    if let Some(f) = &mut f {
-                        let _ = writeln!(f, "transact BLE Ok: status={:?}", r.status);
-                    }
+                    log.line(format_args!("transact BLE Ok: status={:?}", r.status));
                     r
                 }
                 Err(e) => {
-                    if let Some(f) = &mut f {
-                        let _ = writeln!(f, "transact BLE Err: {:?}, sk_error={}", e, e.sk_error());
-                    }
+                    log.line(format_args!(
+                        "transact BLE Err: {e}, sk_error={}",
+                        e.sk_error()
+                    ));
                     return Err(e.sk_error());
                 }
             };
@@ -454,20 +432,15 @@ pub unsafe extern "C" fn sk_enroll(
         let parsed = match MakeCredentialResponse::parse(&response.data) {
             Ok(p) => p,
             Err(e) => {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/sk_debug.log")
-                {
-                    let _ = writeln!(
-                        f,
-                        "MakeCredentialResponse::parse failed: {:?}, data len={}, hex={:02x?}",
-                        e,
-                        response.data.len(),
-                        response.data
-                    );
-                }
+                // The error and the length, not the body. This previously
+                // hex-dumped the whole authenticatorMakeCredential response,
+                // which PROJECT.md §15.5 forbids — and `ResponseError`
+                // already names the member that would not parse, which is
+                // the part that actually diagnoses this.
+                DebugLog::open().line(format_args!(
+                    "MakeCredentialResponse::parse failed: {e}, data len={}",
+                    response.data.len()
+                ));
                 return SSH_SK_ERR_GENERAL;
             }
         };
