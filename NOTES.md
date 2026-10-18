@@ -1926,3 +1926,45 @@ exercised end to end by `cryptick-token-code`'s own host suite (4 new
 cases there cover the verified-PIN path directly, including that it is
 genuinely independent of PUK state and that it does not survive a later
 failed VERIFY).
+
+## 2026-10-19 — RESET APPLICATION's lockout-recovery path, removed per explicit product direction
+
+The firmware pass's own NOTES.md entry of this same name explains why:
+the "both PIN and PUK retry counters at zero" branch the prior entry's
+`run_piv_reset` relied on to skip the PIN prompt needed no knowledge of
+either secret to reach, only six deliberate wrong guesses — reachable by
+anyone holding the device, not a real recovery path restricted to its
+owner. The device's owner, personal macOS login being the only use case
+that matters here, chose to remove it rather than keep a reset path
+physical possession alone eventually opens regardless of who is holding
+the device.
+
+### What changed in this repo
+
+`run_piv_reset` no longer queries either retry counter or conditionally
+skips the PIN prompt. It always sends `commands::verify_pin()` first —
+via `-P`/`--pin` or an interactive prompt — and refuses to proceed past a
+failed verify, same error reporting as before (`retries_remaining` for a
+wrong PIN, not the device's bare status word). `commands::reset_application()`'s
+doc comment was updated to describe the single remaining gate and record
+why the second path was removed rather than just quietly dropped.
+
+### What this costs, stated plainly
+
+An owner who forgets the PIN *and* the PUK now has no way to reset this
+device via `ctctl`. That is the direct, accepted cost — there is no
+narrower fix that keeps "recoverable from losing both secrets" without
+also keeping "wipeable by anyone who merely finds or steals the device,"
+since the two shared the exact same mechanism (both counters reaching
+zero needs no secret, just willingness to fail six times on purpose).
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean (same doctest-toolchain caveat as every entry above). No
+Rust unit tests added or removed — `run_piv_reset`'s shape (ask the
+transport a question, send one more command) is unchanged by this
+simplification, and the behavior change itself is pinned down on the
+firmware side, where it is actually enforced
+(`test_reset_application_has_no_lockout_recovery_path`, `cryptick-token-
+code`'s host suite).

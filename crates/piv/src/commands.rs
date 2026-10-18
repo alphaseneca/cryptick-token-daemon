@@ -276,20 +276,27 @@ pub fn set_management_key(new_key: &[u8; 24]) -> Command {
 /// `RESET APPLICATION` (vendor): a full factory reset. No data field, no
 /// response data.
 ///
-/// The card accepts this once either of two preconditions holds: the PIN
-/// has already been verified this session ([`verify_pin`], sent first —
-/// the common case, the same bar [`generate_key_pair`] already accepts
-/// for an operation that likewise destroys certificates already issued),
-/// or both the PIN and PUK retry counters are already at zero (the
-/// lockout-recovery case). SP 800-73 does not define this operation at
-/// all, so there is no spec text for either half of that gate, but
-/// either way an unauthenticated party who merely holds the device
-/// cannot wipe it and install their own keys and certificates without
-/// proving something the device itself checks. `ctctl piv reset` sends
-/// [`verify_pin`] first when neither counter already reads zero, so the
-/// operator gets a specific "wrong PIN" or "N attempts remaining"
-/// message rather than a bare `SECURITY_STATUS_NOT_SATISFIED` (`6982`)
-/// from this command itself.
+/// The card accepts this once the PIN has already been verified this
+/// session ([`verify_pin`], sent first — the same bar
+/// [`generate_key_pair`] already accepts for an operation that likewise
+/// destroys certificates already issued) and rejects it otherwise. SP
+/// 800-73 does not define this operation at all, so there is no spec
+/// text for that gate, but an unauthenticated party who merely holds the
+/// device still cannot wipe it and install their own keys and
+/// certificates without proving something the device itself checks.
+/// `ctctl piv reset` always sends [`verify_pin`] first, so the operator
+/// gets a specific "wrong PIN" or "N attempts remaining" message rather
+/// than a bare `SECURITY_STATUS_NOT_SATISFIED` (`6982`) from this command
+/// itself.
+///
+/// Deliberately has no PIN-free lockout-recovery path (an earlier version
+/// of this function also accepted both the PIN and PUK retry counters
+/// already being at zero). That path was removed: reaching "both zero"
+/// needs no knowledge of either secret, only physical possession and a
+/// few deliberate wrong guesses, so it was reachable by anyone holding
+/// the device, not only its legitimate owner. The accepted cost: an
+/// owner who forgets the PIN *and* the PUK has no way back into this
+/// device at all.
 pub fn reset_application() -> Command {
     Command::case1(0x00, INS_RESET_APPLICATION, 0x00, 0x00)
 }

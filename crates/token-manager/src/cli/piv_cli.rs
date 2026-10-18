@@ -46,15 +46,17 @@
 //!   printed a "factory reset" success message without the firmware
 //!   having any `RESET APPLICATION` APDU to send it at all, so nothing
 //!   was ever actually wiped. Now sends `commands::reset_application()`,
-//!   gated (by the device, not merely by this CLI) on either a verified
-//!   PIN or both the PIN and PUK already being blocked — see that
-//!   function's own doc comment and `cryptick-token-code`'s NOTES.md
-//!   ("PIV factory reset") for the firmware-side design. The gate started
-//!   out stricter (lockout-only) in this same pass and was relaxed to add
-//!   the verified-PIN path after the device's owner found the lockout-
-//!   only version impractical for ordinary, non-recovery use — recorded
-//!   in that same NOTES.md entry as a product decision made deliberately,
-//!   not a bug.
+//!   gated (by the device, not merely by this CLI) on a verified PIN and
+//!   nothing else — see that function's own doc comment and
+//!   `cryptick-token-code`'s NOTES.md ("PIV factory reset" and the two
+//!   entries after it) for the firmware-side design's full history: a
+//!   lockout-only gate first, relaxed to also accept a verified PIN, then
+//!   the lockout path removed entirely at the device owner's explicit
+//!   direction once it was clear that path needed no knowledge of either
+//!   secret to reach — only physical possession and a few deliberate
+//!   wrong guesses. The accepted cost, each time a deliberate product
+//!   decision rather than a bug: forgetting the PIN *and* the PUK now
+//!   leaves no way back into this device at all.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 use crate::error::ManagerError;
@@ -140,7 +142,7 @@ pub fn print_piv_help() {
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
-           reset         Factory-reset PIV (enter your PIN, or recover a locked-out device)\n\
+           reset         Factory-reset PIV (requires your current PIN; no recovery if lost)\n\
            access        Manage PIN, PUK, and management key access codes\n\
            provision     Generate and install keys and certificates (e.g. for macOS login / SSH)\n\
            certificates  Manage X.509 certificates stored in PIV slots\n\n\
@@ -924,19 +926,19 @@ fn run_piv_certificates(
 
 /// Handles `ctctl piv reset`.
 ///
-/// `RESET APPLICATION` (vendor, INS `0xFB`) accepts either of two
-/// preconditions — see `commands::reset_application()`'s own doc comment:
-/// a verified PIN (the common case — an owner who still knows their PIN
-/// resets directly, no need to deliberately lock anything out first), or
-/// both the PIN and PUK already blocked (the lockout-recovery case, for
-/// an owner who has lost the PIN entirely). This queries both counters
-/// first; if neither already reads zero, it verifies the PIN itself
-/// before sending the reset, so a wrong PIN is reported the same specific
-/// way `access change-pin` already reports one (attempts remaining)
-/// rather than surfacing the device's bare status word. `--force` only
-/// skips the destructive-action confirmation below, never PIN
-/// verification or the device's own retry-counter gate — those are
-/// security checks, not prompts this CLI can choose to skip.
+/// `RESET APPLICATION` (vendor, INS `0xFB`) is gated on a verified PIN and
+/// nothing else — see `commands::reset_application()`'s own doc comment.
+/// This always verifies the PIN itself before sending the reset, so a
+/// wrong PIN is reported the same specific way `access change-pin`
+/// already reports one (attempts remaining) rather than surfacing the
+/// device's bare status word. There is deliberately no lockout-recovery
+/// fallback: forgetting the PIN *and* the PUK leaves no way back into
+/// this device at all, an explicit, accepted trade recorded in
+/// `cryptick-token-code`'s NOTES.md ("RESET APPLICATION's gate...",
+/// the entry that removed the lockout path this one originally had).
+/// `--force` only skips the destructive-action confirmation below, never
+/// PIN verification — that is a security check, not a prompt this CLI
+/// can choose to skip.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -960,35 +962,29 @@ fn run_piv_reset(
 
     select_piv(transport)?;
 
-    let pin_retries = query_retries(transport, false)?;
-    let puk_retries = query_retries(transport, true)?;
-    let already_locked_out = pin_retries == 0 && puk_retries == 0;
-
-    if !already_locked_out {
-        let pin = match pin {
-            Some(p) => p,
-            None => prompt_secret("Enter current PIN: ")?,
+    let pin = match pin {
+        Some(p) => p,
+        None => prompt_secret("Enter current PIN: ")?,
+    };
+    let verify_cmd = commands::verify_pin(pin.as_bytes())
+        .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
+    let raw = transport.transceive(
+        0x03,
+        &verify_cmd
+            .encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if !resp.is_success() {
+        return if let Some(left) = retries_remaining(resp.sw) {
+            Err(ManagerError::InvalidInput(format!(
+                "Wrong PIN; {left} attempt(s) remaining before it blocks. Nothing was \
+                 reset."
+            )))
+        } else {
+            Err(ManagerError::DeviceStatus(resp.sw))
         };
-        let verify_cmd = commands::verify_pin(pin.as_bytes())
-            .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
-        let raw = transport.transceive(
-            0x03,
-            &verify_cmd
-                .encode()
-                .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
-            PIV_TIMEOUT,
-        )?;
-        let resp = ResponseApdu::parse(&raw)?;
-        if !resp.is_success() {
-            return if let Some(left) = retries_remaining(resp.sw) {
-                Err(ManagerError::InvalidInput(format!(
-                    "Wrong PIN; {left} attempt(s) remaining before it blocks. Nothing \
-                     was reset."
-                )))
-            } else {
-                Err(ManagerError::DeviceStatus(resp.sw))
-            };
-        }
     }
 
     if !force {
