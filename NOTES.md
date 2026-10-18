@@ -1696,12 +1696,15 @@ and an AES-192 management key authenticated via `GENERAL AUTHENTICATE`'s
 mutual witness/challenge/response exchange against key reference `9B`,
 plus a vendor `SET MANAGEMENT KEY`) is `cryptick-token-code`'s own change;
 see that repo's NOTES.md, "PIV PUK and management key support", for the
-full design — including the management-key default-key decision (a
-random 24 bytes per physical unit, not YubiKey's single shared constant,
-and deliberately not derived from any publicly-readable value like the
-eFuse MAC either) and the open product question it leaves (how an owner
-learns their own unit's factory-default key before ever rotating it —
-flagged there for the user, not guessed at here).
+full design — including the management-key default-key decision (SP
+800-73-5's well-known default, `0102030405060708` repeated three times,
+interpreted as AES-192 rather than legacy 3DES — the same value, and the
+same day-one-interop reasoning, as YubiKey firmware 5.7+'s own default).
+Nothing in this repo hardcodes that value: `ManagementKey`/
+`parse_management_key` take whatever 24 bytes the caller supplies, so
+`ctctl piv access change-management-key` works identically whether the
+device is still at that published default or has already been rotated
+away from it.
 
 ### What changed in this repo
 
