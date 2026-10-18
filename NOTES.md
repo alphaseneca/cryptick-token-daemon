@@ -1878,3 +1878,51 @@ untouched and its own 24 tests still pass — it never implemented
 `SW_INS_UNSUPPORTED` there today), so adding `RESET APPLICATION` to it
 alone would have been new, inconsistent scope rather than parity with an
 existing pattern.
+
+## 2026-10-19 — RESET APPLICATION's gate, relaxed per explicit product direction
+
+The firmware pass's own NOTES.md entry above flagged the lockout-only gate
+(both PIN and PUK already blocked) as a product decision worth the
+device's owner's sign-off, not an engineering call to settle silently. The
+owner's answer: this device is for personal macOS login, and requiring a
+deliberate 6-attempt lockout before a reset is reachable at all is more
+friction than they want — "proper security but not that hard." See that
+repo's NOTES.md entry of the same name for the full design; this entry
+covers only the daemon-side follow-up.
+
+### What changed in this repo
+
+`run_piv_reset` now queries both retry counters as before, but only
+treats "neither is already zero" as a reason to ask for the PIN rather
+than refusing outright. When at least one secret still works, it sends
+`commands::verify_pin()` itself before the reset, accepting either a
+`-P`/`--pin` flag (consistent with every other `access` subcommand's
+flag-parsing pattern) or an interactive prompt. A wrong PIN here is
+reported the same specific way `access change-pin` already reports one —
+"N attempts remaining" via `retries_remaining`, not the device's bare
+`SECURITY_STATUS_NOT_SATISFIED` — and the reset is not attempted. Only
+once a secret is actually confirmed usable does this function move on to
+the existing destructive-action warning and, on confirmation (or
+`--force`, unchanged in scope — it still skips only that confirmation,
+never PIN verification), send `reset_application()` for real.
+
+When both counters already read zero, the PIN prompt is skipped entirely
+and this function goes straight to the warning and the reset — the
+original lockout-recovery path from the prior entry, untouched.
+
+`crates/piv/src/commands.rs`'s `reset_application()` doc comment was
+updated to describe both gate paths instead of only the lockout one; the
+function's own wire shape (`Command::case1`, no data) did not change.
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean, same doctest-toolchain caveat as every entry above
+(`rustdoc` is not on `PATH` in this sandbox). No new Rust unit tests —
+same reasoning as the prior entry: `run_piv_reset`'s branches are still
+almost entirely "ask the transport a question, maybe send one more
+command before the real one," and the branch this pass added is
+exercised end to end by `cryptick-token-code`'s own host suite (4 new
+cases there cover the verified-PIN path directly, including that it is
+genuinely independent of PUK state and that it does not survive a later
+failed VERIFY).

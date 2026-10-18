@@ -46,11 +46,15 @@
 //!   printed a "factory reset" success message without the firmware
 //!   having any `RESET APPLICATION` APDU to send it at all, so nothing
 //!   was ever actually wiped. Now sends `commands::reset_application()`,
-//!   gated (by the device, not merely by this CLI) on both the PIN and
-//!   PUK already being blocked — see that function's own doc comment and
-//!   `cryptick-token-code`'s NOTES.md ("PIV factory reset") for the
-//!   firmware-side design, including why that gate is flagged there as a
-//!   product decision rather than settled silently by this pass.
+//!   gated (by the device, not merely by this CLI) on either a verified
+//!   PIN or both the PIN and PUK already being blocked — see that
+//!   function's own doc comment and `cryptick-token-code`'s NOTES.md
+//!   ("PIV factory reset") for the firmware-side design. The gate started
+//!   out stricter (lockout-only) in this same pass and was relaxed to add
+//!   the verified-PIN path after the device's owner found the lockout-
+//!   only version impractical for ordinary, non-recovery use — recorded
+//!   in that same NOTES.md entry as a product decision made deliberately,
+//!   not a bug.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 use crate::error::ManagerError;
@@ -136,7 +140,7 @@ pub fn print_piv_help() {
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
-           reset         Factory-reset PIV (requires PIN and PUK already blocked)\n\
+           reset         Factory-reset PIV (enter your PIN, or recover a locked-out device)\n\
            access        Manage PIN, PUK, and management key access codes\n\
            provision     Generate and install keys and certificates (e.g. for macOS login / SSH)\n\
            certificates  Manage X.509 certificates stored in PIV slots\n\n\
@@ -920,46 +924,78 @@ fn run_piv_certificates(
 
 /// Handles `ctctl piv reset`.
 ///
-/// `RESET APPLICATION` (vendor, INS `0xFB`) only succeeds once the PIN and
-/// PUK are *both* already blocked — see
-/// `commands::reset_application()`'s own doc comment for why the card
-/// enforces that itself and this function does not merely decide to. This
-/// queries both counters first so an operator who still has a working PIN
-/// or PUK gets a clear explanation instead of a bare device status word;
-/// `--force` only skips the destructive-action confirmation below, never
-/// this precondition, since the precondition is a security policy the
-/// device enforces regardless of what this CLI prompts for.
+/// `RESET APPLICATION` (vendor, INS `0xFB`) accepts either of two
+/// preconditions — see `commands::reset_application()`'s own doc comment:
+/// a verified PIN (the common case — an owner who still knows their PIN
+/// resets directly, no need to deliberately lock anything out first), or
+/// both the PIN and PUK already blocked (the lockout-recovery case, for
+/// an owner who has lost the PIN entirely). This queries both counters
+/// first; if neither already reads zero, it verifies the PIN itself
+/// before sending the reset, so a wrong PIN is reported the same specific
+/// way `access change-pin` already reports one (attempts remaining)
+/// rather than surfacing the device's bare status word. `--force` only
+/// skips the destructive-action confirmation below, never PIN
+/// verification or the device's own retry-counter gate — those are
+/// security checks, not prompts this CLI can choose to skip.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     let mut force = false;
-    for arg in args {
-        if arg == "-f" || arg == "--force" {
-            force = true;
+    let mut pin = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" | "--force" => force = true,
+            "-P" | "--pin" => {
+                i += 1;
+                if i < args.len() {
+                    pin = Some(args[i].clone());
+                }
+            }
+            _ => {}
         }
+        i += 1;
     }
 
     select_piv(transport)?;
 
     let pin_retries = query_retries(transport, false)?;
     let puk_retries = query_retries(transport, true)?;
-    if pin_retries > 0 || puk_retries > 0 {
-        return Err(ManagerError::InvalidInput(format!(
-            "Factory reset requires the PIN and PUK to already be blocked (0 attempts \
-             remaining on both), so holding the device is not by itself enough to wipe \
-             it and install new keys. Currently {pin_retries} PIN attempt(s) and \
-             {puk_retries} PUK attempt(s) remain. Block both first (e.g. 'ctctl piv \
-             access change-pin'/'change-puk' with the wrong value, repeated), then run \
-             'ctctl piv reset' again."
-        )));
+    let already_locked_out = pin_retries == 0 && puk_retries == 0;
+
+    if !already_locked_out {
+        let pin = match pin {
+            Some(p) => p,
+            None => prompt_secret("Enter current PIN: ")?,
+        };
+        let verify_cmd = commands::verify_pin(pin.as_bytes())
+            .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
+        let raw = transport.transceive(
+            0x03,
+            &verify_cmd
+                .encode()
+                .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+            PIV_TIMEOUT,
+        )?;
+        let resp = ResponseApdu::parse(&raw)?;
+        if !resp.is_success() {
+            return if let Some(left) = retries_remaining(resp.sw) {
+                Err(ManagerError::InvalidInput(format!(
+                    "Wrong PIN; {left} attempt(s) remaining before it blocks. Nothing \
+                     was reset."
+                )))
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            };
+        }
     }
 
     if !force {
         print!(
-            "WARNING: PIN and PUK are both blocked. This will permanently delete every \
-             stored PIV certificate and reset the PIN, PUK, and management key to their \
-             factory defaults. This cannot be undone. Proceed? [y/N]: "
+            "WARNING: this will permanently delete every stored PIV certificate and \
+             reset the PIN, PUK, and management key to their factory defaults. This \
+             cannot be undone. Proceed? [y/N]: "
         );
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();

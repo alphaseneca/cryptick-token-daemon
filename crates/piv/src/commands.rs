@@ -276,17 +276,20 @@ pub fn set_management_key(new_key: &[u8; 24]) -> Command {
 /// `RESET APPLICATION` (vendor): a full factory reset. No data field, no
 /// response data.
 ///
-/// The card only accepts this once *both* the PIN and PUK retry counters
-/// are already at zero. SP 800-73 does not define this operation at all,
-/// so there is no spec text for that gate, but it is the standard
-/// real-world convention (YubiKey included): an unauthenticated party who
-/// merely holds the device must not be able to wipe it and install their
-/// own keys and certificates, and "both secrets are already unusable" is
-/// the one precondition checkable without knowing either of them. Query
-/// [`verify_retries`]/[`verify_puk_retries`] first if the caller should be
-/// told *why* before sending this and getting
-/// `SECURITY_STATUS_NOT_SATISFIED` (`6982`) back — `ctctl piv reset` does
-/// exactly that rather than surfacing the bare status word.
+/// The card accepts this once either of two preconditions holds: the PIN
+/// has already been verified this session ([`verify_pin`], sent first —
+/// the common case, the same bar [`generate_key_pair`] already accepts
+/// for an operation that likewise destroys certificates already issued),
+/// or both the PIN and PUK retry counters are already at zero (the
+/// lockout-recovery case). SP 800-73 does not define this operation at
+/// all, so there is no spec text for either half of that gate, but
+/// either way an unauthenticated party who merely holds the device
+/// cannot wipe it and install their own keys and certificates without
+/// proving something the device itself checks. `ctctl piv reset` sends
+/// [`verify_pin`] first when neither counter already reads zero, so the
+/// operator gets a specific "wrong PIN" or "N attempts remaining"
+/// message rather than a bare `SECURITY_STATUS_NOT_SATISFIED` (`6982`)
+/// from this command itself.
 pub fn reset_application() -> Command {
     Command::case1(0x00, INS_RESET_APPLICATION, 0x00, 0x00)
 }
