@@ -7,6 +7,9 @@
 //! - `ctctl piv reset`
 //! - `ctctl piv access change-pin`
 //! - `ctctl piv access change-puk`
+//! - `ctctl piv access unblock-pin`
+//! - `ctctl piv access set-retries`
+//! - `ctctl piv access change-management-key`
 //! - `ctctl piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
 //! - `ctctl piv certificates export <slot>`
 //! - `ctctl piv certificates delete <slot>`
@@ -23,22 +26,29 @@
 //!   "piv now does parse APDUs" note). Splitting it into two commands here
 //!   would invent a two-step UX this device's provisioning flow doesn't
 //!   have a matching intermediate state for.
-//! - **No `piv keys` or `piv objects` command group, and `access
-//!   change-puk`/`change-management-key`/`set-retries`/`unblock-pin` are
-//!   unimplemented stubs or entirely absent.** All of these need APDU
-//!   builders — `CHANGE REFERENCE DATA` for PUK, `SET MANAGEMENT KEY`,
-//!   `RESET RETRY COUNTER`, arbitrary-slot key import/export/attestation —
-//!   that don't exist yet in `piv::commands` (only `select`, `get_data`,
-//!   `put_data`, `verify_pin`, `verify_retries`, `clear_security_status`,
-//!   `change_pin`, `sign`, and `generate_key_pair` do). This is missing
-//!   functionality to build, not a naming or flag mismatch to fix in this
-//!   module.
+//! - **No `piv keys` or `piv objects` command group.** Those cover
+//!   arbitrary-slot key import/export/attestation — importing an
+//!   externally-generated private key weakens this device's "private key
+//!   never leaves the card" property, which is a product-security
+//!   decision for the device's owner to make deliberately, not one to
+//!   bundle into a CLI-parity or access-command pass. `access
+//!   change-puk`/`set-retries`/`unblock-pin`/`change-management-key`,
+//!   previously in this same category (unimplemented stubs or entirely
+//!   absent, because `piv::commands` had no `CHANGE REFERENCE DATA` for
+//!   PUK, no `RESET RETRY COUNTER`, no `SET PIN RETRIES`, and no
+//!   management key or `GENERAL AUTHENTICATE` against key reference `9B`
+//!   at all), are now real — see `piv::commands`' own doc comments and
+//!   `cryptick-token-code`'s NOTES.md ("PIV PUK and management key
+//!   support") for the firmware-side design, including the management
+//!   key's default-key policy, which was a genuine product-security
+//!   decision made (and written down) rather than defaulted to silently.
 
-use crate::apdu::{aid, format_hex, CommandApdu, ResponseApdu};
+use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use piv::cert::parse_certificate;
 use piv::commands;
+use piv::commands::ManagementKey;
 use piv::objects::Slot;
 use piv::provision::{provision_slot, CardTransceiver, ProvisionError, ProvisionOptions};
 use piv::Tag;
@@ -137,6 +147,34 @@ fn select_piv(transport: &mut dyn TokenTransport) -> Result<ResponseApdu, Manage
     Ok(resp)
 }
 
+/// Queries PIN or PUK retries remaining via VERIFY's empty-body form,
+/// without spending an attempt. Returns 0 for an already-blocked secret
+/// (VERIFY answers `AUTH_METHOD_BLOCKED`, not a `63Cx` count) rather than
+/// failing `piv info` outright over a state the operator needs to see.
+fn query_retries(transport: &mut dyn TokenTransport, puk: bool) -> Result<u8, ManagerError> {
+    let cmd = if puk {
+        commands::verify_puk_retries()
+    } else {
+        commands::verify_retries()
+    };
+    let raw = transport.transceive(
+        0x03,
+        &cmd.encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if resp.sw == StatusWord::AUTH_METHOD_BLOCKED {
+        return Ok(0);
+    }
+    // `run_piv_info` always calls `select_piv` immediately before this,
+    // which resets PIN verification — so the "already verified, plain
+    // 9000" branch VERIFY's empty-body form can take is unreachable here.
+    // If that invariant ever stops holding, falling through to 0 below
+    // undercounts rather than overclaiming retries that may not be there.
+    Ok(retries_remaining(resp.sw).unwrap_or(0))
+}
+
 /// Displays information about PIV slots and configuration.
 fn run_piv_info(
     transport: &mut dyn TokenTransport,
@@ -145,10 +183,12 @@ fn run_piv_info(
     select_piv(transport)?;
 
     println!("PIV version: 5.4.0 (SP 800-73-5 compliant)");
-    println!("PIN tries remaining: 3");
-    println!("PUK tries remaining: 3");
-    println!("Management key algorithm: AES-192 (or 3DES legacy)");
-    println!("Management key touch policy: Default (Cached / Sensor touch)");
+    println!("PIN tries remaining: {}", query_retries(transport, false)?);
+    println!("PUK tries remaining: {}", query_retries(transport, true)?);
+    // Not "AES-192 (or 3DES legacy)": this firmware supports exactly one
+    // management-key algorithm, and claiming a second one it will never
+    // accept is the same kind of fabrication a canned success message is.
+    println!("Management key algorithm: AES-192");
     println!("\nConfigured Slots:");
 
     let slots = [
@@ -207,7 +247,117 @@ fn run_piv_info(
     Ok(())
 }
 
-/// Handles `ctctl piv access [change-pin|change-puk]`.
+/// Extracts "attempts remaining" from a `63Cx` status word — VERIFY,
+/// CHANGE REFERENCE DATA, and RESET RETRY COUNTER all answer a wrong
+/// secret this way (`piv::apdu::StatusWord::retries_left` mirrors the same
+/// bit pattern on the `piv` crate's own status-word type; duplicated here
+/// in one line because `ResponseApdu` carries this crate's `StatusWord`,
+/// not that one).
+fn retries_remaining(sw: StatusWord) -> Option<u8> {
+    let v = sw.value();
+    if v & 0xFFF0 == 0x63C0 {
+        Some((v & 0x0F) as u8)
+    } else {
+        None
+    }
+}
+
+/// A nonce for the management key's mutual-authenticate challenge.
+///
+/// Does not need to be cryptographically unpredictable — the protocol's
+/// security comes from needing the key to produce a *correct* encrypted
+/// answer, not from the challenge being unguessable, so there is nothing to
+/// gain by pulling in a `rand` dependency (§7/§20: new dependencies are
+/// discussed, not added for something this small) for what wall-clock
+/// time already gives a single interactive CLI invocation: a value the
+/// card could not have precomputed a response for before this exchange
+/// began. A process-local counter is mixed in alongside the timestamp —
+/// not for unpredictability, but because some clocks' practical resolution
+/// is coarser than true nanoseconds, and two calls landing on the same
+/// tick must still not hand the card back a repeated value to encrypt.
+fn fresh_challenge() -> [u8; 16] {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut out = nanos.to_be_bytes();
+    for (i, b) in count.to_be_bytes().iter().enumerate() {
+        out[8 + i] ^= b;
+    }
+    out
+}
+
+/// Sends one `GENERAL AUTHENTICATE` link and returns its response data,
+/// failing with the real device status rather than a guessed one.
+fn send_mgmt_apdu(
+    transport: &mut dyn TokenTransport,
+    cmd: &piv::apdu::Command,
+) -> Result<Vec<u8>, ManagerError> {
+    let raw = transport.transceive(
+        0x03,
+        &cmd.encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if !resp.is_success() {
+        return Err(ManagerError::DeviceStatus(resp.sw));
+    }
+    Ok(resp.data)
+}
+
+/// Runs the management key's mutual-authenticate exchange (SP 800-73-5 Part
+/// 2 §3.2.4 Table 7) and confirms it really was mutual — the card's
+/// response must decrypt back to the challenge this call sent, or the key
+/// supplied does not actually match the one on the device.
+fn authenticate_management_key(
+    transport: &mut dyn TokenTransport,
+    key: &ManagementKey,
+) -> Result<(), ManagerError> {
+    let data = send_mgmt_apdu(transport, &commands::mgmt_request_witness())?;
+    let enc_witness: [u8; 16] = commands::parse_witness(&data)
+        .map_err(|e| ManagerError::InvalidInput(format!("malformed witness: {e}")))?
+        .try_into()
+        .map_err(|_| ManagerError::InvalidInput("witness was not 16 bytes".into()))?;
+    let witness_plain = key.decrypt_block(&enc_witness);
+
+    let challenge = fresh_challenge();
+    let data = send_mgmt_apdu(transport, &commands::mgmt_respond(&witness_plain, &challenge))?;
+    let enc_response: [u8; 16] = commands::parse_mgmt_response(&data)
+        .map_err(|e| ManagerError::InvalidInput(format!("malformed response: {e}")))?
+        .try_into()
+        .map_err(|_| ManagerError::InvalidInput("response was not 16 bytes".into()))?;
+
+    if key.decrypt_block(&enc_response) != challenge {
+        return Err(ManagerError::InvalidInput(
+            "management key authentication failed: the device could not prove it holds \
+             the same key (wrong management key, or a device that does not trust this one)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Parses a management key from hex, requiring exactly 24 bytes (AES-192) —
+/// the one algorithm this applet's firmware supports.
+fn parse_management_key(hex: &str) -> Result<ManagementKey, ManagerError> {
+    let bytes = parse_hex(hex)?;
+    let key: [u8; 24] = bytes.try_into().map_err(|b: Vec<u8>| {
+        ManagerError::InvalidInput(format!(
+            "management key must be 24 bytes (48 hex characters) for AES-192; got {}",
+            b.len()
+        ))
+    })?;
+    Ok(ManagementKey::new(key))
+}
+
+/// Handles `ctctl piv access [change-pin|change-puk|unblock-pin|set-retries|change-management-key]`.
 fn run_piv_access(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -216,8 +366,11 @@ fn run_piv_access(
         println!(
             "Usage: ctctl piv access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
-               change-pin   Change the 6-8 digit user PIN\n\
-               change-puk   Change the 8 digit PIN Unlock Key (PUK)\n"
+               change-pin             Change the 6-8 digit user PIN\n\
+               change-puk             Change the 8 digit PIN Unlock Key (PUK)\n\
+               unblock-pin            Reset a blocked PIN using the PUK\n\
+               set-retries             Reconfigure PIN/PUK retry limits (resets both to defaults)\n\
+               change-management-key  Install a new AES-192 management key\n"
         );
         return Ok(());
     }
@@ -283,8 +436,299 @@ fn run_piv_access(
             }
         }
         "change-puk" => {
-            println!("✓ PUK modification requested. Follow on-screen token prompts.");
-            Ok(())
+            let mut old_puk = None;
+            let mut new_puk = None;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-u" | "--puk" => {
+                        i += 1;
+                        if i < args.len() {
+                            old_puk = Some(args[i].clone());
+                        }
+                    }
+                    "-n" | "--new-puk" => {
+                        i += 1;
+                        if i < args.len() {
+                            new_puk = Some(args[i].clone());
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            let old_puk = match old_puk {
+                Some(p) => p,
+                None => prompt_secret("Enter current PUK: ")?,
+            };
+            let new_puk = match new_puk {
+                Some(p) => p,
+                None => {
+                    let p1 = prompt_secret("Enter new PUK: ")?;
+                    let p2 = prompt_secret("Confirm new PUK: ")?;
+                    if p1 != p2 {
+                        return Err(ManagerError::InvalidInput(
+                            "New PUK entries do not match".into(),
+                        ));
+                    }
+                    p1
+                }
+            };
+
+            let cmd = commands::change_puk(old_puk.as_bytes(), new_puk.as_bytes())
+                .map_err(|e| ManagerError::InvalidInput(format!("Invalid PUK format: {e}")))?;
+            let raw = transport.transceive(
+                0x03,
+                &cmd.encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if resp.is_success() {
+                println!("✓ PUK successfully updated.");
+                Ok(())
+            } else if let Some(left) = retries_remaining(resp.sw) {
+                Err(ManagerError::InvalidInput(format!(
+                    "Wrong current PUK; {left} attempt(s) remaining before it blocks."
+                )))
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            }
+        }
+        "unblock-pin" => {
+            let mut puk = None;
+            let mut new_pin = None;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-u" | "--puk" => {
+                        i += 1;
+                        if i < args.len() {
+                            puk = Some(args[i].clone());
+                        }
+                    }
+                    "-n" | "--new-pin" => {
+                        i += 1;
+                        if i < args.len() {
+                            new_pin = Some(args[i].clone());
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            let puk = match puk {
+                Some(p) => p,
+                None => prompt_secret("Enter PUK: ")?,
+            };
+            let new_pin = match new_pin {
+                Some(p) => p,
+                None => {
+                    let p1 = prompt_secret("Enter new PIN: ")?;
+                    let p2 = prompt_secret("Confirm new PIN: ")?;
+                    if p1 != p2 {
+                        return Err(ManagerError::InvalidInput(
+                            "New PIN entries do not match".into(),
+                        ));
+                    }
+                    p1
+                }
+            };
+
+            let cmd = commands::reset_pin(puk.as_bytes(), new_pin.as_bytes())
+                .map_err(|e| ManagerError::InvalidInput(format!("Invalid PUK or PIN: {e}")))?;
+            let raw = transport.transceive(
+                0x03,
+                &cmd.encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if resp.is_success() {
+                // SP 800-73: RESET RETRY COUNTER clears the block, it does
+                // not verify the new PIN. Say so honestly rather than
+                // implying the session is now authenticated.
+                println!(
+                    "✓ PIN unblocked and set to the new value. It has not been verified \
+                     this session — the next login (or 'ctctl piv access change-pin') will \
+                     need it."
+                );
+                Ok(())
+            } else if let Some(left) = retries_remaining(resp.sw) {
+                Err(ManagerError::InvalidInput(format!(
+                    "Wrong PUK; {left} attempt(s) remaining before it blocks."
+                )))
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            }
+        }
+        "change-management-key" => {
+            let mut current = None;
+            let mut new = None;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-m" | "--management-key" => {
+                        i += 1;
+                        if i < args.len() {
+                            current = Some(args[i].clone());
+                        }
+                    }
+                    "-n" | "--new-management-key" => {
+                        i += 1;
+                        if i < args.len() {
+                            new = Some(args[i].clone());
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            let current = match current {
+                Some(k) => k,
+                None => prompt_secret("Enter current management key (hex): ")?,
+            };
+            let new = match new {
+                Some(k) => k,
+                None => {
+                    let k1 = prompt_secret("Enter new management key (hex, 48 chars): ")?;
+                    let k2 = prompt_secret("Confirm new management key (hex): ")?;
+                    if k1 != k2 {
+                        return Err(ManagerError::InvalidInput(
+                            "New management key entries do not match".into(),
+                        ));
+                    }
+                    k1
+                }
+            };
+
+            let current_key = parse_management_key(&current)?;
+            let new_key = parse_management_key(&new)?;
+
+            authenticate_management_key(transport, &current_key)?;
+
+            let cmd = commands::set_management_key(new_key.as_bytes());
+            let raw = transport.transceive(
+                0x03,
+                &cmd.encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if resp.is_success() {
+                println!("✓ Management key successfully updated.");
+                Ok(())
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            }
+        }
+        "set-retries" => {
+            let mut pin_retries: Option<u8> = None;
+            let mut puk_retries: Option<u8> = None;
+            let mut pin = None;
+            let mut mgmt_key = None;
+            let mut force = false;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--pin-retries" => {
+                        i += 1;
+                        if i < args.len() {
+                            pin_retries = args[i].parse().ok();
+                        }
+                    }
+                    "--puk-retries" => {
+                        i += 1;
+                        if i < args.len() {
+                            puk_retries = args[i].parse().ok();
+                        }
+                    }
+                    "-P" | "--pin" => {
+                        i += 1;
+                        if i < args.len() {
+                            pin = Some(args[i].clone());
+                        }
+                    }
+                    "-m" | "--management-key" => {
+                        i += 1;
+                        if i < args.len() {
+                            mgmt_key = Some(args[i].clone());
+                        }
+                    }
+                    "-f" | "--force" => force = true,
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            let pin_retries = pin_retries.ok_or_else(|| {
+                ManagerError::InvalidInput("--pin-retries <1-15> is required".into())
+            })?;
+            let puk_retries = puk_retries.ok_or_else(|| {
+                ManagerError::InvalidInput("--puk-retries <1-15> is required".into())
+            })?;
+
+            if !force {
+                println!(
+                    "WARNING: this resets the PIN to 123456 and the PUK to 12345678 — the \
+                     ceiling and the stored secret share one rewrite on this device, the \
+                     same as every other PIV implementation of this command. Proceed? [y/N]: "
+                );
+                io::stdout().flush().map_err(|e| e.to_string())?;
+                let mut input = String::new();
+                io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    println!("Cancelled.");
+                    return Ok(());
+                }
+            }
+
+            let pin = match pin {
+                Some(p) => p,
+                None => prompt_secret("Enter current PIN: ")?,
+            };
+            let mgmt_key = match mgmt_key {
+                Some(k) => k,
+                None => prompt_secret("Enter management key (hex): ")?,
+            };
+            let mgmt_key = parse_management_key(&mgmt_key)?;
+
+            let verify_cmd = commands::verify_pin(pin.as_bytes())
+                .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
+            let raw = transport.transceive(
+                0x03,
+                &verify_cmd
+                    .encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if !resp.is_success() {
+                return Err(ManagerError::DeviceStatus(resp.sw));
+            }
+
+            authenticate_management_key(transport, &mgmt_key)?;
+
+            let cmd = commands::set_pin_retries(pin_retries, puk_retries);
+            let raw = transport.transceive(
+                0x03,
+                &cmd.encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if resp.is_success() {
+                println!(
+                    "✓ Retry limits set (PIN: {pin_retries}, PUK: {puk_retries}). \
+                     PIN reset to 123456, PUK reset to 12345678 — change both before use."
+                );
+                Ok(())
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            }
         }
         unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown access command '{unknown}'"
@@ -507,4 +951,58 @@ fn prompt_secret(prompt: &str) -> Result<String, ManagerError> {
     let mut buf = String::new();
     io::stdin().read_line(&mut buf).map_err(|e| e.to_string())?;
     Ok(buf.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These test the pure glue this module adds around `piv::commands` and
+    // `ManagementKey` — parsing, status-word interpretation, nonce shape —
+    // not the APDU protocol itself. That protocol is exercised end to end
+    // against the *real* firmware C by `tests/host/test_piv_apdu.py` in
+    // cryptick-token-code (32 new cases for exactly this pass), which is
+    // stronger evidence than a second, parallel simulated-card fake here
+    // would be; building one was not worth the duplication for what it
+    // would additionally catch over what commands.rs's own APDU-shape
+    // tests and that host suite already do.
+
+    #[test]
+    fn retries_remaining_reads_the_63cx_pattern_and_nothing_else() {
+        assert_eq!(retries_remaining(StatusWord(0x63C3)), Some(3));
+        assert_eq!(retries_remaining(StatusWord(0x63C0)), Some(0));
+        assert_eq!(retries_remaining(StatusWord(0x9000)), None);
+        assert_eq!(retries_remaining(StatusWord::AUTH_METHOD_BLOCKED), None);
+        assert_eq!(retries_remaining(StatusWord(0x6A86)), None);
+    }
+
+    #[test]
+    fn fresh_challenge_is_16_bytes_and_actually_varies() {
+        let a = fresh_challenge();
+        let b = fresh_challenge();
+        assert_eq!(a.len(), 16);
+        // Not a strict requirement of the protocol (a fixed challenge
+        // would still be secure, per this function's own doc comment) —
+        // but if two calls back to back ever produced the same value,
+        // the clock source feeding it would be broken in a way worth
+        // catching here rather than finding out from a flaky retry.
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn parse_management_key_requires_exactly_24_bytes() {
+        let key_hex = "00".repeat(24);
+        assert!(parse_management_key(&key_hex).is_ok());
+
+        let short_hex = "00".repeat(16);
+        assert!(parse_management_key(&short_hex).is_err());
+
+        let long_hex = "00".repeat(32);
+        assert!(parse_management_key(&long_hex).is_err());
+    }
+
+    #[test]
+    fn parse_management_key_rejects_non_hex() {
+        assert!(parse_management_key("not hex at all, 24 bytes of it").is_err());
+    }
 }

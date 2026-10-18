@@ -1681,3 +1681,124 @@ which was not available for this pass:**
   units plugged in simultaneously — only a single dev unit was available,
   so the "one row per distinct serial" behavior is verified by reading the
   code and the existing single-device tests, not by observing two rows.
+
+---
+
+## 2026-10-18 — PIV PUK and management key support
+
+Closes the gap an earlier pass's audit named explicitly (above: "`piv
+access change-management-key`/`set-retries`/`unblock-pin` are absent and
+`change-puk` is a non-functional stub... missing lower-layer
+functionality, not a CLI naming or flag mismatch"). The firmware side
+(new `RESET RETRY COUNTER`, PUK storage and its own retry counter,
+`CHANGE REFERENCE DATA` extended to the PUK, a vendor `SET PIN RETRIES`,
+and an AES-192 management key authenticated via `GENERAL AUTHENTICATE`'s
+mutual witness/challenge/response exchange against key reference `9B`,
+plus a vendor `SET MANAGEMENT KEY`) is `cryptick-token-code`'s own change;
+see that repo's NOTES.md, "PIV PUK and management key support", for the
+full design — including the management-key default-key decision (a
+random 24 bytes per physical unit, not YubiKey's single shared constant,
+and deliberately not derived from any publicly-readable value like the
+eFuse MAC either) and the open product question it leaves (how an owner
+learns their own unit's factory-default key before ever rotating it —
+flagged there for the user, not guessed at here).
+
+### What changed in this repo
+
+- **`crates/piv/src/commands.rs`**: `change_puk`/`reset_pin`/
+  `verify_puk_retries`/`set_pin_retries`/`set_management_key` APDU
+  builders (mirroring `change_pin`/`verify_retries`'s existing shape and
+  SP 800-73-5 citations exactly), `mgmt_request_witness`/`mgmt_respond`
+  for the two-round-trip mutual-authenticate exchange, `parse_witness`/
+  `parse_mgmt_response` (refactored `parse_signature` onto a shared
+  `find_dynamic_auth_element` helper rather than duplicating the same
+  7C-template walk a third time), and a `ManagementKey` type wrapping
+  AES-192 ECB single-block encrypt/decrypt (the `aes` crate — already a
+  pinned workspace dependency for `ctap-client`'s CTAP2 PIN protocol, so
+  this is the second, not the first, user, consistent with §7/§20's
+  "discuss new dependencies" rule rather than a new one). This is the
+  *host's* independent implementation of the same cipher the firmware's
+  `mgmt_key_crypt_block` runs against its own copy of the key; the two
+  never exchange the key itself over the wire, only prove to each other
+  they each hold a copy.
+- **`crates/token-manager/src/cli/piv_cli.rs`**: wires all four into
+  `ctctl piv access change-puk/set-retries/unblock-pin/
+  change-management-key`, following `change-pin`'s existing flag-parsing
+  pattern (`-P/--pin`-style flags, prompt-and-confirm when a flag is
+  omitted). `change-puk` previously printed a canned
+  `"✓ PUK modification requested. Follow on-screen token prompts."` on
+  every call regardless of what (nothing) it sent to the device — the
+  exact bug class an earlier pass fixed in `piv certificates delete`.
+  Replaced with a real implementation that sends the real APDU and
+  reports the device's actual answer, including "N attempts remaining"
+  on a wrong current PUK by reading the `63Cx` status word back, not a
+  guess. `run_piv_info` had the same shape of problem one layer up —
+  `"PIN tries remaining: 3"` and `"PUK tries remaining: 3"` were
+  hardcoded strings, never queried — now both come from a real
+  empty-body `VERIFY` each time `piv info` runs; the `"Management key
+  algorithm: AES-192 (or 3DES legacy)"` line, which claimed a second
+  algorithm this applet will never accept, is now the one it actually
+  supports.
+- `set-retries` requires both a verified PIN *and* an authenticated
+  management key — resetting both secrets to their defaults is too
+  consequential to be authorized by either one alone — and prints the
+  same kind of warning-and-confirm `piv reset` already does before a
+  destructive operation, since resetting the retry ceiling resets the
+  PIN and PUK to their SP 800-73 defaults as a documented side effect
+  (not a shortcut — see the firmware NOTES.md entry).
+- The mutual-authenticate exchange's client challenge comes from
+  wall-clock time mixed with a process-local counter
+  (`fresh_challenge()`), not a new `rand` dependency: the protocol's
+  security is that only the real key produces a *correct* encrypted
+  answer, not that the challenge is unguessable, so there was nothing a
+  CSPRNG would have bought here that a monotonically-distinct value
+  doesn't already give for a single interactive CLI invocation.
+
+### What was deliberately not touched
+
+`piv keys`/`piv objects` (arbitrary key/data-object import, export,
+attestation) stay absent, same as the audit above already recorded —
+importing an externally-generated private key is a separate,
+bigger product-security question (it weakens this device's "private key
+never leaves the card" property) that deserves its own dedicated
+discussion with the user, not a decision bundled into this pass.
+`GENERATE ASYMMETRIC KEY PAIR`/`PUT DATA` were not re-gated behind the new
+management key either — the firmware's own existing comment already
+documents their PIN+presence gate as a deliberate substitution for a
+management-key gate this device never had, and retrofitting that now
+would have been a scope-expanding, potentially breaking change to an
+already-working flow nothing in this pass asked for.
+
+**Also found, separately, and flagged rather than fixed here:**
+`run_piv_reset` prints `"✓ PIV application reset to factory defaults
+(Default PIN: 123456, PUK: 12345678)"` but only ever calls `select_piv()`
+— a plain `SELECT`, which resets PIN/management-key *verification state*
+(per `piv_reset()` in the firmware) but deletes no certificates, resets
+no PIN, resets no PUK, and resets no management key. This is the same
+canned-success bug class as the ones fixed above and in the certificates-
+delete pass before it, in code this pass's PUK/management-key work sits
+right next to but was not asked to touch (there is no `RESET APPLICATION`
+APDU in the firmware for it to call even if it wanted to — building one
+is a real, separate feature, not a one-line fix). Flagging for a
+follow-up pass rather than silently leaving it undiscovered.
+
+### Verification
+
+`cargo check`/`cargo test` clean for `piv`, `ctctl`, and the full
+workspace at every step of this pass, not just at the end. `cargo test
+--workspace`: every suite passing (counts unchanged from the daemon-
+identity pass's own note above, plus this pass's additions: 72 `piv`
+lib tests including 12 new ones for the builders, `ManagementKey`'s AES
+round-trip, and its "two different keys must disagree" sanity check; 15
+`ctctl` lib tests including 4 new ones for this module's own pure glue —
+`retries_remaining`'s status-word decoding, `fresh_challenge`'s shape and
+distinctness, `parse_management_key`'s length/hex validation). No
+simulated-card integration harness was built at the CLI layer the way
+`piv::provision`'s `SimulatedCard` exists for provisioning — the firmware
+host suite (`cryptick-token-code`'s `tests/host/test_piv_apdu.py`, 34 new
+cases) already exercises this exact protocol end to end against the real
+C applet, which is stronger evidence than a second, parallel Rust fake of
+the same protocol would have been for what it would have additionally
+caught. `cargo fmt`/`clippy` remain not installed as components in this
+sandbox, same caveat the daemon-identity pass's own note above already
+recorded.

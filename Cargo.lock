@@ -922,6 +922,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "piv"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "proptest",
  "sha2",
  "thiserror",

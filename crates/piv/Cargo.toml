@@ -13,6 +13,11 @@ path = "src/bin/cryptick-piv.rs"
 [dependencies]
 thiserror.workspace = true
 sha2.workspace = true
+# AES-192-ECB for the management key's GENERAL AUTHENTICATE mutual exchange
+# (SP 800-73-5 Part 2 §3.2.4 Table 7) — single-block operations only, same
+# "ctap-client already depends on this for its own AES use" reasoning the
+# workspace manifest records for that crate's AES-256.
+aes.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

@@ -7,6 +7,8 @@
 use crate::apdu::Command;
 use crate::objects::{self, Slot};
 use crate::tlv::{self, Tag};
+use aes::cipher::{generic_array::GenericArray, BlockDecrypt, BlockEncrypt, KeyInit};
+use aes::Aes192;
 use thiserror::Error;
 
 /// `SELECT`.
@@ -15,6 +17,9 @@ pub const INS_SELECT: u8 = 0xA4;
 pub const INS_VERIFY: u8 = 0x20;
 /// `CHANGE REFERENCE DATA`.
 pub const INS_CHANGE_REFERENCE_DATA: u8 = 0x24;
+/// `RESET RETRY COUNTER` — unblocks the PIN using the PUK, SP 800-73-5
+/// Part 2 §3.2.3.
+pub const INS_RESET_RETRY_COUNTER: u8 = 0x2C;
 /// `GENERAL AUTHENTICATE`.
 pub const INS_GENERAL_AUTHENTICATE: u8 = 0x87;
 /// `GET DATA`.
@@ -23,6 +28,16 @@ pub const INS_GET_DATA: u8 = 0xCB;
 pub const INS_PUT_DATA: u8 = 0xDB;
 /// `GENERATE ASYMMETRIC KEY PAIR`.
 pub const INS_GENERATE_KEY_PAIR: u8 = 0x47;
+/// `SET PIN RETRIES` (vendor, not in SP 800-73 — the same byte YubiKey's
+/// own PIV implementation uses for this operation; see this module's
+/// top-level doc comment on why this applet follows that convention
+/// instead of inventing a second one).
+pub const INS_SET_PIN_RETRIES: u8 = 0xFA;
+/// `SET MANAGEMENT KEY` (vendor, same reasoning as `INS_SET_PIN_RETRIES`).
+pub const INS_SET_MANAGEMENT_KEY: u8 = 0xFF;
+/// AES-192, this applet's one supported management-key algorithm
+/// (SP 800-78-4 Table 6-2).
+pub const ALG_MANAGEMENT_AES192: u8 = 0x0A;
 
 /// A PIN or PUK did not meet the card's rules.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -142,6 +157,202 @@ pub fn change_pin(current: &[u8], new: &[u8]) -> Result<Command, PinError> {
     ))
 }
 
+/// A PUK did not meet the card's rules.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PukError {
+    /// The PUK was not exactly 8 bytes.
+    ///
+    /// Unlike the PIN's 6-8 byte range, SP 800-73-5 Part 1 §2.4.3 gives the
+    /// PUK exactly one length — there is no padding variability to get
+    /// wrong, so a wrong-length PUK is rejected outright rather than padded.
+    #[error("PUK is {len} bytes; SP 800-73-5 requires exactly 8")]
+    BadLength {
+        /// How long it was.
+        len: usize,
+    },
+
+    /// The PUK held something other than ASCII digits.
+    #[error("PUK must be ASCII digits '0'-'9'")]
+    NotDigits,
+}
+
+/// Validates a PUK against SP 800-73-5's one length, no padding needed.
+pub fn pad_puk(puk: &[u8]) -> Result<[u8; 8], PukError> {
+    if puk.len() != 8 {
+        return Err(PukError::BadLength { len: puk.len() });
+    }
+    if !puk.iter().all(|b| b.is_ascii_digit()) {
+        return Err(PukError::NotDigits);
+    }
+    let mut out = [0u8; 8];
+    out.copy_from_slice(puk);
+    Ok(out)
+}
+
+/// `CHANGE REFERENCE DATA`, replacing the PUK — the same instruction as
+/// [`change_pin`], distinguished only by key reference (SP 800-73-5 Part 2
+/// §3.2.2).
+pub fn change_puk(current: &[u8], new: &[u8]) -> Result<Command, PukError> {
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&pad_puk(current)?);
+    data.extend_from_slice(&pad_puk(new)?);
+    Ok(Command::with_data(
+        0x00,
+        INS_CHANGE_REFERENCE_DATA,
+        0x00,
+        objects::KEY_REFERENCE_PUK,
+        data,
+    ))
+}
+
+/// `VERIFY` with no data field, for the PUK's own retry counter.
+///
+/// SP 800-73 has no "verify the PUK" operation — the PUK only ever
+/// authenticates as half of [`change_puk`] or [`reset_pin`] — so this is
+/// the query-only form the applet actually supports for it; sending a PUK
+/// here to check it would spend a retry the card has no mechanism for.
+pub fn verify_puk_retries() -> Command {
+    Command::case1(0x00, INS_VERIFY, 0x00, objects::KEY_REFERENCE_PUK)
+}
+
+/// A [`reset_pin`] call's PUK or new PIN did not meet the card's rules.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum ResetPinError {
+    /// The PUK was malformed.
+    #[error("PUK: {0}")]
+    Puk(#[from] PukError),
+    /// The new PIN was malformed.
+    #[error("new PIN: {0}")]
+    Pin(#[from] PinError),
+}
+
+/// `RESET RETRY COUNTER`: unblocks the PIN using the PUK, SP 800-73-5 Part 2
+/// §3.2.3.
+///
+/// Does **not** verify the new PIN — the card only clears the block and
+/// installs it; a caller that wants the session authenticated still has to
+/// send [`verify_pin`] afterward. Encoding that any other way here would
+/// make this function's return type lie about what actually happened on
+/// the card.
+pub fn reset_pin(puk: &[u8], new_pin: &[u8]) -> Result<Command, ResetPinError> {
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&pad_puk(puk).map_err(ResetPinError::Puk)?);
+    data.extend_from_slice(&pad_pin(new_pin).map_err(ResetPinError::Pin)?);
+    Ok(Command::with_data(
+        0x00,
+        INS_RESET_RETRY_COUNTER,
+        0x00,
+        objects::KEY_REFERENCE_PIN,
+        data,
+    ))
+}
+
+/// `SET PIN RETRIES` (vendor): reconfigures both retry ceilings.
+///
+/// Resets the PIN and PUK to their SP 800-73 defaults as a documented side
+/// effect — see `piv_hal_t::set_pin_puk_retries`' doc comment in the
+/// firmware's `piv.h` for why, and warn the operator before sending this
+/// the same way `ctctl piv reset` already does for a full reset.
+pub fn set_pin_retries(pin_max: u8, puk_max: u8) -> Command {
+    Command::case1(0x00, INS_SET_PIN_RETRIES, pin_max, puk_max)
+}
+
+/// `SET MANAGEMENT KEY` (vendor): installs a new 24-byte AES-192 management
+/// key. Requires the *current* key to already be authenticated via
+/// [`mgmt_request_witness`]/[`mgmt_respond`] in this same session.
+pub fn set_management_key(new_key: &[u8; 24]) -> Command {
+    let mut data = Vec::with_capacity(2 + new_key.len());
+    data.push(ALG_MANAGEMENT_AES192);
+    data.push(new_key.len() as u8);
+    data.extend_from_slice(new_key);
+    Command::with_data(0x00, INS_SET_MANAGEMENT_KEY, 0xFF, 0xFF, data)
+}
+
+/// The PIV card application administration ("management") key — AES-192,
+/// the one symmetric algorithm this device's firmware supports for
+/// `GENERAL AUTHENTICATE` against key reference `9B`.
+///
+/// This is the *host's* independent implementation of the same algorithm
+/// the firmware's `piv_hal_esp32.cpp` (`mgmt_key_crypt_block`) runs against
+/// its own copy of the key — the two never exchange the key itself, only
+/// prove to each other that they each hold a copy via the witness/
+/// challenge/response exchange `mgmt_request_witness`/`mgmt_respond` build.
+#[derive(Clone)]
+pub struct ManagementKey([u8; 24]);
+
+impl ManagementKey {
+    /// Wraps a 24-byte AES-192 key.
+    pub const fn new(key: [u8; 24]) -> Self {
+        ManagementKey(key)
+    }
+
+    /// The raw key bytes, for [`set_management_key`].
+    pub const fn as_bytes(&self) -> &[u8; 24] {
+        &self.0
+    }
+
+    fn cipher(&self) -> Aes192 {
+        Aes192::new(GenericArray::from_slice(&self.0))
+    }
+
+    /// Decrypts one 16-byte block (ECB — every value this exchange ever
+    /// encrypts is already exactly one block, so there is no chaining mode
+    /// to pick).
+    pub fn decrypt_block(&self, block: &[u8; 16]) -> [u8; 16] {
+        let mut buf = GenericArray::clone_from_slice(block);
+        self.cipher().decrypt_block(&mut buf);
+        buf.into()
+    }
+
+    /// Encrypts one 16-byte block.
+    pub fn encrypt_block(&self, block: &[u8; 16]) -> [u8; 16] {
+        let mut buf = GenericArray::clone_from_slice(block);
+        self.cipher().encrypt_block(&mut buf);
+        buf.into()
+    }
+}
+
+/// `GENERAL AUTHENTICATE`'s first half against the management key: an
+/// empty witness request, SP 800-73-5 Part 2 §3.2.4 Table 7.
+///
+/// The card answers with its witness, encrypted under the management key —
+/// read it back with [`parse_witness`], decrypt it with
+/// [`ManagementKey::decrypt_block`], and pass the plaintext to
+/// [`mgmt_respond`].
+pub fn mgmt_request_witness() -> Command {
+    let template = tlv::encode_to_vec(objects::TAG_WITNESS, &[]);
+    Command::with_data(
+        0x00,
+        INS_GENERAL_AUTHENTICATE,
+        ALG_MANAGEMENT_AES192,
+        objects::KEY_REFERENCE_MANAGEMENT,
+        tlv::encode_to_vec(objects::TAG_DYNAMIC_AUTH, &template),
+    )
+    .expecting(0x00)
+}
+
+/// `GENERAL AUTHENTICATE`'s second half: the witness decrypted (proving
+/// this caller holds the key) plus a fresh challenge of the caller's own.
+///
+/// The card answers with the challenge encrypted under the management
+/// key — decrypt it with [`ManagementKey::decrypt_block`] and compare
+/// against `challenge`; only if that matches has the *card* also proven it
+/// holds the key, completing mutual authentication rather than just one
+/// direction of it.
+pub fn mgmt_respond(witness_plain: &[u8; 16], challenge: &[u8; 16]) -> Command {
+    let mut inner = Vec::with_capacity(36);
+    tlv::encode(objects::TAG_WITNESS, witness_plain, &mut inner);
+    tlv::encode(objects::TAG_CHALLENGE, challenge, &mut inner);
+    Command::with_data(
+        0x00,
+        INS_GENERAL_AUTHENTICATE,
+        ALG_MANAGEMENT_AES192,
+        objects::KEY_REFERENCE_MANAGEMENT,
+        tlv::encode_to_vec(objects::TAG_DYNAMIC_AUTH, &inner),
+    )
+    .expecting(0x00)
+}
+
 /// `GENERAL AUTHENTICATE` asking a slot to sign `payload`.
 ///
 /// `algorithm` is the cryptographic mechanism identifier from SP 800-78
@@ -252,16 +463,35 @@ pub fn parse_public_key(response: &[u8]) -> Result<PublicKey, PublicKeyError> {
     Err(PublicKeyError::UnknownKeyType)
 }
 
-/// Reads the signature out of a `GENERAL AUTHENTICATE` response.
-pub fn parse_signature(response: &[u8]) -> Result<Vec<u8>, tlv::TlvError> {
+/// Finds one element inside a `GENERAL AUTHENTICATE` response's `7C`
+/// dynamic authentication template. Shared by every `parse_*` function
+/// below — they differ only in which tag they are looking for.
+fn find_dynamic_auth_element(response: &[u8], tag: Tag) -> Result<Vec<u8>, tlv::TlvError> {
     let template = tlv::expect_one(response, objects::TAG_DYNAMIC_AUTH)?;
     let elements = tlv::parse_all(template)?;
-    tlv::find(&elements, objects::TAG_RESPONSE)
+    tlv::find(&elements, tag)
         .map(<[u8]>::to_vec)
         .ok_or(tlv::TlvError::UnexpectedTag {
-            expected: objects::TAG_RESPONSE.value(),
+            expected: tag.value(),
             found: elements.first().map_or(0, |e| e.tag.value()),
         })
+}
+
+/// Reads the signature out of a `GENERAL AUTHENTICATE` response.
+pub fn parse_signature(response: &[u8]) -> Result<Vec<u8>, tlv::TlvError> {
+    find_dynamic_auth_element(response, objects::TAG_RESPONSE)
+}
+
+/// Reads the management key's encrypted witness out of
+/// [`mgmt_request_witness`]'s response.
+pub fn parse_witness(response: &[u8]) -> Result<Vec<u8>, tlv::TlvError> {
+    find_dynamic_auth_element(response, objects::TAG_WITNESS)
+}
+
+/// Reads the management key's encrypted challenge-response out of
+/// [`mgmt_respond`]'s response.
+pub fn parse_mgmt_response(response: &[u8]) -> Result<Vec<u8>, tlv::TlvError> {
+    find_dynamic_auth_element(response, objects::TAG_RESPONSE)
 }
 
 #[cfg(test)]
@@ -463,5 +693,134 @@ mod tests {
         let inner = tlv::encode_to_vec(objects::TAG_CHALLENGE, &[0x01]);
         let response = tlv::encode_to_vec(objects::TAG_DYNAMIC_AUTH, &inner);
         assert!(parse_signature(&response).is_err());
+    }
+
+    #[test]
+    fn a_puk_is_exactly_eight_ascii_digits() {
+        // Part 1 §2.4.3: unlike the PIN, there is no padding variability.
+        assert_eq!(pad_puk(b"12345678").unwrap(), *b"12345678");
+        assert_eq!(pad_puk(b"1234567"), Err(PukError::BadLength { len: 7 }));
+        assert_eq!(pad_puk(b"123456789"), Err(PukError::BadLength { len: 9 }));
+        assert_eq!(pad_puk(b"1234567a"), Err(PukError::NotDigits));
+    }
+
+    #[test]
+    fn change_puk_matches_the_command_syntax_table() {
+        // Same shape as change_pin, key reference 81 instead of 80.
+        let command = change_puk(b"12345678", b"87654321").unwrap().encode().unwrap();
+        assert_eq!(
+            command,
+            vec![
+                0x00, 0x24, 0x00, 0x81, 0x10, // header and Lc
+                0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, // old PUK
+                0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31, // new PUK
+            ]
+        );
+    }
+
+    #[test]
+    fn verify_puk_retries_asks_without_a_data_field() {
+        assert_eq!(
+            verify_puk_retries().encode().unwrap(),
+            vec![0x00, 0x20, 0x00, 0x81]
+        );
+    }
+
+    #[test]
+    fn reset_pin_combines_the_puk_and_the_new_pin() {
+        let command = reset_pin(b"12345678", b"654321").unwrap();
+        assert_eq!(command.ins, INS_RESET_RETRY_COUNTER);
+        assert_eq!((command.p1, command.p2), (0x00, objects::KEY_REFERENCE_PIN));
+        assert_eq!(
+            command.data,
+            vec![
+                0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, // PUK
+                0x36, 0x35, 0x34, 0x33, 0x32, 0x31, 0xFF, 0xFF, // new PIN, padded
+            ]
+        );
+    }
+
+    #[test]
+    fn reset_pin_rejects_a_malformed_puk_or_pin() {
+        assert!(matches!(
+            reset_pin(b"1234", b"123456"),
+            Err(ResetPinError::Puk(PukError::BadLength { len: 4 }))
+        ));
+        assert!(matches!(
+            reset_pin(b"12345678", b"12"),
+            Err(ResetPinError::Pin(PinError::BadLength { len: 2 }))
+        ));
+    }
+
+    #[test]
+    fn set_pin_retries_carries_both_ceilings_with_no_data_field() {
+        let command = set_pin_retries(5, 7);
+        assert_eq!(command.encode().unwrap(), vec![0x00, 0xFA, 5, 7]);
+    }
+
+    #[test]
+    fn set_management_key_wraps_the_algorithm_and_length() {
+        let key = [0x11u8; 24];
+        let command = set_management_key(&key);
+        assert_eq!((command.ins, command.p1, command.p2), (0xFF, 0xFF, 0xFF));
+        let mut expected = vec![ALG_MANAGEMENT_AES192, 24];
+        expected.extend_from_slice(&key);
+        assert_eq!(command.data, expected);
+    }
+
+    #[test]
+    fn mgmt_request_witness_asks_for_an_empty_witness() {
+        // §3.2.4 Table 7: 7C 02 80 00.
+        let command = mgmt_request_witness();
+        assert_eq!((command.p1, command.p2), (ALG_MANAGEMENT_AES192, objects::KEY_REFERENCE_MANAGEMENT));
+        assert_eq!(command.data, vec![0x7C, 0x02, 0x80, 0x00]);
+    }
+
+    #[test]
+    fn mgmt_respond_carries_the_witness_then_the_challenge() {
+        let witness = [0xAAu8; 16];
+        let challenge = [0xBBu8; 16];
+        let command = mgmt_respond(&witness, &challenge);
+        let mut expected_inner = vec![0x80, 16];
+        expected_inner.extend_from_slice(&witness);
+        expected_inner.push(0x81);
+        expected_inner.push(16);
+        expected_inner.extend_from_slice(&challenge);
+        let mut expected = vec![0x7C, expected_inner.len() as u8];
+        expected.extend_from_slice(&expected_inner);
+        assert_eq!(command.data, expected);
+    }
+
+    #[test]
+    fn parse_witness_and_parse_mgmt_response_read_their_own_tags() {
+        let witness = vec![0x01, 0x02, 0x03];
+        let inner = tlv::encode_to_vec(objects::TAG_WITNESS, &witness);
+        let response = tlv::encode_to_vec(objects::TAG_DYNAMIC_AUTH, &inner);
+        assert_eq!(parse_witness(&response).unwrap(), witness);
+        assert!(parse_mgmt_response(&response).is_err(), "no 82 tag present");
+
+        let answer = vec![0x04, 0x05, 0x06];
+        let inner = tlv::encode_to_vec(objects::TAG_RESPONSE, &answer);
+        let response = tlv::encode_to_vec(objects::TAG_DYNAMIC_AUTH, &inner);
+        assert_eq!(parse_mgmt_response(&response).unwrap(), answer);
+    }
+
+    #[test]
+    fn management_key_round_trips_through_its_own_cipher() {
+        let key = ManagementKey::new([0x5Au8; 24]);
+        let plaintext = [0x11u8; 16];
+        let ciphertext = key.encrypt_block(&plaintext);
+        assert_ne!(ciphertext, plaintext, "AES-192 must not be a no-op");
+        assert_eq!(key.decrypt_block(&ciphertext), plaintext);
+    }
+
+    #[test]
+    fn management_key_is_actually_aes_192_not_a_fixed_test_vector() {
+        // Two different keys over the same plaintext must disagree — this
+        // is the one property that rules out "always returns the input" or
+        // "ignores the key" as an accidental implementation.
+        let a = ManagementKey::new([0x01u8; 24]).encrypt_block(&[0x00u8; 16]);
+        let b = ManagementKey::new([0x02u8; 24]).encrypt_block(&[0x00u8; 16]);
+        assert_ne!(a, b);
     }
 }
