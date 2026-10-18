@@ -1,4 +1,4 @@
-//! `cryptick-manager devices [list|select]`.
+//! `ctctl devices [list|select]`.
 //!
 //! Wires the CLI to the same known-devices concept
 //! `crates/webauthn-host/src/main.rs`'s `list_devices`/`select_device`
@@ -15,6 +15,7 @@
 use crate::error::ManagerError;
 use crate::transport::daemon::DaemonTransport;
 use crate::transport::usb::UsbTransport;
+use std::collections::HashSet;
 use std::time::Duration;
 
 /// One device as this subcommand reports it.
@@ -23,10 +24,15 @@ struct DeviceRow {
     name: String,
     transport: String,
     last_seen: u64,
+    /// Whether `id` is a hardware-read identity (USB `iSerialNumber`, or
+    /// the daemon's BLE-verified identity) rather than the old best-effort
+    /// placeholder/key. See `print_devices_help`'s note and
+    /// `crates/daemon/src/devices.rs`'s module doc.
+    verified: bool,
     active: bool,
 }
 
-/// Handles `cryptick-manager devices [list|select] [ARGS]`.
+/// Handles `ctctl devices [list|select] [ARGS]`.
 pub fn handle_devices_command(args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         return run_list();
@@ -41,28 +47,33 @@ pub fn handle_devices_command(args: &[String]) -> Result<(), ManagerError> {
         "select" => {
             let id = args
                 .get(1)
-                .ok_or_else(|| "Usage: cryptick-manager devices select <ID>".to_string())?;
+                .ok_or_else(|| "Usage: ctctl devices select <ID>".to_string())?;
             run_select(id)
         }
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown devices subcommand '{unknown}'. Run 'cryptick-manager devices --help' for available commands."
+            "Unknown devices subcommand '{unknown}'. Run 'ctctl devices --help' for available commands."
         ))),
     }
 }
 
 fn print_devices_help() {
     println!(
-        "Usage: cryptick-manager devices [COMMAND] [ARGS]\n\n\
+        "Usage: ctctl devices [COMMAND] [ARGS]\n\n\
          List or select among known Cryptick Tokens.\n\n\
          Commands:\n\
            list           List every known device (default if no command given)\n\
            select <ID>    Make <ID> the active device\n\n\
          Options:\n\
            -h, --help     Show this help message\n\n\
-         Note: this hardware has no firmware-populated serial number, so a\n\
-         USB-connected token is always reported as a single 'usb' entry — see\n\
-         crates/daemon/src/devices.rs for why. BLE devices are tracked by the\n\
-         daemon under a best-effort recognition key, not a guaranteed-stable one."
+         Note: a Cryptick Token's own factory-unique serial number\n\
+         ('CT-XXXXXXXXXXXX', read from USB iSerialNumber or the daemon's BLE\n\
+         identity characteristic — see crates/daemon/src/devices.rs) is used\n\
+         as its ID whenever it can be read, so two distinct physical tokens\n\
+         show up as two distinct rows on either transport. Older firmware\n\
+         exposes neither: a USB-connected unit on that firmware still shows\n\
+         as a single synthetic 'usb' entry, and a BLE one still falls back\n\
+         to the daemon's best-effort recognition key — both unable to tell\n\
+         two such older units apart, exactly as before this existed."
     );
 }
 
@@ -73,26 +84,63 @@ fn collect_devices() -> Vec<DeviceRow> {
     let mut rows = Vec::new();
 
     if let Ok(usb_devices) = UsbTransport::list_devices() {
-        if !usb_devices.is_empty() {
+        // Firmware's real per-unit identity (cryptick-token-code's
+        // NOTES.md, "Real USB serial number (eFuse MAC)") when present —
+        // one row per distinct serial, so two physical units plugged in at
+        // once are no longer collapsed together. A unit on firmware that
+        // predates that fix reports no serial at all and falls back to the
+        // single synthetic 'usb' entry this subcommand has always shown in
+        // that case, exactly as honestly limited as before: it still can't
+        // tell two such units apart.
+        let mut serials_seen: HashSet<String> = HashSet::new();
+        let mut saw_unidentified = false;
+        for d in &usb_devices {
+            match &d.serial {
+                Some(serial) if serials_seen.insert(serial.clone()) => {
+                    rows.push(DeviceRow {
+                        id: serial.clone(),
+                        name: format!("Cryptick Token ({serial})"),
+                        transport: "usb".into(),
+                        last_seen: now_unix(),
+                        verified: true,
+                        // Only the first distinct serial is "active": there
+                        // is no real per-device USB selection mechanism
+                        // today (`UsbTransport::try_connect`'s own
+                        // candidate order picks one implicitly), so this
+                        // reports which one a plain `transact` would
+                        // actually reach rather than guessing at a
+                        // selection that doesn't exist.
+                        active: serials_seen.len() == 1,
+                    });
+                }
+                // Same physical unit's other HID interface reporting the
+                // same serial again — already added.
+                Some(_) => {}
+                None => saw_unidentified = true,
+            }
+        }
+        if saw_unidentified {
             rows.push(DeviceRow {
                 id: "usb".into(),
                 name: "Cryptick Token (USB)".into(),
                 transport: "usb".into(),
                 last_seen: now_unix(),
-                active: true,
+                verified: false,
+                active: serials_seen.is_empty(),
             });
         }
     }
 
     if let Ok(mut daemon) = DaemonTransport::connect(Duration::from_millis(500)) {
         if let Ok(ble_devices) = daemon.list_devices() {
-            let usb_is_active = rows.iter().any(|r| r.transport == "usb");
+            let usb_is_active = rows.iter().any(|r| r.transport == "usb" && r.active);
             for d in ble_devices {
                 rows.push(DeviceRow {
                     id: d.id,
                     name: d.name,
                     transport: d.transport,
                     last_seen: d.last_seen,
+                    verified: d.verified,
                     active: d.active && !usb_is_active,
                 });
             }
@@ -117,16 +165,17 @@ fn run_list() -> Result<(), ManagerError> {
     }
 
     println!(
-        "{:<24} {:<24} {:<6} {:<8} LAST SEEN",
-        "ID", "NAME", "TRANSPORT", "ACTIVE"
+        "{:<24} {:<24} {:<6} {:<8} {:<9} LAST SEEN",
+        "ID", "NAME", "TRANSPORT", "ACTIVE", "VERIFIED"
     );
     for d in &devices {
         println!(
-            "{:<24} {:<24} {:<6} {:<8} {}",
+            "{:<24} {:<24} {:<6} {:<8} {:<9} {}",
             d.id,
             d.name,
             d.transport,
             if d.active { "yes" } else { "" },
+            if d.verified { "yes" } else { "" },
             format_last_seen(d.last_seen),
         );
     }
@@ -148,8 +197,16 @@ fn format_last_seen(unix_secs: u64) -> String {
 }
 
 fn run_select(id: &str) -> Result<(), ManagerError> {
-    if id == "usb" {
-        println!("'usb' has nothing to select — it is a single synthetic entry for whichever Cryptick Token is plugged in (see 'devices --help').");
+    // USB needs no daemon by design (PROJECT.md §1, §4) and has no
+    // persistent "selected device" to switch at the transport layer —
+    // `UsbTransport::try_connect` picks implicitly among whatever is
+    // plugged in, every call. `id == "usb"` is the old synthetic
+    // placeholder (no serial available); a real serial that `devices list`
+    // just reported as a USB row hits the same limitation, so both get the
+    // same honest answer rather than a silent no-op success that implies
+    // something changed.
+    if id == "usb" || is_a_listed_usb_serial(id) {
+        println!("'{id}' is a USB-connected token — USB has no persistent \"selected device\" to switch to (see 'devices --help'); whichever Cryptick Token is plugged in is used.");
         return Ok(());
     }
     let mut daemon = DaemonTransport::connect(Duration::from_secs(2)).map_err(|e| {
@@ -158,6 +215,15 @@ fn run_select(id: &str) -> Result<(), ManagerError> {
     daemon.select_device(id)?;
     println!("[OK] '{id}' is now the active device.");
     Ok(())
+}
+
+/// Whether `id` matches a serial `UsbTransport::list_devices` currently
+/// reports — so `run_select` can give the USB-specific answer above for a
+/// real serial, not just the old `"usb"` placeholder.
+fn is_a_listed_usb_serial(id: &str) -> bool {
+    UsbTransport::list_devices()
+        .map(|devices| devices.iter().any(|d| d.serial.as_deref() == Some(id)))
+        .unwrap_or(false)
 }
 
 #[cfg(test)]

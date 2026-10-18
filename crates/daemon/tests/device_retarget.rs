@@ -189,8 +189,8 @@ fn two_device_fixture() -> (MultiDeviceFake, DeviceStore) {
     let fake = MultiDeviceFake::new(devices, "device-a");
 
     let mut store = DeviceStore::in_memory();
-    store.record_seen("device-a", Some("Device A"), "ble");
-    store.record_seen("device-b", Some("Device B"), "ble");
+    store.record_seen("device-a", Some("Device A"), "ble", false);
+    store.record_seen("device-b", Some("Device B"), "ble", false);
 
     (fake, store)
 }

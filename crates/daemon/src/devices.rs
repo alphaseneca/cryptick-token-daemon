@@ -13,36 +13,42 @@
 //!
 //! # What identity actually means here — read before trusting a device id
 //!
-//! **There is no stable, firmware-populated serial number for this
-//! hardware.** Checked directly rather than assumed, in `cryptick-token-code`:
+//! **As of `cryptick-token-code` commit `e53868b` (USB) and the BLE
+//! `daemonSerialNumber` characteristic added alongside this module's own
+//! update, there now *is* a stable, firmware-populated serial number** —
+//! `"CT-XXXXXXXXXXXX"`, 12 uppercase hex digits derived from the ESP32-S3's
+//! factory-burned eFuse base MAC, format `^CT-[0-9A-F]{12}$`
+//! (`usb_device_serial_number()`, `drivers/usb_device.h`). Both transports
+//! expose the *same* string for the same physical unit, with no
+//! pairing/provisioning step needed to correlate them:
 //!
-//! - USB: no `iSerialNumber` (or any serial-number) descriptor setup exists
-//!   anywhere in the firmware (grepped `platformio.ini`, `core/`, `include/`,
-//!   `variants/` for `iSerialNumber`/`SERIAL_NUMBER`/`setSerial`/
-//!   `usb_serial` — nothing). `hidapi`'s `serial_number()` for this device
-//!   returns `None` today, confirmed by `UsbTransport::list_devices`
-//!   (`crates/token-manager/src/transport/usb.rs`) and `UsbClient`
-//!   (`crates/webauthn-host/src/usb.rs`) both carrying no serial field for
-//!   the connection path, and by this crate having no USB code path at all
-//!   (see below).
-//! - BLE: the advertised address is **not stable either, by design.**
-//!   `ble_fido_gatt_init` (`core/ble_fido/ble_gatt_esp32.cpp`) calls
-//!   `NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM)` — a random/resolvable
-//!   private address, not the controller's real static MAC — and derives the
-//!   advertised *name* by XORing part of the real MAC with a stored "epoch"
-//!   byte that increments across bonding cycles
-//!   (`mac[0] ^= ep; mac[1] ^= (ep << 2)`), specifically so the name differs
-//!   next time. `device_read_aaguid` (`core/fido2/hal_esp32.cpp`) is a fixed
-//!   constant shared by every unit of this product, so it cannot distinguish
-//!   two tokens either.
+//! - USB: programmed as the device descriptor's `iSerialNumber` string.
+//!   `hidapi`'s `serial_number()` now returns it, surfaced by
+//!   `UsbTransport::list_devices`/`.serial()`
+//!   (`crates/token-manager/src/transport/usb.rs`) and
+//!   `usb::list_devices()` (`crates/webauthn-host/src/usb.rs`).
+//! - BLE: a new, read-only, encrypted+authenticated-gated characteristic
+//!   (`BLE_DAEMON_UUID_SERIAL_NUMBER`, `FBF6EB85-...`) on the existing
+//!   private Daemon Bridge GATT service (`core/ble_fido/ble_daemon.h`) —
+//!   not the standard FIDO service, and not a new service (PROJECT.md §19:
+//!   "Non-standard secondary GATT service" is a settled dead end).
+//!   `crates/daemon/src/transport.rs`'s `read_verified_identity()` reads it
+//!   right after a successful connection.
 //!
-//! This is a firmware gap, not something to fake around here with an
-//! invented identity scheme. What this module tracks instead is the one
-//! identity signal the daemon already depends on for reconnection —
-//! `transport::paired_device_path()`'s persisted BLE address — kept as a
-//! **best-effort recognition key**, explicitly not a claim that it survives
-//! every firmware-side epoch rotation. See `NOTES.md` for what a real fix
-//! would need on the firmware side.
+//! **This does not retire the old best-effort key, it supplements it.**
+//! Older firmware that predates either change exposes neither the USB
+//! descriptor string nor the BLE characteristic, so every call site here
+//! still falls back to exactly the old behaviour — the BLE address kept as
+//! a **best-effort recognition key** — when the hardware identity cannot be
+//! read. [`KnownDevice::verified`]/[`StoredDevice`]'s `verified` flag (and
+//! `ipc::DeviceInfo::verified` on the wire) says honestly, per device,
+//! which case applies; nothing here ever guesses (PROJECT.md §15.8).
+//! `ble_fido_gatt_init` (`core/ble_fido/ble_gatt_esp32.cpp`) still
+//! randomizes the advertised BLE *address*
+//! (`NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM)`) and still rotates
+//! the advertised *name* across bonding epochs — neither of those changed,
+//! and neither needs to: the new characteristic is reachable once connected
+//! regardless of what the address or name happened to be this time.
 //!
 //! # Why this only ever sees BLE devices
 //!
@@ -93,6 +99,12 @@ struct StoredDevice {
     transport: String,
     #[serde(rename = "lastSeen")]
     last_seen: u64,
+    /// Whether `id` is a hardware-verified identity rather than the
+    /// best-effort key. `#[serde(default)]` so a `known_devices.json`
+    /// written before this field existed still loads — missing means
+    /// "not verified," which is exactly what every pre-existing record is.
+    #[serde(default)]
+    verified: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -107,7 +119,9 @@ struct StoreFile {
 /// it is the currently-active one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownDevice {
-    /// The best-effort recognition key — see this module's doc comment.
+    /// A hardware-verified identity when [`Self::verified`] is `true`,
+    /// otherwise the best-effort recognition key — see this module's doc
+    /// comment.
     pub id: String,
     /// A friendly name. Defaults to `id` itself until something nicer is
     /// recorded.
@@ -117,6 +131,10 @@ pub struct KnownDevice {
     /// Unix timestamp of the last time this daemon process confirmed this
     /// device as its reconnect target or saw it connected.
     pub last_seen: u64,
+    /// Whether [`Self::id`] was read from the device's own hardware
+    /// identity (USB `iSerialNumber`, or the BLE `daemonSerialNumber`
+    /// characteristic) rather than assumed from the connection address.
+    pub verified: bool,
     /// Whether this is the device `select_device` last chose.
     pub active: bool,
 }
@@ -197,15 +215,30 @@ impl DeviceStore {
             .unwrap_or(0)
     }
 
-    /// Upserts a device by id: updates its name and transport, and bumps
-    /// `last_seen` to now. If no device is active yet, this one becomes it —
-    /// the first device the daemon ever sees should not require a separate
-    /// `select_device` call just to become usable.
-    pub fn record_seen(&mut self, id: &str, name: Option<&str>, transport: &str) {
+    /// Upserts a device by id: updates its name, transport and `verified`
+    /// flag, and bumps `last_seen` to now. If no device is active yet, this
+    /// one becomes it — the first device the daemon ever sees should not
+    /// require a separate `select_device` call just to become usable.
+    ///
+    /// `verified` says whether `id` was read from the device's own hardware
+    /// identity this time (see the module doc). Callers key by whichever
+    /// identity they actually have — the real serial when a connection just
+    /// confirmed one, the old best-effort address otherwise — so this
+    /// method stays agnostic to *how* `id` was chosen; it only records
+    /// which case applied. A device whose identity later becomes verified
+    /// is upserted under its new (serial) id as a distinct entry rather
+    /// than renamed in place: PROJECT.md §15.8 — concluding "the old
+    /// best-effort entry and this new verified one are the same physical
+    /// unit" is an inference, not something this read observed, so it is
+    /// not made automatically. See `server.rs`'s `ListDevices` handler for
+    /// how the *active* flag still transfers correctly across that
+    /// transition despite the two rows staying distinct.
+    pub fn record_seen(&mut self, id: &str, name: Option<&str>, transport: &str, verified: bool) {
         let now = Self::now();
         if let Some(existing) = self.file.devices.iter_mut().find(|d| d.id == id) {
             existing.last_seen = now;
             existing.transport = transport.to_string();
+            existing.verified = verified;
             if let Some(name) = name {
                 existing.name = name.to_string();
             }
@@ -215,6 +248,7 @@ impl DeviceStore {
                 name: name.unwrap_or(id).to_string(),
                 transport: transport.to_string(),
                 last_seen: now,
+                verified,
             });
         }
         if self.file.active_id.is_none() {
@@ -234,6 +268,7 @@ impl DeviceStore {
                 name: d.name.clone(),
                 transport: d.transport.clone(),
                 last_seen: d.last_seen,
+                verified: d.verified,
                 active: self.file.active_id.as_deref() == Some(d.id.as_str()),
             })
             .collect();
@@ -273,7 +308,8 @@ impl DeviceStore {
     pub fn seed_from_paired_target(&mut self, target: Option<&str>) {
         let Some(address) = target else { return };
         if !self.is_known(address) {
-            self.record_seen(address, None, "ble");
+            // A persisted address, not a hardware read — never verified.
+            self.record_seen(address, None, "ble", false);
         } else if self.file.active_id.is_none() {
             self.file.active_id = Some(address.to_string());
             self.save();
@@ -303,7 +339,7 @@ mod tests {
     #[test]
     fn the_first_device_seen_becomes_active_automatically() {
         let mut store = DeviceStore::load_from(temp_path("first-active"));
-        store.record_seen("AA:BB:CC:DD:EE:FF", Some("My Token"), "ble");
+        store.record_seen("AA:BB:CC:DD:EE:FF", Some("My Token"), "ble", false);
         let devices = store.list();
         assert_eq!(devices.len(), 1);
         assert!(devices[0].active);
@@ -314,8 +350,8 @@ mod tests {
     #[test]
     fn a_second_device_does_not_steal_active_status() {
         let mut store = DeviceStore::load_from(temp_path("second-not-active"));
-        store.record_seen("first", Some("First"), "ble");
-        store.record_seen("second", Some("Second"), "ble");
+        store.record_seen("first", Some("First"), "ble", false);
+        store.record_seen("second", Some("Second"), "ble", false);
         let devices = store.list();
         let first = devices.iter().find(|d| d.id == "first").unwrap();
         let second = devices.iter().find(|d| d.id == "second").unwrap();
@@ -326,8 +362,8 @@ mod tests {
     #[test]
     fn set_active_switches_which_device_is_flagged() {
         let mut store = DeviceStore::load_from(temp_path("switch"));
-        store.record_seen("first", None, "ble");
-        store.record_seen("second", None, "ble");
+        store.record_seen("first", None, "ble", false);
+        store.record_seen("second", None, "ble", false);
         store.set_active("second").unwrap();
         let devices = store.list();
         assert!(!devices.iter().find(|d| d.id == "first").unwrap().active);
@@ -338,7 +374,7 @@ mod tests {
     #[test]
     fn set_active_on_an_unknown_id_fails_closed() {
         let mut store = DeviceStore::load_from(temp_path("unknown"));
-        store.record_seen("first", None, "ble");
+        store.record_seen("first", None, "ble", false);
         let err = store.set_active("never-seen").unwrap_err();
         assert_eq!(err.0, "never-seen");
         // The failed call must not have changed anything.
@@ -348,10 +384,10 @@ mod tests {
     #[test]
     fn seeing_the_same_id_again_updates_name_and_last_seen_not_duplicates() {
         let mut store = DeviceStore::load_from(temp_path("upsert"));
-        store.record_seen("id-1", Some("Old Name"), "ble");
+        store.record_seen("id-1", Some("Old Name"), "ble", false);
         let first_seen = store.list()[0].last_seen;
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        store.record_seen("id-1", Some("New Name"), "ble");
+        store.record_seen("id-1", Some("New Name"), "ble", false);
         let devices = store.list();
         assert_eq!(devices.len(), 1, "must upsert, not duplicate");
         assert_eq!(devices[0].name, "New Name");
@@ -363,7 +399,7 @@ mod tests {
         let path = temp_path("persist");
         {
             let mut store = DeviceStore::load_from(&path);
-            store.record_seen("persisted-id", Some("Persisted"), "ble");
+            store.record_seen("persisted-id", Some("Persisted"), "ble", false);
         }
         let reloaded = DeviceStore::load_from(&path);
         let devices = reloaded.list();
@@ -371,6 +407,53 @@ mod tests {
         assert_eq!(devices[0].id, "persisted-id");
         assert_eq!(devices[0].name, "Persisted");
         assert!(devices[0].active);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_verified_identity_is_recorded_and_round_trips() {
+        let mut store = DeviceStore::load_from(temp_path("verified"));
+        store.record_seen("CT-A1B2C3D4E5F6", Some("My Token"), "ble", true);
+        let devices = store.list();
+        assert_eq!(devices.len(), 1);
+        assert!(devices[0].verified);
+    }
+
+    #[test]
+    fn an_unverified_record_seen_leaves_verified_false() {
+        let mut store = DeviceStore::load_from(temp_path("unverified"));
+        store.record_seen("AA:BB:CC:DD:EE:FF", None, "ble", false);
+        assert!(!store.list()[0].verified);
+    }
+
+    #[test]
+    fn re_recording_an_id_can_flip_its_verified_flag() {
+        // Not expected in practice (a verified id and a best-effort id are
+        // different strings — see the module doc), but `record_seen` itself
+        // must not get this wrong if it's ever called that way: the latest
+        // call's `verified` value wins, it does not stick at whatever the
+        // first call said.
+        let mut store = DeviceStore::load_from(temp_path("flip-verified"));
+        store.record_seen("same-id", None, "ble", false);
+        assert!(!store.list()[0].verified);
+        store.record_seen("same-id", None, "ble", true);
+        assert!(store.list()[0].verified);
+    }
+
+    #[test]
+    fn loading_a_known_devices_file_written_before_verified_existed_defaults_to_false() {
+        // Backward compatibility for the on-disk format itself: an older
+        // daemon's `known_devices.json` has no "verified" key at all.
+        let path = temp_path("pre-verified-file");
+        fs::write(
+            &path,
+            r#"{"devices":[{"id":"AA:BB","name":"Old Token","transport":"ble","lastSeen":1}],"activeId":"AA:BB"}"#,
+        )
+        .unwrap();
+        let store = DeviceStore::load_from(&path);
+        let devices = store.list();
+        assert_eq!(devices.len(), 1);
+        assert!(!devices[0].verified, "missing field must default to false, not fail to load");
         let _ = fs::remove_file(&path);
     }
 
@@ -395,7 +478,7 @@ mod tests {
     #[test]
     fn seeding_does_not_clobber_a_name_already_recorded() {
         let mut store = DeviceStore::load_from(temp_path("seed-no-clobber"));
-        store.record_seen("addr", Some("A Nice Name"), "ble");
+        store.record_seen("addr", Some("A Nice Name"), "ble", false);
         store.seed_from_paired_target(Some("addr"));
         assert_eq!(store.list()[0].name, "A Nice Name");
     }
@@ -404,7 +487,7 @@ mod tests {
     fn is_known_reflects_what_has_been_recorded() {
         let mut store = DeviceStore::load_from(temp_path("is-known"));
         assert!(!store.is_known("x"));
-        store.record_seen("x", None, "ble");
+        store.record_seen("x", None, "ble", false);
         assert!(store.is_known("x"));
         assert!(!store.is_known("y"));
     }

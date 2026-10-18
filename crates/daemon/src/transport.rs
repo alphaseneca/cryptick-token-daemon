@@ -13,7 +13,96 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, RwLock};
 use transport_ble::btleplug::platform::{Adapter, Peripheral};
-use transport_ble::BleTransport;
+use transport_ble::{BleTransport, ReconnectBackoff};
+
+/// How long one GATT connection attempt (discovery + characteristic lookup +
+/// notify subscription) is allowed to run before this attempt gives up.
+/// Generous because some BLE stacks (BlueZ in particular, right after a
+/// device reappears) are slow to settle; bounded so one bad attempt cannot
+/// wedge the reconnect loop indefinitely.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long one scan for the token is allowed to run before concluding it
+/// is not currently in range. Short relative to [`CONNECT_TIMEOUT`] because
+/// a scan that finds nothing is the common case (PROJECT.md §17: the token
+/// spends most of its life idle-advertising or asleep), not the exception.
+const SCAN_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long the best-effort PIV side-channel connect gets. Separate from
+/// [`CONNECT_TIMEOUT`] because a token with no PIV service exposed, or one
+/// that is slow to answer it, must never block or fail the FIDO connection
+/// that has already succeeded — see `attempt_piv_connect`.
+const PIV_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// How often the loop polls link state (and drains a pending retarget
+/// request) while the connection looks healthy. Equal to
+/// [`transport_ble::INITIAL_BACKOFF`] on purpose: detecting a *new*
+/// disconnect is never slower than this regardless of backoff state — only
+/// the *retries* after one slow down, via [`ReconnectBackoff`].
+const IDLE_POLL_INTERVAL: Duration = transport_ble::INITIAL_BACKOFF;
+
+/// --- Device identity (additive; see `crates/daemon/src/devices.rs`'s module
+/// doc for the full picture across both transports) ------------------------
+///
+/// UUID of the Daemon Bridge GATT service's new `daemonSerialNumber`
+/// characteristic — `cryptick-token-code`'s `ble_daemon.h`,
+/// `BLE_DAEMON_UUID_SERIAL_NUMBER`, one past `daemonVersion`
+/// (`transport_ble::DAEMON_VERSION`, `FBF6EB84`) in the same UUID block.
+///
+/// Not added as a `transport_ble::` constant: that crate is explicitly out
+/// of scope for this change (its own BLE power/reconnect work is landing
+/// concurrently in the same files), so this compares the characteristic's
+/// UUID by its lowercase string form instead of pulling in the `uuid` crate
+/// as a new direct dependency of `daemon/` just to name one literal
+/// (`uuid::Uuid`'s `Display` always lowercases, so this is exact).
+const DAEMON_SERIAL_NUMBER_UUID: &str = "fbf6eb85-7f39-41b1-a191-9527cc42f8be";
+
+/// Whether `s` matches the identity format `cryptick-token-code` documents
+/// (NOTES.md, "Real USB serial number (eFuse MAC)"): `CT-` followed by 12
+/// uppercase hex digits — the chip's 6-byte eFuse base MAC. Written by hand
+/// rather than pulling in a regex crate for one fifteen-character format.
+fn is_stable_serial_format(s: &str) -> bool {
+    match s.strip_prefix("CT-") {
+        Some(hex) => {
+            hex.len() == 12
+                && hex
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b))
+        }
+        None => false,
+    }
+}
+
+/// Reads the factory-unique identity exposed by newer firmware on the
+/// Daemon Bridge service, if present.
+///
+/// Returns `None` — never an error — when the characteristic is absent
+/// (older firmware), when the read fails for any reason (not yet bonded;
+/// the encrypted+authenticated ATT gate this characteristic carries, same
+/// as `daemonControlPoint`, refusing an unbonded link; a transient GATT
+/// error), or when the bytes read back do not match the documented format.
+/// PROJECT.md §15.8 ("fail closed... never guess") applies here exactly as
+/// it does to bonding: a malformed or partial read must never be *treated*
+/// as a real identity, only discarded in favour of the caller's existing
+/// best-effort fallback — which is why this returns `Option`, not
+/// `Result`, and every failure path collapses to the same `None`.
+///
+/// `peripheral` must already be past `discover_services()` — true for every
+/// caller here, since each only calls this right after
+/// [`connect_peripheral`] succeeds on the same `Peripheral` handle, and
+/// `BleTransport::connect_daemon` (`crates/transport-ble`) already ran
+/// discovery as part of that connection.
+async fn read_verified_identity(peripheral: &Peripheral) -> Option<String> {
+    use transport_ble::btleplug::api::Peripheral as _;
+
+    let chr = peripheral
+        .characteristics()
+        .into_iter()
+        .find(|c| c.uuid.to_string() == DAEMON_SERIAL_NUMBER_UUID)?;
+    let raw = peripheral.read(&chr).await.ok()?;
+    let text = std::str::from_utf8(&raw).ok()?.trim();
+    is_stable_serial_format(text).then(|| text.to_string())
+}
 
 /// A transport whose live connection can be pointed at a different physical
 /// device while the daemon keeps running — the thing `ClientMessage::
@@ -39,6 +128,20 @@ pub trait LiveRetarget: Send + Sync {
     /// it was, not fall back to "whatever else is around" and not leave the
     /// daemon with no connection at all.
     async fn retarget(&self, target: &str) -> Result<(), RetargetError>;
+
+    /// The factory-unique identity of the device currently connected, if the
+    /// firmware exposes one and the live connection could read it.
+    ///
+    /// `None` on older firmware, before any connection has been made, right
+    /// after a disconnect, or for any transport — `fake-transport`'s single
+    /// fixed device, or any future implementor — that has no notion of
+    /// hardware identity at all. Defaulted here rather than required so an
+    /// existing or future `LiveRetarget` implementor with nothing to report
+    /// needs no changes to keep compiling; see
+    /// `crates/daemon/src/devices.rs`'s module doc for what this feeds.
+    fn verified_identity(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Why a [`LiveRetarget::retarget`] call failed.
@@ -85,6 +188,28 @@ struct RetargetRequest {
 /// task automatically scans for and reconnects to the token over the dedicated
 /// Daemon Bridge GATT service.
 ///
+/// An unexpected disconnect is retried with bounded, jittered backoff
+/// (`transport_ble::ReconnectBackoff`) rather than on a flat fixed interval
+/// forever — see that module's doc for why. Backoff resets the moment a
+/// connection is actually adopted, so a brief outage and a long one both
+/// recover at the same pace once the token is reachable again.
+///
+/// This is deliberately distinct from a *deliberate* disconnect — the user
+/// picking a different known device via [`Self::retarget`]. That path is
+/// handled on its own channel with its own fixed, short timeout and never
+/// consults or waits on the backoff state at all: a user who explicitly
+/// asks for device B must not be made to wait out device A's backoff, and
+/// a failed retarget to B must not perturb however long the periodic loop
+/// has already been trying to get A back (see [`handle_retarget_request`]).
+///
+/// Every reconnect — periodic or retargeted — opens a brand new
+/// [`BleTransport`] via [`connect_peripheral`], which performs full GATT
+/// discovery and resubscribes from scratch. There is no fast path that
+/// reuses a previous connection's authenticated state: PROJECT.md §15.2
+/// requires the device's own ATT gate (the first authenticated
+/// control-point write) be challenged again on every single connection,
+/// bounded or not.
+///
 /// `target` is shared (`Arc<Mutex<_>>`), not a plain field, because
 /// [`Self::retarget`] must be callable on any clone — the IPC server holds
 /// one via a `dyn LiveRetarget` while the background task that actually owns
@@ -98,6 +223,9 @@ pub struct ReconnectingBleTransport {
     connected: Arc<AtomicBool>,
     bonded: Arc<AtomicBool>,
     authenticated: Arc<AtomicBool>,
+    /// The current connection's hardware-verified identity, if
+    /// [`read_verified_identity`] found one — see [`Self::verified_identity`].
+    verified_id: Arc<Mutex<Option<String>>>,
 }
 
 impl ReconnectingBleTransport {
@@ -122,6 +250,7 @@ impl ReconnectingBleTransport {
         let connected = Arc::new(AtomicBool::new(false));
         let bonded = Arc::new(AtomicBool::new(false));
         let authenticated = Arc::new(AtomicBool::new(false));
+        let verified_id = Arc::new(Mutex::new(None));
 
         let inner_clone = Arc::clone(&inner);
         let target_clone = Arc::clone(&target);
@@ -129,12 +258,35 @@ impl ReconnectingBleTransport {
         let connected_clone = Arc::clone(&connected);
         let bonded_clone = Arc::clone(&bonded);
         let authenticated_clone = Arc::clone(&authenticated);
+        let verified_id_clone = Arc::clone(&verified_id);
         let initial_target = target_device;
 
         let handle = tokio::spawn(async move {
             let mut opt_adapter = adapter;
             let mut current_target = initial_target;
+            // Tracks consecutive *unexpected*-disconnect reconnect attempts
+            // only. Reset to the floor the instant a connection is adopted,
+            // from either branch below — see the backoff module doc and the
+            // struct doc above for why a deliberate retarget never touches
+            // this at all.
+            let mut backoff = ReconnectBackoff::new();
             loop {
+                // While the link looks healthy, poll at the short, fixed
+                // interval so an unexpected disconnect is noticed promptly.
+                // Only once we are actually not connected does the backoff
+                // schedule set the pace of the *retries* — computed here,
+                // before the attempt, so a tick that ends up not reconnecting
+                // (adapter still missing, scan empty) still paces the next one.
+                let currently_connected = {
+                    let r = inner_clone.read().await;
+                    r.as_ref().is_some_and(|t| t.link().connected)
+                };
+                let wait = if currently_connected {
+                    IDLE_POLL_INTERVAL
+                } else {
+                    backoff.next_delay()
+                };
+
                 tokio::select! {
                     // Biased so a pending retarget request is always drained
                     // before the next periodic reconnect tick, rather than a
@@ -149,9 +301,12 @@ impl ReconnectingBleTransport {
                             // Fall through to the plain reconnect loop rather
                             // than exiting, so an existing connection keeps
                             // being maintained for in-flight CTAP traffic.
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            tokio::time::sleep(IDLE_POLL_INTERVAL).await;
                             continue;
                         };
+                        // Deliberate user action: always attempted immediately,
+                        // regardless of `wait` or the periodic branch's backoff
+                        // state (see the struct doc above).
                         handle_retarget_request(
                             request,
                             &mut opt_adapter,
@@ -162,11 +317,13 @@ impl ReconnectingBleTransport {
                             &connected_clone,
                             &bonded_clone,
                             &authenticated_clone,
+                            &verified_id_clone,
+                            &mut backoff,
                         )
                         .await;
                     }
 
-                    _ = tokio::time::sleep(Duration::from_millis(1000)) => {
+                    _ = tokio::time::sleep(wait) => {
                         let need_reconnect = {
                             let r = inner_clone.read().await;
                             match r.as_ref() {
@@ -191,6 +348,11 @@ impl ReconnectingBleTransport {
                                 connected_clone.store(false, Ordering::SeqCst);
                                 bonded_clone.store(false, Ordering::SeqCst);
                                 authenticated_clone.store(false, Ordering::SeqCst);
+                                // A new connection (below) may be to a
+                                // different physical unit than the one this
+                                // identity was read from — never carry it
+                                // across a disconnect (PROJECT.md §15.8).
+                                *verified_id_clone.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             }
                             if opt_adapter.is_none() {
                                 match transport_ble::adapter().await {
@@ -212,13 +374,13 @@ impl ReconnectingBleTransport {
                             let find_res = match transport_ble::find_device_with_target(
                                 adapter_ref,
                                 current_target.as_deref(),
-                                Duration::from_secs(3),
+                                SCAN_TIMEOUT,
                             )
                             .await {
                                 Ok(p) => Ok(p),
                                 Err(_) if current_target.is_some() => {
                                     // Pinned device not found; fallback to any advertising Cryptick Token
-                                    transport_ble::find_device(adapter_ref, Duration::from_secs(3)).await
+                                    transport_ble::find_device(adapter_ref, SCAN_TIMEOUT).await
                                 }
                                 Err(e) => Err(e),
                             };
@@ -234,7 +396,7 @@ impl ReconnectingBleTransport {
                                         }
                                     }
                                     eprintln!("Discovered Cryptick Token [{addr}], connecting via Daemon Bridge GATT...");
-                                    connect_and_adopt(
+                                    let adopted = connect_and_adopt(
                                         &peripheral,
                                         &addr,
                                         &inner_clone,
@@ -242,8 +404,17 @@ impl ReconnectingBleTransport {
                                         &connected_clone,
                                         &bonded_clone,
                                         &authenticated_clone,
+                                        &verified_id_clone,
                                     )
                                     .await;
+                                    if adopted {
+                                        // A fresh, confirmed-good connection is
+                                        // up — the next unexpected disconnect
+                                        // (if any) starts its own episode from
+                                        // the floor, not from wherever this one
+                                        // left off.
+                                        backoff.reset();
+                                    }
                                 }
                                 Err(_e) => {
                                     // Token not discovered during this scan window
@@ -266,6 +437,7 @@ impl ReconnectingBleTransport {
                 connected,
                 bonded,
                 authenticated,
+                verified_id,
             },
             handle,
         )
@@ -293,6 +465,16 @@ impl ReconnectingBleTransport {
     pub fn is_reconnecting(&self) -> bool {
         self.is_connecting.load(Ordering::SeqCst)
     }
+
+    /// Returns the current connection's hardware-verified identity, if
+    /// [`read_verified_identity`] found one for it. See
+    /// [`LiveRetarget::verified_identity`], which this implements.
+    pub fn verified_identity(&self) -> Option<String> {
+        self.verified_id
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
 }
 
 /// Opens the GATT connection to `peripheral`, with the same timeout the
@@ -300,11 +482,7 @@ impl ReconnectingBleTransport {
 /// error type: every failure here (timeout or connect error) is handled
 /// identically by both callers, and the message is already logged.
 async fn connect_peripheral(peripheral: &Peripheral, addr: &str) -> Option<BleTransport> {
-    match tokio::time::timeout(
-        Duration::from_secs(15),
-        BleTransport::connect_daemon(peripheral),
-    )
-    .await
+    match tokio::time::timeout(CONNECT_TIMEOUT, BleTransport::connect_daemon(peripheral)).await
     {
         Ok(Ok(new_transport)) => {
             eprintln!("Connected to Cryptick Token [{addr}]!");
@@ -326,7 +504,7 @@ async fn connect_peripheral(peripheral: &Peripheral, addr: &str) -> Option<BleTr
 /// exposed is not a connection failure.
 async fn attempt_piv_connect(peripheral: &Peripheral, addr: &str) {
     match tokio::time::timeout(
-        Duration::from_secs(12),
+        PIV_CONNECT_TIMEOUT,
         transport_ble::PivBleTransport::connect(peripheral),
     )
     .await
@@ -360,6 +538,7 @@ async fn connect_and_adopt(
     connected: &Arc<AtomicBool>,
     bonded: &Arc<AtomicBool>,
     authenticated: &Arc<AtomicBool>,
+    verified_id: &Arc<Mutex<Option<String>>>,
 ) -> bool {
     match connect_peripheral(peripheral, addr).await {
         Some(new_transport) => {
@@ -371,6 +550,11 @@ async fn connect_and_adopt(
             bonded.store(true, Ordering::SeqCst);
             authenticated.store(true, Ordering::SeqCst);
             connecting.store(false, Ordering::SeqCst);
+            // Best-effort: absent on older firmware, or if the read itself
+            // fails — see `read_verified_identity`'s doc comment. Either way
+            // this connection is already adopted and usable either way.
+            *verified_id.lock().unwrap_or_else(|e| e.into_inner()) =
+                read_verified_identity(peripheral).await;
             attempt_piv_connect(peripheral, addr).await;
             true
         }
@@ -400,6 +584,8 @@ async fn handle_retarget_request(
     connected: &Arc<AtomicBool>,
     bonded: &Arc<AtomicBool>,
     authenticated: &Arc<AtomicBool>,
+    verified_id: &Arc<Mutex<Option<String>>>,
+    backoff: &mut ReconnectBackoff,
 ) {
     // Already there and actually connected — a safe no-op, no airtime spent.
     if current_target.as_deref() == Some(request.target.as_str())
@@ -427,12 +613,9 @@ async fn handle_retarget_request(
         return;
     };
 
-    let found = transport_ble::find_device_with_target(
-        adapter_ref,
-        Some(&request.target),
-        Duration::from_secs(3),
-    )
-    .await;
+    let found =
+        transport_ble::find_device_with_target(adapter_ref, Some(&request.target), SCAN_TIMEOUT)
+            .await;
 
     let peripheral = match found {
         Ok(p) => p,
@@ -473,6 +656,15 @@ async fn handle_retarget_request(
     bonded.store(true, Ordering::SeqCst);
     authenticated.store(true, Ordering::SeqCst);
     connecting.store(false, Ordering::SeqCst);
+    // Replaces whatever identity (if any) the previous connection reported —
+    // this is a different physical unit's connection now.
+    *verified_id.lock().unwrap_or_else(|e| e.into_inner()) =
+        read_verified_identity(&peripheral).await;
+    // A fresh, confirmed-good connection is up under the new target — the
+    // periodic branch's next unexpected disconnect starts its own backoff
+    // episode from the floor rather than inheriting whatever the old
+    // target's failures (if any) had already accumulated.
+    backoff.reset();
     attempt_piv_connect(&peripheral, &addr).await;
 
     *current_target = Some(addr.clone());
@@ -497,6 +689,14 @@ impl LiveRetarget for ReconnectingBleTransport {
             })
             .map_err(|_| RetargetError::TransportGone)?;
         reply_rx.await.map_err(|_| RetargetError::TransportGone)?
+    }
+
+    /// Delegates to [`Self::verified_identity`] — the real, non-trait-object
+    /// method, kept so callers that already hold a concrete
+    /// `ReconnectingBleTransport` (rather than a `dyn LiveRetarget`) don't
+    /// need the trait in scope just to read it.
+    fn verified_identity(&self) -> Option<String> {
+        Self::verified_identity(self)
     }
 }
 

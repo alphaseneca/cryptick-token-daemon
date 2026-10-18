@@ -278,9 +278,10 @@ impl DaemonTransport {
 
     /// Every device the daemon knows about. See
     /// `crates/daemon/src/devices.rs`'s module doc for what identity means
-    /// here (no firmware-populated serial number exists for this hardware,
-    /// so this is a best-effort recognition key, not a guaranteed-stable
-    /// one) and why the daemon only ever reports BLE devices.
+    /// here — each entry's `id` is the device's real, firmware-read serial
+    /// number when `verified` is `true`, otherwise the pre-existing
+    /// best-effort recognition key (older firmware does not yet expose
+    /// one) — and for why the daemon only ever reports BLE devices.
     #[cfg(any(unix, windows))]
     pub fn list_devices(&mut self) -> Result<Vec<ipc::DeviceInfo>, ManagerError> {
         let id = self.take_id();

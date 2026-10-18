@@ -7,6 +7,36 @@ const CRYPTICK_VID: u16 = 0x1209;
 const CRYPTICK_PID: u16 = 0xBEEE;
 const FIDO_USAGE_PAGE: u16 = 0xF1D0;
 
+/// One Cryptick Token found on the USB bus, before any connection is opened.
+pub struct UsbDeviceId {
+    /// The device descriptor's `iSerialNumber` string
+    /// (`"CT-XXXXXXXXXXXX"`), when the connected firmware exposes one — see
+    /// `cryptick-token-code`'s NOTES.md, "Real USB serial number (eFuse
+    /// MAC)". `None` on older firmware (or the USB Serial/JTAG lab
+    /// fallback build, which never owns this descriptor at all).
+    pub serial: Option<String>,
+}
+
+/// Enumerates every Cryptick Token presently on the USB bus, without
+/// connecting to any of them — a plain `hidapi::HidApi::device_list()` scan,
+/// the same non-connecting identity source
+/// `crates/token-manager/src/transport/usb.rs`'s `UsbTransport::list_devices`
+/// already uses, so `handle_list_devices` can tell two distinct physical
+/// units apart instead of reporting a single synthetic `"usb"` row
+/// regardless of how many are actually plugged in.
+pub fn list_devices() -> Vec<UsbDeviceId> {
+    let Ok(api) = HidApi::new() else {
+        return Vec::new();
+    };
+    api.device_list()
+        .filter(|d| d.vendor_id() == CRYPTICK_VID && d.product_id() == CRYPTICK_PID)
+        .filter(|d| !matches!(d.bus_type(), hidapi::BusType::Bluetooth))
+        .map(|d| UsbDeviceId {
+            serial: d.serial_number().map(str::to_string),
+        })
+        .collect()
+}
+
 /// Mirrors [`crate::daemon::HostError`]'s shape for the USB side of
 /// [`crate::usb`] (PROJECT.md §20: typed errors, no stringly-typed failures
 /// across crate lines). `UsbClient::transact`/`transact_preserving_status`

@@ -443,7 +443,7 @@ async fn select_device_on_an_unknown_id_is_refused() {
 #[tokio::test]
 async fn list_devices_reports_a_pre_seeded_device_as_active() {
     let mut store = DeviceStore::in_memory();
-    store.record_seen("AA:BB:CC", Some("My Token"), "ble");
+    store.record_seen("AA:BB:CC", Some("My Token"), "ble", false);
     let mut client = start_with_devices(
         FakeDevice::always(size(64), Reply::Ctap(Response::new(StatusCode::OK, vec![]))),
         store,
@@ -465,8 +465,8 @@ async fn list_devices_reports_a_pre_seeded_device_as_active() {
 #[tokio::test]
 async fn select_device_then_list_devices_reflects_the_new_active_id() {
     let mut store = DeviceStore::in_memory();
-    store.record_seen("first", Some("First"), "ble");
-    store.record_seen("second", Some("Second"), "ble");
+    store.record_seen("first", Some("First"), "ble", false);
+    store.record_seen("second", Some("Second"), "ble", false);
     let mut client = start_with_devices(
         FakeDevice::always(size(64), Reply::Ctap(Response::new(StatusCode::OK, vec![]))),
         store,

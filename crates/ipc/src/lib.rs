@@ -88,7 +88,17 @@ use thiserror::Error;
 /// "An IPC message shape change is a breaking change"). An old client
 /// speaking v1 gets a clean [`IpcError::UnsupportedVersion`], never a
 /// misparse — `check_version` runs before the body is touched either way.
-pub const PROTOCOL_VERSION: u32 = 2;
+///
+/// Bumped to 3 for [`DeviceInfo::verified`]: `id` can now be a real,
+/// hardware-read device identity (USB `iSerialNumber`, or the new BLE
+/// `daemonSerialNumber` characteristic — `cryptick-token-code`'s
+/// `core/ble_fido/ble_daemon.h`) rather than always the old best-effort
+/// address/placeholder key. The field is additive and defaults to `false`
+/// on decode (`#[serde(default)]`), so it does not by itself require a
+/// version bump for *this* server/client pair — but §20 makes any shape
+/// change a breaking one as a blanket rule, so this follows the same
+/// discipline the v1→v2 bump above did.
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Something went wrong encoding, decoding or validating an IPC message.
 #[derive(Debug, Error)]
@@ -215,8 +225,10 @@ pub enum ClientMessage {
 /// One entry in a `devices.list` reply.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
-    /// Best-effort recognition key — see `crates/daemon/src/devices.rs`'s
-    /// module doc for why this is not a guaranteed-stable hardware serial.
+    /// A hardware-verified identity (see [`Self::verified`]) when one could
+    /// be read, otherwise the pre-existing best-effort recognition key —
+    /// see `crates/daemon/src/devices.rs`'s module doc for what "best-effort"
+    /// means and when a device still falls back to it.
     pub id: String,
     /// A friendly name.
     pub name: String,
@@ -227,6 +239,16 @@ pub struct DeviceInfo {
     /// as the daemon's target or seen connected.
     #[serde(rename = "lastSeen")]
     pub last_seen: u64,
+    /// Whether `id` is a factory-unique hardware identity (read from the
+    /// device itself over this connection) rather than the older
+    /// best-effort BLE-address key. `false` for older firmware that has not
+    /// yet exposed the identity characteristic, or when the current
+    /// connection could not read/verify it. Added in protocol v3; a v2
+    /// client decoding this reply simply never sees the field — additive,
+    /// not a behaviour change for it (`#[serde(default)]` covers the
+    /// opposite direction, an older *stored* record without this field).
+    #[serde(default)]
+    pub verified: bool,
     /// Whether this is the currently-selected device.
     pub active: bool,
 }
@@ -410,6 +432,7 @@ mod tests {
                     name: "My Token".into(),
                     transport: "ble".into(),
                     last_seen: 12345,
+                    verified: false,
                     active: true,
                 }],
             },
@@ -458,12 +481,18 @@ mod tests {
 
     #[test]
     fn a_future_version_is_reported_as_a_version_error() {
-        let json = br#"{"v":3,"id":"x","type":"ctap.cancel"}"#;
-        match decode_client(json) {
+        // Computed from `PROTOCOL_VERSION` rather than a hardcoded literal:
+        // a literal here already went stale once (it used to say `3`, which
+        // became the *current* version the day `DeviceInfo::verified` was
+        // added), silently testing nothing once `PROTOCOL_VERSION` caught
+        // up to it.
+        let future = PROTOCOL_VERSION + 1;
+        let json = format!(r#"{{"v":{future},"id":"x","type":"ctap.cancel"}}"#);
+        match decode_client(json.as_bytes()) {
             Err(IpcError::UnsupportedVersion {
-                got: 3,
+                got,
                 expected: PROTOCOL_VERSION,
-            }) => {}
+            }) if got == future => {}
             other => panic!("expected a version error, got {other:?}"),
         }
     }

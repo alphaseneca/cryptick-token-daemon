@@ -100,10 +100,14 @@ mod fake_main {
         loop {
             match listener.accept().await {
                 Ok(Some(stream)) => {
+                    // The fake transport implements no `LiveRetarget`, so
+                    // `devices.select` is bookkeeping only — same as the Unix
+                    // fake arm.
                     tokio::spawn(serve_connection(
                         stream,
                         Arc::clone(&bridge),
                         Arc::clone(&devices),
+                        None,
                     ));
                 }
                 Ok(None) => eprintln!("refused a connection from another user"),
@@ -877,7 +881,7 @@ mod live_main {
     use daemon::{
         devices::DeviceStore,
         server::{serve_connection, windows::IpcListener},
-        Bridge, ReconnectingBleTransport,
+        Bridge, LiveRetarget, ReconnectingBleTransport,
     };
     use std::sync::{Arc, Mutex};
 
@@ -889,8 +893,13 @@ mod live_main {
         let (transport, _reconnect_handle) = ReconnectingBleTransport::spawn(None, None).await;
 
         let mut device_store = DeviceStore::load();
-        device_store.seed_from_paired_target(transport.target_device());
+        device_store.seed_from_paired_target(transport.target_device().as_deref());
         let devices = Arc::new(Mutex::new(device_store));
+
+        // Same as the Unix arm: `ReconnectingBleTransport` is the one
+        // transport implementing `LiveRetarget`, so `devices.select` here
+        // hot-retargets the live connection rather than only bookkeeping.
+        let retarget: Arc<dyn LiveRetarget> = Arc::new(transport.clone());
 
         let bridge = Arc::new(Bridge::new(transport));
 
@@ -901,6 +910,7 @@ mod live_main {
                         stream,
                         Arc::clone(&bridge),
                         Arc::clone(&devices),
+                        Some(Arc::clone(&retarget)),
                     ));
                 }
                 Ok(None) => {}

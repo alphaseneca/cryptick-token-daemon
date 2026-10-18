@@ -176,6 +176,11 @@ struct HostResponse {
 }
 
 /// One device in a `list_devices` response.
+///
+/// Field names/shape match what the extension's `popup.js` (`loadDevices`/
+/// `renderDevicePicker`) already expects — `verified` is new and additive,
+/// not a replacement for any of the others, so an unmodified extension
+/// build simply never looks at it.
 #[derive(Debug, Serialize)]
 struct DeviceOut {
     id: String,
@@ -183,6 +188,10 @@ struct DeviceOut {
     transport: String,
     #[serde(rename = "lastSeen")]
     last_seen: u64,
+    /// Whether `id` is a hardware-read identity (USB `iSerialNumber`, or
+    /// the daemon's BLE-verified identity) rather than the old best-effort
+    /// placeholder/key — see `handle_list_devices`'s doc comment.
+    verified: bool,
     active: bool,
 }
 
@@ -650,36 +659,70 @@ fn handle_delete_credential(stdout_lock: &Mutex<()>, req: DeleteCredentialReques
 /// daemon that is unreachable is therefore not an error here — it just means
 /// zero BLE entries, not zero devices.
 ///
-/// USB has no per-unit identity either (same module doc): there is no
-/// firmware-populated serial number, so every USB-connected Cryptick Token
-/// is reported as the same synthetic id (`"usb"`). This is honest about
-/// what can and cannot be told apart today, not a workaround.
+/// USB per-unit identity (`usb::list_devices`) is the real `iSerialNumber`
+/// (`"CT-XXXXXXXXXXXX"`, `cryptick-token-code`'s
+/// `usb_device_serial_number()`) when the connected firmware exposes one, so
+/// two distinct physical units plugged in at once are reported as two
+/// distinct rows rather than collapsed together. A unit on firmware that
+/// predates that still reports no serial and falls back to the single
+/// synthetic id (`"usb"`) this handler has always used in that case — still
+/// honestly unable to tell two such older units apart.
 fn handle_list_devices() -> HostResponse {
     let mut devices = Vec::new();
 
-    if UsbClient::try_connect().is_some() {
+    let usb_devices = usb::list_devices();
+    let mut usb_serials_seen = std::collections::HashSet::new();
+    let mut saw_unidentified_usb = false;
+    for d in &usb_devices {
+        match &d.serial {
+            Some(serial) if usb_serials_seen.insert(serial.clone()) => {
+                devices.push(DeviceOut {
+                    id: serial.clone(),
+                    name: format!("Cryptick Token ({serial})"),
+                    transport: "usb".into(),
+                    last_seen: now_unix(),
+                    verified: true,
+                    // Only the first distinct serial is "active" — there is
+                    // no real per-device USB selection mechanism today (see
+                    // `handle_select_device`), so this names whichever unit
+                    // a plain CTAPHID transaction would actually reach
+                    // rather than guessing at a selection that doesn't
+                    // exist.
+                    active: usb_serials_seen.len() == 1,
+                });
+            }
+            // Same physical unit's other HID interface reporting the same
+            // serial again.
+            Some(_) => {}
+            None => saw_unidentified_usb = true,
+        }
+    }
+    if saw_unidentified_usb {
         devices.push(DeviceOut {
             id: "usb".into(),
             name: "Cryptick Token (USB)".into(),
             transport: "usb".into(),
             last_seen: now_unix(),
-            active: true,
+            verified: false,
+            active: usb_serials_seen.is_empty(),
         });
     }
 
     if let Ok(mut client) = DaemonClient::connect(Duration::from_millis(500)) {
         if let Ok(ble_devices) = client.list_devices() {
+            let usb_is_active = devices.iter().any(|d| d.transport == "usb" && d.active);
             for d in ble_devices {
                 devices.push(DeviceOut {
                     id: d.id,
                     name: d.name,
                     transport: d.transport,
                     last_seen: d.last_seen,
+                    verified: d.verified,
                     // If a USB device just claimed "active" above, a BLE
                     // entry cannot also be active — only one device is
                     // active at a time, and USB (zero-latency, no daemon)
                     // is the one actually in use when both are present.
-                    active: d.active && !devices.iter().any(|existing| existing.transport == "usb"),
+                    active: d.active && !usb_is_active,
                 });
             }
         }
@@ -699,13 +742,20 @@ fn now_unix() -> u64 {
 
 /// Handles `select_device`.
 ///
-/// A `"usb"` selection has nothing to actually switch — see
-/// `handle_list_devices`'s doc comment on why USB is a single synthetic
-/// entry — so it is accepted as a no-op success rather than forwarded to a
-/// daemon that may not even be running. A BLE id is forwarded to the daemon,
-/// which is the one that owns that bookkeeping.
+/// A USB selection — the old synthetic `"usb"` id, or a real serial
+/// `list_devices` just reported for a USB-connected unit — has nothing to
+/// actually switch: USB has no persistent "selected device" at the
+/// transport layer (`UsbClient::try_connect` picks implicitly among
+/// whatever is plugged in, every call; see `handle_list_devices`'s doc
+/// comment), so it is accepted as a no-op success rather than forwarded to
+/// a daemon that may not even be running. A BLE id is forwarded to the
+/// daemon, which is the one that owns that bookkeeping.
 fn handle_select_device(req: SelectDeviceRequest) -> HostResponse {
-    if req.id == "usb" {
+    if req.id == "usb"
+        || usb::list_devices()
+            .iter()
+            .any(|d| d.serial.as_deref() == Some(req.id.as_str()))
+    {
         return HostResponse::ok();
     }
     match DaemonClient::connect(Duration::from_secs(2)) {

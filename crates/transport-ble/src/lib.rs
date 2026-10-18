@@ -58,6 +58,9 @@ pub use transport::{
 pub mod piv;
 pub use piv::{MockPivBleHandle, PivBleTransport, PivTransportError, MAX_APDU_LEN};
 
+pub mod backoff;
+pub use backoff::{ReconnectBackoff, INITIAL_BACKOFF, MAX_BACKOFF};
+
 /// The FIDO GATT service, `0xFFFD` expanded against the Bluetooth base UUID.
 pub fn fido_service() -> Uuid {
     uuid_from_u16(0xFFFD)

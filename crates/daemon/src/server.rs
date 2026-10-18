@@ -187,8 +187,31 @@ fn handle_frame<T>(
             // merely assumed.
             let mut store = devices.lock().unwrap_or_else(|e| e.into_inner());
             if bridge.link().connected {
-                if let Some(active_id) = store.active_id().map(str::to_string) {
-                    store.record_seen(&active_id, None, "ble");
+                // Prefer the live connection's own hardware-verified
+                // identity (`LiveRetarget::verified_identity` — `None` for
+                // older firmware, the `fake-transport` build, or any
+                // transport that hasn't implemented it) over the
+                // pre-existing best-effort key. `record_seen` upserts under
+                // whichever id this turns out to be; `set_active` then
+                // carries "active" over to it even when that means a brand
+                // new row superseding the old best-effort one — see
+                // `devices.rs::record_seen`'s doc comment for why these stay
+                // two distinct rows rather than being merged in place.
+                match retarget.as_ref().and_then(|r| r.verified_identity()) {
+                    Some(serial) => {
+                        store.record_seen(&serial, None, "ble", true);
+                        // `record_seen` just made `serial` known, so this
+                        // cannot fail with `UnknownDeviceError` — but it is
+                        // still bookkeeping, not a CTAP transaction, so a
+                        // defensive `let _` costs nothing if that ever stops
+                        // being true.
+                        let _ = store.set_active(&serial);
+                    }
+                    None => {
+                        if let Some(active_id) = store.active_id().map(str::to_string) {
+                            store.record_seen(&active_id, None, "ble", false);
+                        }
+                    }
                 }
             }
             let list = store
@@ -199,6 +222,7 @@ fn handle_frame<T>(
                     name: d.name,
                     transport: d.transport,
                     last_seen: d.last_seen,
+                    verified: d.verified,
                     active: d.active,
                 })
                 .collect();
