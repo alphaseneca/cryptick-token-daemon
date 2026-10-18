@@ -113,7 +113,7 @@ impl StatusCode {
     /// `CTAP2_ERR_KEEPALIVE_CANCEL` — the transaction was cancelled.
     ///
     /// **Corrected 2026-10 from the `0x2e` this crate shipped with.** `0x2e` is
-    /// actually `CTAP2_ERR_NO_CREDENTIALS`. Verified against CTAP2.1 §8.2.3 and
+    /// actually `CTAP2_ERR_NO_CREDENTIALS`. Verified against CTAP2.1 §8.2 and
     /// cross-checked against `fido2.ctap.CtapError.ERR` in Yubico's
     /// `python-fido2` (the reference host implementation) and against this
     /// device's own firmware (`core/fido2/ctap_errors.h`:
@@ -325,9 +325,14 @@ mod tests {
 
     #[test]
     fn corrected_status_codes_match_the_ctap2_1_spec() {
-        // Verified against CTAP2.1 §8.2.3 and cross-checked against
-        // python-fido2's `CtapError.ERR` and this device's firmware
-        // (core/fido2/ctap_errors.h). See the doc comments on each constant.
+        // Verified against the CTAP 2.1 PS (2021-06-15) §8.2 "Status codes"
+        // table, re-read 2026-10. §8.2 has no subsections; an earlier revision
+        // of this comment cited a "§8.2.3" that does not exist. The same table
+        // is byte-identical in CTAP 2.2 PS (2025-07-14) §8.2, so these values
+        // hold for both. Cross-checked against python-fido2's `CtapError.ERR`
+        // and this device's firmware (core/fido2/ctap_errors.h), but per
+        // PROJECT.md §20 the spec is what decides — the firmware's own table
+        // turned out to carry six never-standard codes of its own.
         assert_eq!(StatusCode::KEEPALIVE_CANCEL.as_u8(), 0x2d);
         assert_eq!(StatusCode::USER_ACTION_TIMEOUT.as_u8(), 0x2f);
         assert_eq!(StatusCode::ACTION_TIMEOUT.as_u8(), 0x3a);
