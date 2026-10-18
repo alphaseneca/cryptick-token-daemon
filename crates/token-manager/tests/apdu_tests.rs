@@ -1,6 +1,6 @@
 //! Comprehensive test suite for ISO 7816 APDU parsing, status words, and AID routing.
 
-use cryptick_manager::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
+use tickctl::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 
 #[test]
 fn test_status_words_and_descriptions() {

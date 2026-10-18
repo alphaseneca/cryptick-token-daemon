@@ -1,15 +1,15 @@
-//! CLI subcommand handlers for `cryptick-manager piv`.
+//! CLI subcommand handlers for `tickctl piv`.
 //!
 //! Modeled on YubiKey Manager's `piv` command group as a design reference
 //! for CLI ergonomics (subcommand names, flag names/shorthand) — never
 //! user-facing, per this project's convention:
-//! - `cryptick-manager piv info`
-//! - `cryptick-manager piv reset`
-//! - `cryptick-manager piv access change-pin`
-//! - `cryptick-manager piv access change-puk`
-//! - `cryptick-manager piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
-//! - `cryptick-manager piv certificates export <slot>`
-//! - `cryptick-manager piv certificates delete <slot>`
+//! - `tickctl piv info`
+//! - `tickctl piv reset`
+//! - `tickctl piv access change-pin`
+//! - `tickctl piv access change-puk`
+//! - `tickctl piv provision [--slot <9A|9D|all>] [--cn <name>] [--pin <pin>]`
+//! - `tickctl piv certificates export <slot>`
+//! - `tickctl piv certificates delete <slot>`
 //!
 //! Checked against `ykman`'s actual source (`yubikey-manager/ykman/_cli/piv.py`)
 //! rather than assumed from memory. Confirmed, deliberate differences:
@@ -41,6 +41,7 @@ use piv::cert::parse_certificate;
 use piv::commands;
 use piv::objects::Slot;
 use piv::provision::{provision_slot, CardTransceiver, ProvisionError, ProvisionOptions};
+use piv::Tag;
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -58,6 +59,22 @@ impl<'a> CardTransceiver for TransportCardTransceiver<'a> {
     }
 }
 
+/// Parses a `9A`/`9C`/`9D`/`9E` slot argument, as `piv certificates
+/// export/delete` and `piv provision --slot` both take (`provision`'s own
+/// inline match only covers 9A/9D/9C plus `ALL`; this is the single-slot
+/// case the other two commands need).
+fn parse_slot_arg(s: &str) -> Result<Slot, ManagerError> {
+    match s.to_ascii_uppercase().as_str() {
+        "9A" => Ok(Slot::PivAuthentication),
+        "9C" => Ok(Slot::DigitalSignature),
+        "9D" => Ok(Slot::KeyManagement),
+        "9E" => Ok(Slot::CardAuthentication),
+        other => Err(ManagerError::InvalidInput(format!(
+            "Unknown slot '{other}'. Use 9A, 9C, 9D, or 9E."
+        ))),
+    }
+}
+
 fn slot_tag(slot: Slot) -> u32 {
     match slot {
         Slot::PivAuthentication => 0x5FC105,
@@ -67,7 +84,7 @@ fn slot_tag(slot: Slot) -> u32 {
     }
 }
 
-/// Handles all `cryptick-manager piv ...` subcommands.
+/// Handles all `tickctl piv ...` subcommands.
 pub fn handle_piv_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -88,15 +105,15 @@ pub fn handle_piv_command(
         "provision" => run_piv_provision(transport, &args[1..]),
         "certificates" => run_piv_certificates(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown piv subcommand '{unknown}'. Run 'cryptick-manager piv --help' for available commands."
+            "Unknown piv subcommand '{unknown}'. Run 'tickctl piv --help' for available commands."
         ))),
     }
 }
 
-/// Prints `cryptick-manager piv --help` usage text.
+/// Prints `tickctl piv --help` usage text.
 pub fn print_piv_help() {
     println!(
-        "Usage: cryptick-manager piv [COMMAND] [OPTIONS]\n\n\
+        "Usage: tickctl piv [COMMAND] [OPTIONS]\n\n\
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
@@ -184,20 +201,20 @@ fn run_piv_info(
     }
 
     if configured_count == 0 {
-        println!("\nHint: Run 'cryptick-manager piv provision --slot 9A' to configure macOS / Linux login.");
+        println!("\nHint: Run 'tickctl piv provision --slot 9A' to configure macOS / Linux login.");
     }
 
     Ok(())
 }
 
-/// Handles `cryptick-manager piv access [change-pin|change-puk]`.
+/// Handles `tickctl piv access [change-pin|change-puk]`.
 fn run_piv_access(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager piv access [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl piv access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                change-pin   Change the 6-8 digit user PIN\n\
                change-puk   Change the 8 digit PIN Unlock Key (PUK)\n"
@@ -275,7 +292,7 @@ fn run_piv_access(
     }
 }
 
-/// Handles `cryptick-manager piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
+/// Handles `tickctl piv provision [--slot 9A] [--cn <name>] [--pin <pin>] [--dry-run]`.
 fn run_piv_provision(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -363,17 +380,17 @@ fn run_piv_provision(
     Ok(())
 }
 
-/// Handles `cryptick-manager piv certificates [export|delete]`.
+/// Handles `tickctl piv certificates [export|delete] SLOT`.
 fn run_piv_certificates(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager piv certificates [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl piv certificates [COMMAND] SLOT\n\n\
              Commands:\n\
-               export   Export a certificate from a slot to a file or stdout\n\
-               delete   Delete a certificate stored in a slot\n"
+               export SLOT   Export a certificate from a slot to stdout (9A, 9C, 9D, or 9E)\n\
+               delete SLOT   Delete a certificate stored in a slot\n"
         );
         return Ok(());
     }
@@ -382,7 +399,10 @@ fn run_piv_certificates(
 
     match args[0].as_str() {
         "export" => {
-            let slot = Slot::PivAuthentication;
+            let slot = parse_slot_arg(
+                args.get(1)
+                    .ok_or_else(|| "Usage: tickctl piv certificates export SLOT".to_string())?,
+            )?;
             let tag = slot_tag(slot);
             let get_apdu = CommandApdu::with_data(
                 0x00,
@@ -414,8 +434,30 @@ fn run_piv_certificates(
             }
         }
         "delete" => {
-            println!("✓ Certificate slot cleared.");
-            Ok(())
+            let slot = parse_slot_arg(
+                args.get(1)
+                    .ok_or_else(|| "Usage: tickctl piv certificates delete SLOT".to_string())?,
+            )?;
+            let tag = slot_tag(slot);
+            // A zero-length PUT DATA is the applet's own convention for
+            // clearing a data object (`core/piv/piv.c`'s `PIV_INS_PUT_DATA`
+            // handler) — not a no-op CLI message pretending the device did
+            // something it was never asked to do.
+            let put_apdu = commands::put_data(Tag::new(tag), &[]);
+            let raw = transport.transceive(
+                0x03,
+                &put_apdu
+                    .encode()
+                    .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+                PIV_TIMEOUT,
+            )?;
+            let resp = ResponseApdu::parse(&raw)?;
+            if resp.is_success() {
+                println!("✓ Certificate slot cleared.");
+                Ok(())
+            } else {
+                Err(ManagerError::DeviceStatus(resp.sw))
+            }
         }
         unknown => Err(ManagerError::InvalidInput(format!(
             "Unknown certificates command '{unknown}'"
@@ -423,7 +465,7 @@ fn run_piv_certificates(
     }
 }
 
-/// Handles `cryptick-manager piv reset`.
+/// Handles `tickctl piv reset`.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],

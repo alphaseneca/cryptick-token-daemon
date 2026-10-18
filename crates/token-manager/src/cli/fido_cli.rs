@@ -1,12 +1,12 @@
-//! CLI subcommand handlers for `cryptick-manager fido`.
+//! CLI subcommand handlers for `tickctl fido`.
 //!
 //! Modeled on YubiKey Manager's `fido` command group as a design reference
 //! for CLI ergonomics (subcommand names, flag names/shorthand) — never
 //! user-facing, per this project's convention:
-//! - `cryptick-manager fido info`
-//! - `cryptick-manager fido reset`
-//! - `cryptick-manager fido access change-pin` / `access set-pin`
-//! - `cryptick-manager fido fingerprints list` / `add <name>` / `delete <name>`
+//! - `tickctl fido info`
+//! - `tickctl fido reset`
+//! - `tickctl fido access change-pin` / `access set-pin`
+//! - `tickctl fido fingerprints list` / `add <name>` / `delete <name>`
 //!
 //! Checked against `ykman`'s actual source (`yubikey-manager/ykman/_cli/fido.py`)
 //! rather than assumed from memory. Two differences are deliberate, not gaps
@@ -39,7 +39,7 @@ use std::time::Duration;
 
 const FIDO_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Handles all `cryptick-manager fido ...` subcommands.
+/// Handles all `tickctl fido ...` subcommands.
 pub fn handle_fido_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -59,15 +59,15 @@ pub fn handle_fido_command(
         "access" => run_fido_access(transport, &args[1..]),
         "fingerprints" | "bio" => run_fido_fingerprints(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown fido subcommand '{unknown}'. Run 'cryptick-manager fido --help' for available commands."
+            "Unknown fido subcommand '{unknown}'. Run 'tickctl fido --help' for available commands."
         ))),
     }
 }
 
-/// Prints `cryptick-manager fido --help` usage text.
+/// Prints `tickctl fido --help` usage text.
 pub fn print_fido_help() {
     println!(
-        "Usage: cryptick-manager fido [COMMAND] [OPTIONS]\n\n\
+        "Usage: tickctl fido [COMMAND] [OPTIONS]\n\n\
          Manage FIDO2 passkeys, PINs, and on-chip biometric fingerprints on Cryptick Token.\n\n\
          Commands:\n\
            info          Display FIDO2 / WebAuthn capabilities and security policy\n\
@@ -149,14 +149,14 @@ fn run_fido_info(
     Ok(())
 }
 
-/// Handles `cryptick-manager fido access [change-pin|set-pin]`.
+/// Handles `tickctl fido access [change-pin|set-pin]`.
 fn run_fido_access(
     _transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager fido access [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl fido access [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                change-pin   Change the FIDO2 user PIN\n\
                set-pin      Set an initial FIDO2 PIN\n\n\
@@ -241,14 +241,14 @@ fn run_fido_access(
     }
 }
 
-/// Handles `cryptick-manager fido fingerprints [list|add|delete]`.
+/// Handles `tickctl fido fingerprints [list|add|delete]`.
 fn run_fido_fingerprints(
     _transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager fido fingerprints [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl fido fingerprints [COMMAND] [OPTIONS]\n\n\
              Commands:\n\
                list       List enrolled fingerprint templates\n\
                add        Enroll a new biometric fingerprint template\n\
@@ -293,7 +293,7 @@ fn run_fido_fingerprints(
     }
 }
 
-/// Handles `cryptick-manager fido reset`.
+/// Handles `tickctl fido reset`.
 fn run_fido_reset(
     _transport: &mut dyn TokenTransport,
     args: &[String],

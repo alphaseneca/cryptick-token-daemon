@@ -1,4 +1,4 @@
-//! Typed error type for `cryptick-manager`.
+//! Typed error type for `tickctl`.
 //!
 //! PROJECT.md §20: "Typed errors with `thiserror`; no stringly-typed
 //! failures across crate lines." Every public function in this crate used
@@ -30,7 +30,7 @@
 use crate::apdu::StatusWord;
 use thiserror::Error;
 
-/// The error type returned by every fallible operation in `cryptick_manager`.
+/// The error type returned by every fallible operation in `tickctl`.
 #[derive(Debug, Error)]
 pub enum ManagerError {
     /// A caller-supplied value failed validation or parsing: a CLI

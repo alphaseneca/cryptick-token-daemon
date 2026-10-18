@@ -1,9 +1,9 @@
 //! Test suite covering CLI argument parsing, script tokenizer, and mode validation.
 
-use cryptick_manager::cli::apdu_cli::resolve_aid;
-use cryptick_manager::cli::dispatch;
-use cryptick_manager::config::DeviceMode;
-use cryptick_manager::script::{substitute_args, tokenize_line};
+use tickctl::cli::apdu_cli::resolve_aid;
+use tickctl::cli::dispatch;
+use tickctl::config::DeviceMode;
+use tickctl::script::{substitute_args, tokenize_line};
 
 #[test]
 fn test_help_and_version_flags() {

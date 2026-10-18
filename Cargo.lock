@@ -229,24 +229,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
-name = "cryptick-manager"
-version = "0.1.0"
-dependencies = [
- "base64",
- "ctap",
- "ctap-client",
- "ctaphid",
- "hidapi",
- "ipc",
- "piv",
- "proptest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
-]
-
-[[package]]
 name = "crypto-bigint"
 version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -313,6 +295,7 @@ dependencies = [
  "transport-ble",
  "vpcd",
  "vpicc-piv",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1370,6 +1353,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.5",
+]
+
+[[package]]
+name = "tickctl"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "ctap",
+ "ctap-client",
+ "ctaphid",
+ "hidapi",
+ "ipc",
+ "piv",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
 ]
 
 [[package]]

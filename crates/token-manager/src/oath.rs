@@ -106,7 +106,7 @@ pub fn authenticate_session(
         rem_key
     } else {
         return Err(ManagerError::InvalidInput(
-            "OATH application is password-protected. Provide the password using '-p, --password <PASS>' or run 'cryptick-manager oath access remember'.".to_string(),
+            "OATH application is password-protected. Provide the password using '-p, --password <PASS>' or run 'tickctl oath access remember'.".to_string(),
         ));
     };
 
@@ -431,7 +431,7 @@ pub fn rename_account(
     Err(ManagerError::Other(
         "Cryptick Token hardware does not support modifying encrypted seeds in-place without secret seed re-entry.\n\
          Under the Zero-Trust Hardware Guarantee, seeds stored in encrypted LittleFS flash cannot be exported by the host.\n\
-         To rename, re-add the credential with the new name using 'cryptick-manager oath accounts add' or import from URI.".to_string(),
+         To rename, re-add the credential with the new name using 'tickctl oath accounts add' or import from URI.".to_string(),
     ))
 }
 

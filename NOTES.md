@@ -230,7 +230,7 @@ pre-existing bug, independent of anything in this task's brief — the exact
 failure mode PROJECT.md §20 already has a cautionary tale about
 (`ble-framing`'s `0x06`/`ERR_BUSY` mistake):
 
-| Constant | This crate had | Actually (verified against CTAP2.1 §8.2.3 / Yubico's `python-fido2` reference / this firmware's own `ctap_errors.h`) | What was really at that byte |
+| Constant | This crate had | Actually (verified against CTAP2.1 §8.2 / Yubico's `python-fido2` reference / this firmware's own `ctap_errors.h`) | What was really at that byte |
 |---|---|---|---|
 | `KEEPALIVE_CANCEL` | `0x2e` | `0x2d` | `0x2e` is `CTAP2_ERR_NO_CREDENTIALS` |
 | `USER_ACTION_TIMEOUT` | `0x30` | `0x2f` | `0x30` is `CTAP2_ERR_NOT_ALLOWED` |
@@ -336,7 +336,7 @@ stop rotating the BLE identity signal across epochs.
   `webauthn-host`'s `list_devices` handler accounts for this by unioning the
   daemon's BLE list with its own live USB scan (`UsbClient::try_connect`)
   rather than pretending the daemon can see something it structurally can't.
-  `cryptick-manager devices` does the identical union for CLI/GUI parity.
+  `tickctl devices` does the identical union for CLI/GUI parity.
 - `crates/ipc`: new `ClientMessage::ListDevices`/`SelectDevice{id}` (wire key
   `deviceId`, not `id` — colliding with `Envelope`'s own correlation `id`
   under `#[serde(flatten)]` was the first thing tried, and
@@ -355,7 +355,7 @@ stop rotating the BLE identity signal across epochs.
   no-op on select — nothing to switch to, and must not require a daemon that
   may not be running).
 - `crates/token-manager`: `DaemonTransport::list_devices`/`select_device`,
-  new `cryptick-manager devices [list|select <id>]` subcommand
+  new `tickctl devices [list|select <id>]` subcommand
   (`cli/devices_cli.rs`), dispatched alongside `list`/`script` in
   `cli/mod.rs` as not needing an active hardware connection. Same union logic
   as `webauthn-host`, kept in sync deliberately rather than each inventing
@@ -364,7 +364,7 @@ stop rotating the BLE identity signal across epochs.
 ### What "active" currently guarantees — read before assuming more
 
 `select_device` updates the store's `active_id` immediately (and persists
-it), and `ListDevices`/`cryptick-manager devices list` reflect that right
+it), and `ListDevices`/`tickctl devices list` reflect that right
 away. For a BLE id, it does **not** hot-retarget an already-open
 `ReconnectingBleTransport` connection live — that struct's `target_device` is
 captured once at `spawn()` time. A live switch takes effect on the daemon's
@@ -558,13 +558,13 @@ Windows machine with a bonded device to add and test.
 `cryptick-daemon run` returned `Unsupported: "Daemon IPC listener is not yet
 supported on this platform"` unconditionally on Windows — not a bug in some
 feature, the *entire* Mechanism 2 (host-assisted BLE bridge: SSH, the
-WebAuthn native host, cryptick-manager's wireless OATH/FIDO/PIV commands) was
+WebAuthn native host, tickctl's wireless OATH/FIDO/PIV commands) was
 nonfunctional there. Worse, two of the three client crates for that same IPC
 channel — `sk-middleware` (the OpenSSH SK provider cdylib — PROJECT.md §10
 explicitly cites Windows precedent for this exact shape) and `webauthn-host`
 — held a bare `std::os::unix::net::UnixStream` field with no `#[cfg(unix)]`
 anywhere in the file. That is a **hard compile failure on Windows**, not a
-missing feature; `cryptick-manager`'s equivalent was at least correctly
+missing feature; `tickctl`'s equivalent was at least correctly
 gated, just stubbed to an error.
 
 Fixed, all compile-verified against the real `x86_64-pc-windows-msvc` target
@@ -578,7 +578,7 @@ build needs real Windows SDK headers this sandbox doesn't have):
   `unix::IpcListener`'s shape closely enough that `serve_connection` (generic
   over any `AsyncRead + AsyncWrite`) runs unmodified. `main.rs`'s
   `live_main`/`fake_main` now use it instead of returning `Unsupported`.
-- `sk-middleware`, `webauthn-host`, and `cryptick-manager` all gained a
+- `sk-middleware`, `webauthn-host`, and `tickctl` all gained a
   `windows_pipe::PipeStream` (duplicated per crate, matching this codebase's
   existing pattern of duplicating the small USB CTAPHID framing shim across
   the same three crates rather than sharing a dependency). Named pipes are
@@ -632,13 +632,13 @@ PROJECT.md §14 CI config asks for even though the committed `.github/
 workflows/ci.yml` doesn't set that env var). Specifically:
 
 - **Found and fixed a severe, unrelated issue while auditing**:
-  `cryptick-manager`'s help text, usage strings, and error messages said
+  `tickctl`'s help text, usage strings, and error messages said
   `ykman` throughout (e.g. `"Usage: ykman fido [COMMAND] [OPTIONS]"`), and
   `tools/cryptick` exposed a literal `cryptick ykman` subcommand. Worse,
   `tools/install.sh` and `tools/cryptick` referenced a `cryptick-ykman`
   package that was never defined in any `Cargo.toml` — a preexisting dead
   reference — and `install.sh` installed a file literally named `ykman`
-  onto the user's `PATH`. All of this is now `cryptick-manager`
+  onto the user's `PATH`. All of this is now `tickctl`
   (`cryptick ykman` → `cryptick manage`); the internal doc comments noting
   this CLI studies YubiKey Manager's command-set conventions as a design
   reference are left alone since they never surface to a user. Marked as a
@@ -650,7 +650,7 @@ workflows/ci.yml` doesn't set that env var). Specifically:
 - Fixed the real §20 unwrap()/expect()-outside-tests violations in
   `daemon/` (see §2 above). `sk-middleware/` had none.
 - Fixed every clippy warning the workspace actually had (all in
-  `cryptick-manager`, `sk-middleware`, `webauthn-host` — `daemon`,
+  `tickctl`, `sk-middleware`, `webauthn-host` — `daemon`,
   `transport-ble`, `ble-framing`, `piv`, `vpcd`, `ipc`, `ctap*` were already
   clean): `op_ref`, `unnecessary_unwrap`, `needless_range_loop`,
   `manual_is_multiple_of`, `explicit_counter_loop`, `vec_init_then_push`,
@@ -1401,7 +1401,7 @@ items — fewer than the critic's ~11 estimate, likely because several
 others already had doc comments from earlier passes — all `print_*_help()`
 functions across `cli/{mod,config_cli,fido_cli,oath_cli,piv_cli}.rs`.
 Documented each with a one-line doc comment naming the command it prints
-help for. `cargo check -p cryptick-manager --lib` is clean under the new
+help for. `cargo check -p tickctl --lib` is clean under the new
 lint.
 
 ## ykman CLI-parity audit
@@ -1476,7 +1476,7 @@ diverging):
   `enable-ep-attestation`) group. Both need real CTAP2
   `credentialManagement`/`authenticatorConfig` wiring (PIN/UV auth
   tokens) that lives in `ctap-client::cred_mgmt` + `webauthn-host` today,
-  not in `cryptick-manager`. Building a CLI surface here with no backing
+  not in `tickctl`. Building a CLI surface here with no backing
   implementation would be worse than the gap.
 - No `-P/--pin` on `fido fingerprints list/add/delete`. PROJECT.md §17
   records this device's UV as the on-chip fingerprint sensor
@@ -1503,11 +1503,11 @@ diverging):
   COUNTER`, arbitrary-object import/export/attestation) were never
   written. This is missing lower-layer functionality, not a CLI naming or
   flag mismatch — out of scope for a conventions/parity pass to build.
-- `cryptick-manager info`'s `-c/--check` and `-s/--serial` are this
+- `tickctl info`'s `-c/--check` and `-s/--serial` are this
   crate's own flags, not copied from ykman: real `ykman info` takes only
   `-c, --check-fips` (checks for a real, distinct FIPS-certified YubiKey
   hardware variant). Copying that literally would be actively wrong on
-  hardware with no FIPS variant; `cryptick-manager`'s `-c/--check` means
+  hardware with no FIPS variant; `tickctl`'s `-c/--check` means
   something unrelated and harmless ("is a token reachable at all").
   `list -s/--serials` does match ykman's `list` exactly, confirmed against
   `ykman/_cli/__main__.py`.
@@ -1522,7 +1522,7 @@ diverging):
 (neither `fido_cli.rs` nor `piv_cli.rs`, the two modules whose doc comments
 actually claimed ykman parity) has a `usb -k/--lock-code` where real
 ykman's `config usb`/`nfc` use capital `-L` (lowercase `-l` is `--list` in
-both, so there's no internal collision in cryptick-manager, just a
+both, so there's no internal collision in tickctl, just a
 naming mismatch against ykman). Did not change this: `config_cli.rs` never
 carried the "complete ykman parity" claim the critic's finding and this
 task were about, and `config mode`'s preset-based design (`FIDO+OATH+PIV`,
@@ -1532,11 +1532,11 @@ budget to chase down against the actual `config.py` source in this pass.
 
 ## Verification
 
-- `cargo check -p cryptick-manager --all-targets`, `cargo check -p piv
+- `cargo check -p tickctl --all-targets`, `cargo check -p piv
   --all-targets`, `cargo check -p webauthn-host --all-targets`, and
   `cargo check --workspace --all-targets` all clean at every step of this
   pass (not just at the end).
-- `cargo test -p cryptick-manager --lib --bins --tests`: all passing,
+- `cargo test -p tickctl --lib --bins --tests`: all passing,
   including the new `is_hidden_account` test and the two updated
   `devices_cli` tests.
 - `cargo build --workspace --all-targets`: clean.
@@ -1547,3 +1547,137 @@ budget to chase down against the actual `config.py` source in this pass.
   could not run either; relied on `cargo check`'s type/borrow checking and
   manual review for style instead. Flagging this rather than claiming a
   clippy-clean pass I could not actually run.
+
+---
+
+# Agent pass — consuming the new firmware device identity
+
+## 0. What changed, and why this note exists
+
+"Device identity — the honest answer" above (and §17 of PROJECT.md) was
+accurate when written: there was no firmware-populated identity at all.
+That is no longer true. `cryptick-token-code` now exposes a factory-unique
+`"CT-XXXXXXXXXXXX"` string (eFuse base MAC) on both transports — USB
+`iSerialNumber` (commit `e53868b`, already landed before this pass started)
+and a new BLE characteristic added alongside this pass
+(`daemonSerialNumber`, `FBF6EB85-...`, on the existing Daemon Bridge
+service — see that repo's NOTES.md, "BLE device identity"). This pass wires
+the daemon, `tickctl`, and `webauthn-host` to use it. The section
+above is left as-is rather than rewritten, because it documents what was
+actually true at the time and *why* the best-effort key existed in the
+first place — only now there's a better answer available on top of it, not
+instead of it: the best-effort key is still exactly what every call site
+falls back to when the new identity can't be read (older firmware, an
+unbonded link, a malformed read).
+
+## 1. What's built
+
+- **`crates/ipc/src/lib.rs`**: `DeviceInfo` gains `verified: bool`
+  (`#[serde(default)]`) — whether `id` is the real hardware identity rather
+  than the old best-effort key. `PROTOCOL_VERSION` bumped 2→3 (§20: "An IPC
+  message shape change is a breaking change"), with the
+  `a_future_version_is_reported_as_a_version_error` test rewritten to
+  compute its "future" version from `PROTOCOL_VERSION + 1` instead of a
+  literal — the literal it had (`3`) would have silently stopped testing
+  anything the moment this bump landed, which is exactly the kind of test
+  rot that's easy to miss in review.
+- **`crates/daemon/src/devices.rs`**: `record_seen`/`StoredDevice`/
+  `KnownDevice` all gain a `verified` bool, threaded through
+  (`#[serde(default)]` on the stored form, so an old `known_devices.json`
+  with no such field still loads — `false`, correctly). The module's own
+  "no stable identity" doc comment is rewritten to describe what's
+  actually true now, not left stale. Deliberately *not* done: automatically
+  merging a newly-verified row with whatever best-effort row used to
+  represent the same physical unit. That would be inferring "these are the
+  same device," which is exactly the kind of guess §15.8 rules out — the
+  two stay distinct rows; see the doc comment on `record_seen` for how
+  `active` status still transfers correctly across that transition anyway.
+- **`crates/daemon/src/transport.rs`**: `read_verified_identity()` reads
+  the new BLE characteristic by UUID string compare (deliberately not a
+  `transport_ble::` constant — see its doc comment: that crate had its own
+  concurrent work landing in this exact file and `transport-ble/src/lib.rs`
+  during this pass, so adding to it was both out of scope and an avoidable
+  collision risk) right after every successful connect, in both the
+  periodic reconnect path and `SelectDevice`'s hot-retarget path, and
+  clears it on disconnect. `LiveRetarget` gains a defaulted
+  `verified_identity()` method so no other implementor (today there is
+  exactly one, but the trait doesn't assume that) needs to change to keep
+  compiling.
+- **`crates/daemon/src/server.rs`**: `ListDevices` now prefers
+  `retarget.verified_identity()` over the stored `active_id` when present,
+  and calls `set_active` on the newly-verified id so the UI's "active" flag
+  follows the live connection rather than getting stuck on the superseded
+  best-effort row.
+- **`crates/token-manager/src/transport/usb.rs`**: nothing to change —
+  `UsbTransport::list_devices`/`UsbDeviceInfo::serial` already read
+  whatever `hidapi` reports, so the firmware fix alone made this path
+  correct with zero code changes here. Only its *caller*
+  (`devices_cli.rs`) was collapsing every result to one synthetic `"usb"`
+  row regardless of what `serial` said.
+- **`crates/token-manager/src/cli/devices_cli.rs`**: `collect_devices` now
+  reports one row per distinct USB serial (falling back to the old
+  synthetic `"usb"` row only for devices that report none), help text
+  rewritten to match, `run_select` generalized to recognize a real USB
+  serial the same way it already recognized the literal `"usb"` id.
+- **`crates/webauthn-host/src/usb.rs`**: new `list_devices()` —
+  non-connecting `hidapi` enumeration mirroring
+  `token-manager`'s, since this crate had no equivalent before
+  (`UsbClient::try_connect` only ever opens one device, which is enough to
+  decide "is a token present" but not "how many distinct ones").
+  `crates/webauthn-host/src/main.rs`'s `handle_list_devices`/
+  `handle_select_device`/`DeviceOut` follow the identical pattern to
+  `devices_cli.rs`'s, deliberately kept in sync per that handler's own doc
+  comment about not inventing a second merge rule. `DeviceOut` gains
+  `verified` — additive only, so the extension's existing
+  `loadDevices`/`renderDevicePicker` (`popup.js`) is unaffected; nobody on
+  that side had to be told field order or types changed, because they
+  didn't.
+- **`PROJECT.md` §17**: the "Advertisement format and device identity" row
+  updated from open to answered, with a pointer to the firmware NOTES.md
+  entry and this one.
+
+## 2. Why BLE identity rides the Daemon Bridge service, not `0xFFFD`
+
+Decided on the firmware side (`cryptick-token-code`'s own NOTES.md has the
+full reasoning), but worth restating here since it's the reason
+`read_verified_identity` only ever needs one UUID, not a search across two
+services: PROJECT.md §19's "Non-standard secondary GATT service" dead end
+rules out a new service; the standard FIDO service (`0xFFFD`) is a closed,
+spec-defined characteristic set that generic BLE FIDO clients (not just
+this daemon) connect to, so adding a non-CTAP characteristic there would be
+both non-conformant and pointlessly visible to clients with no use for it.
+The Daemon Bridge service (`FBF6EB80-...`) is already private to this
+daemon specifically — the correct, minimal-footprint home for an identity
+primitive that exists for this daemon's benefit alone.
+
+## 3. What's verified vs. what needs real hardware
+
+**Verified:**
+- `cargo check --workspace --all-targets`: clean.
+- `cargo test --workspace --features fake-transport --lib --bins --tests`:
+  every test binary passes, 0 failures (including the daemon crate's own
+  86 lib tests, the `ipc_server`/`device_retarget` integration tests after
+  updating their `record_seen` call sites, and `tickctl`'s
+  `devices_cli` tests).
+- In `cryptick-token-code`: `pio run -e esp32-s3-n16r8` succeeds with the
+  new BLE characteristic; `tests/host`'s 306-case Python suite still
+  passes unchanged (expected — none of those cases cover the NimBLE GATT
+  glue layer this change lives in).
+
+**Needs real hardware — specifically two physical units side by side,
+which was not available for this pass:**
+- That two distinct tokens actually report two distinct `"CT-..."` strings
+  over BLE and are listed/selected as genuinely separate devices end to
+  end through `tickctl devices list`/`select` — this pass could
+  only confirm the *code path* compiles and the single-device tests still
+  pass, not the multi-device claim the whole task is ultimately about.
+- That an unbonded `btleplug` read of the new characteristic actually fails
+  at ATT with Insufficient Authentication/Encryption as designed, and
+  succeeds once bonded — `transport-ble`'s `classify_att()` already
+  recognizes those two codes for `fidoControlPoint`, but this specific
+  characteristic's gate has not been exercised against a real radio.
+- `crates/webauthn-host/src/usb.rs`'s new `list_devices()` and
+  `devices_cli.rs`'s rewritten `collect_devices()` against two physical USB
+  units plugged in simultaneously — only a single dev unit was available,
+  so the "one row per distinct serial" behavior is verified by reading the
+  code and the existing single-device tests, not by observing two rows.

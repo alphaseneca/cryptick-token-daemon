@@ -1,4 +1,4 @@
-//! CLI subcommand handlers for `cryptick-manager config`.
+//! CLI subcommand handlers for `tickctl config`.
 
 use crate::config::{
     configure_usb_applications, get_config_status, reset_config, set_lock_code, set_mode,
@@ -8,7 +8,7 @@ use crate::error::ManagerError;
 use crate::transport::TokenTransport;
 use std::io::{self, Write};
 
-/// Handles `cryptick-manager config ...` subcommands.
+/// Handles `tickctl config ...` subcommands.
 pub fn handle_config_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -24,25 +24,25 @@ pub fn handle_config_command(
             Ok(())
         }
         "mode" => run_config_mode(transport, &args[1..]),
-        "nfc" => run_config_nfc(transport, &args[1..]),
+        "ble" => run_config_ble(transport, &args[1..]),
         "reset" => run_config_reset(transport, &args[1..]),
         "set-lock-code" => run_config_set_lock_code(transport, &args[1..]),
         "usb" => run_config_usb(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown config subcommand '{unknown}'. Run 'cryptick-manager config --help' for usage."
+            "Unknown config subcommand '{unknown}'. Run 'tickctl config --help' for usage."
         ))),
     }
 }
 
-/// Prints `cryptick-manager config --help` usage text.
+/// Prints `tickctl config --help` usage text.
 pub fn print_config_help() {
     println!(
-        "Usage: cryptick-manager config [COMMAND] [OPTIONS]\n\n\
+        "Usage: tickctl config [COMMAND] [OPTIONS]\n\n\
          Configure device connection modes, USB applications, and lock codes.\n\n\
          Commands:\n\
            mode           Configure enabled connection modes (e.g. FIDO+OATH+PIV, CCID, ALL)\n\
            usb            Enable or disable individual USB applications (FIDO2, OATH, PIV)\n\
-           nfc            Inspect or configure wireless radio capabilities\n\
+           ble            Inspect the Bluetooth Low Energy radio and its GATT services\n\
            set-lock-code  Set or clear configuration lock code\n\
            reset          Reset device configuration to factory defaults\n\n\
          Options:\n\
@@ -96,19 +96,22 @@ fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
     Ok(())
 }
 
-fn run_config_nfc(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+/// Handles `tickctl config ble`.
+///
+/// This device's only wireless radio is Bluetooth Low Energy — there is no
+/// NFC hardware, so this reports the BLE GATT services directly rather than
+/// borrowing NFC vocabulary for a radio that isn't NFC. Read-only for now:
+/// nothing here can actually enable/disable one of these GATT services
+/// independently of the others, so no `-e/-d` flags are offered until that
+/// control exists.
+fn run_config_ble(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), ManagerError> {
     let _ = get_config_status(transport)?;
 
-    println!("=== Wireless & Radio Interfaces ===");
-    println!("Radio Architecture : Dual-GATT Bluetooth Low Energy (BLE 5.0)");
-    println!("Standard FIDO BLE   : Enabled (UUID 0000FFFD-0000-1000-8000-00805F9B34FB)");
-    println!("Custom Daemon Bridge: Enabled (UUID FBF6EB80-7F39-41B1-A191-9527CC42F8BE)");
-    println!("Private PIV GATT    : Enabled (UUID FBF6EB90-7F39-41B1-A191-9527CC42F8BE)");
-    println!("Hardware NFC        : Not Equipped (Cryptick Token uses Dual-GATT BLE for wireless)");
-
-    if !args.is_empty() && (args.contains(&"-e".to_string()) || args.contains(&"-d".to_string())) {
-        println!("Note: NFC commands are mapped to Cryptick's BLE radio subsystem.");
-    }
+    println!("=== Bluetooth Low Energy ===");
+    println!("Radio              : Dual-GATT BLE 5.0");
+    println!("Standard FIDO GATT : Enabled (UUID 0000FFFD-0000-1000-8000-00805F9B34FB)");
+    println!("Daemon Bridge GATT : Enabled (UUID FBF6EB80-7F39-41B1-A191-9527CC42F8BE)");
+    println!("Private PIV GATT   : Enabled (UUID FBF6EB90-7F39-41B1-A191-9527CC42F8BE)");
     Ok(())
 }
 

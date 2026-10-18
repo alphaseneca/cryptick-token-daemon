@@ -34,7 +34,7 @@ echo ""
 
 # 1. Build release binaries
 echo "--> Compiling release binaries and middleware..."
-cargo build --release -p daemon -p piv -p transport-ble -p sk-middleware -p webauthn-host -p cryptick-manager
+cargo build --release -p daemon -p piv -p transport-ble -p sk-middleware -p webauthn-host -p tickctl
 
 mkdir -p "$BIN_DIR" "$LIB_DIR"
 
@@ -48,11 +48,11 @@ fi
 
 # 2. Copy binaries (remove existing first to allocate fresh inodes on macOS)
 echo "--> Installing executables to $BIN_DIR..."
-rm -f "$BIN_DIR/cryptick-daemon" "$BIN_DIR/cryptick-piv" "$BIN_DIR/cryptick-manager" "$BIN_DIR/ble-probe" "$BIN_DIR/ble-ctap" "$BIN_DIR/cryptick-webauthn-host" "$BIN_DIR/cryptick"
+rm -f "$BIN_DIR/cryptick-daemon" "$BIN_DIR/cryptick-piv" "$BIN_DIR/tickctl" "$BIN_DIR/ble-probe" "$BIN_DIR/ble-ctap" "$BIN_DIR/cryptick-webauthn-host" "$BIN_DIR/cryptick"
 cp -f "$ROOT/target/release/cryptick-daemon" "$BIN_DIR/"
 cp -f "$ROOT/target/release/cryptick-piv" "$BIN_DIR/"
-if [ -f "$ROOT/target/release/cryptick-manager" ]; then
-    cp -f "$ROOT/target/release/cryptick-manager" "$BIN_DIR/"
+if [ -f "$ROOT/target/release/tickctl" ]; then
+    cp -f "$ROOT/target/release/tickctl" "$BIN_DIR/"
 fi
 cp -f "$ROOT/target/release/ble-probe" "$BIN_DIR/"
 cp -f "$ROOT/target/release/ble-ctap" "$BIN_DIR/"
@@ -61,11 +61,11 @@ if [ -f "$ROOT/target/release/cryptick-webauthn-host" ]; then
 fi
 cp -f "$ROOT/tools/cryptick" "$BIN_DIR/cryptick"
 chmod +x "$BIN_DIR/cryptick-daemon" "$BIN_DIR/cryptick-piv" "$BIN_DIR/ble-probe" "$BIN_DIR/ble-ctap" "$BIN_DIR/cryptick"
-[ -f "$BIN_DIR/cryptick-manager" ] && chmod +x "$BIN_DIR/cryptick-manager"
+[ -f "$BIN_DIR/tickctl" ] && chmod +x "$BIN_DIR/tickctl"
 [ -f "$BIN_DIR/cryptick-webauthn-host" ] && chmod +x "$BIN_DIR/cryptick-webauthn-host"
 
 if [ "$(uname -s)" = "Darwin" ] && command -v codesign >/dev/null 2>&1; then
-    codesign -s - -f "$BIN_DIR/cryptick-daemon" "$BIN_DIR/cryptick-piv" "$BIN_DIR/cryptick-manager" "$BIN_DIR/ble-probe" "$BIN_DIR/ble-ctap" "$BIN_DIR/cryptick-webauthn-host" 2>/dev/null || true
+    codesign -s - -f "$BIN_DIR/cryptick-daemon" "$BIN_DIR/cryptick-piv" "$BIN_DIR/tickctl" "$BIN_DIR/ble-probe" "$BIN_DIR/ble-ctap" "$BIN_DIR/cryptick-webauthn-host" 2>/dev/null || true
 fi
 
 # 3. Copy middleware library

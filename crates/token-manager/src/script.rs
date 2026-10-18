@@ -1,6 +1,6 @@
-//! Batch script execution runner for `cryptick-manager script`.
+//! Batch script execution runner for `tickctl script`.
 //!
-//! Executes a file containing lines of cryptick-manager commands in sequence,
+//! Executes a file containing lines of tickctl commands in sequence,
 //! supporting comments (`#`), whitespace, quotes, and positional parameter substitution.
 
 use std::fs;

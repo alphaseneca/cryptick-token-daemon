@@ -1,4 +1,4 @@
-//! CLI subcommand handlers for `cryptick-manager oath`.
+//! CLI subcommand handlers for `tickctl oath`.
 
 use crate::access::{forget_all_keys, forget_key, remember_key};
 use crate::error::ManagerError;
@@ -28,7 +28,7 @@ fn is_hidden_account(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Handles all `cryptick-manager oath ...` subcommands.
+/// Handles all `tickctl oath ...` subcommands.
 pub fn handle_oath_command(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -48,15 +48,15 @@ pub fn handle_oath_command(
         "access" => run_oath_access(transport, &args[1..]),
         "accounts" => run_oath_accounts(transport, &args[1..]),
         unknown => Err(ManagerError::InvalidInput(format!(
-            "Unknown oath subcommand '{unknown}'. Run 'cryptick-manager oath --help' for available commands."
+            "Unknown oath subcommand '{unknown}'. Run 'tickctl oath --help' for available commands."
         ))),
     }
 }
 
-/// Prints `cryptick-manager oath --help` usage text.
+/// Prints `tickctl oath --help` usage text.
 pub fn print_oath_help() {
     println!(
-        "Usage: cryptick-manager oath [COMMAND] [OPTIONS]\n\n\
+        "Usage: tickctl oath [COMMAND] [OPTIONS]\n\n\
          Manage OATH (TOTP / HOTP) authentication on Cryptick Token.\n\n\
          Commands:\n\
            info                  Display OATH application status and configuration\n\
@@ -148,7 +148,7 @@ fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result
 fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager oath access [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl oath access [COMMAND] [OPTIONS]\n\n\
              Manage OATH application access password.\n\n\
              Commands:\n\
                change    Change or set the access password\n\
@@ -298,7 +298,7 @@ fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> R
 fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
-            "Usage: cryptick-manager oath accounts [COMMAND] [OPTIONS]\n\n\
+            "Usage: tickctl oath accounts [COMMAND] [OPTIONS]\n\n\
              Manage and generate OATH accounts on Cryptick Token.\n\n\
              Commands:\n\
                list       List all configured accounts\n\
@@ -337,7 +337,7 @@ fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Res
         match args[i].as_str() {
             "-s" | "--single" => single = true,
             // ykman: `-o, --oath-type`. `-H` is reserved for `--show-hidden`
-            // below — cryptick-manager previously had these swapped/wrong
+            // below — tickctl previously had these swapped/wrong
             // (`-H` meant `--oath-type` and there was no real hidden-account
             // filter at all).
             "-o" | "--oath-type" => {

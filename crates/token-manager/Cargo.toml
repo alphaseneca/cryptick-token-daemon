@@ -1,5 +1,5 @@
 [package]
-name = "cryptick-manager"
+name = "tickctl"
 version.workspace = true
 description = "Comprehensive Hardware Token Manager and OATH suite for Cryptick Token"
 edition.workspace = true
@@ -7,11 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "cryptick_manager"
+name = "tickctl"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cryptick-manager"
+name = "tickctl"
 path = "src/main.rs"
 
 [dependencies]

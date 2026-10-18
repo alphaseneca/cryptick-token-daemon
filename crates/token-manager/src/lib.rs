@@ -1,4 +1,4 @@
-//! Cryptick Hardware Token Manager (`cryptick-manager`) Library.
+//! Cryptick Hardware Token Manager (`tickctl`) Library.
 //!
 //! Provides a comprehensive implementation of the Cryptick Manager command suite
 //! for Cryptick Token (`0x1209:0xBEEE`), bridging USB CTAPHID and Bluetooth Low Energy

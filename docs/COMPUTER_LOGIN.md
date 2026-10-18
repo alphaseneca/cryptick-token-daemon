@@ -199,7 +199,7 @@ does not exist** — it's already implemented and wired into both
 `authenticatorMakeCredential` and `authenticatorGetAssertion`. There is no
 firmware work needed for Windows Hello.
 
-**Caveat — don't trust `cryptick-manager fido info` to verify any of this.**
+**Caveat — don't trust `tickctl fido info` to verify any of this.**
 `run_fido_info` in `crates/token-manager/src/cli/fido_cli.rs` (around lines
 102–110) prints a hardcoded capability block — `"FIDO2 protocols: CTAP 2.0,
 CTAP 2.1"`, `"Extensions: credProtect, hmac-secret, largeBlobKey,
