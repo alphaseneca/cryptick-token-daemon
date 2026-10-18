@@ -33,6 +33,11 @@ pub const INS_GENERATE_KEY_PAIR: u8 = 0x47;
 /// top-level doc comment on why this applet follows that convention
 /// instead of inventing a second one).
 pub const INS_SET_PIN_RETRIES: u8 = 0xFA;
+/// `RESET APPLICATION` (vendor, same real-world-convention reasoning as
+/// `INS_SET_PIN_RETRIES`/`INS_SET_MANAGEMENT_KEY` above — YubiKey's own
+/// byte for a full PIV factory reset). See [`reset_application`] for the
+/// gate the card enforces before accepting it.
+pub const INS_RESET_APPLICATION: u8 = 0xFB;
 /// `SET MANAGEMENT KEY` (vendor, same reasoning as `INS_SET_PIN_RETRIES`).
 pub const INS_SET_MANAGEMENT_KEY: u8 = 0xFF;
 /// AES-192, this applet's one supported management-key algorithm
@@ -266,6 +271,24 @@ pub fn set_management_key(new_key: &[u8; 24]) -> Command {
     data.push(new_key.len() as u8);
     data.extend_from_slice(new_key);
     Command::with_data(0x00, INS_SET_MANAGEMENT_KEY, 0xFF, 0xFF, data)
+}
+
+/// `RESET APPLICATION` (vendor): a full factory reset. No data field, no
+/// response data.
+///
+/// The card only accepts this once *both* the PIN and PUK retry counters
+/// are already at zero. SP 800-73 does not define this operation at all,
+/// so there is no spec text for that gate, but it is the standard
+/// real-world convention (YubiKey included): an unauthenticated party who
+/// merely holds the device must not be able to wipe it and install their
+/// own keys and certificates, and "both secrets are already unusable" is
+/// the one precondition checkable without knowing either of them. Query
+/// [`verify_retries`]/[`verify_puk_retries`] first if the caller should be
+/// told *why* before sending this and getting
+/// `SECURITY_STATUS_NOT_SATISFIED` (`6982`) back — `ctctl piv reset` does
+/// exactly that rather than surfacing the bare status word.
+pub fn reset_application() -> Command {
+    Command::case1(0x00, INS_RESET_APPLICATION, 0x00, 0x00)
 }
 
 /// The PIV card application administration ("management") key — AES-192,
@@ -812,6 +835,18 @@ mod tests {
         let ciphertext = key.encrypt_block(&plaintext);
         assert_ne!(ciphertext, plaintext, "AES-192 must not be a no-op");
         assert_eq!(key.decrypt_block(&ciphertext), plaintext);
+    }
+
+    #[test]
+    fn reset_application_is_a_bare_case_one_command() {
+        // No data field, no Le — just CLA/INS/P1/P2, the same ISO case 1
+        // shape set_pin_retries/mgmt_request_witness above already use for
+        // a command with nothing to carry.
+        let command = reset_application();
+        assert_eq!(
+            command.encode().unwrap(),
+            vec![0x00, INS_RESET_APPLICATION, 0x00, 0x00]
+        );
     }
 
     #[test]

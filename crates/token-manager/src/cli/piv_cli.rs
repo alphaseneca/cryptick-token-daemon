@@ -42,6 +42,15 @@
 //!   support") for the firmware-side design, including the management
 //!   key's default-key policy, which was a genuine product-security
 //!   decision made (and written down) rather than defaulted to silently.
+//! - **`reset` only ever sent a bare `SELECT` until this pass** — it
+//!   printed a "factory reset" success message without the firmware
+//!   having any `RESET APPLICATION` APDU to send it at all, so nothing
+//!   was ever actually wiped. Now sends `commands::reset_application()`,
+//!   gated (by the device, not merely by this CLI) on both the PIN and
+//!   PUK already being blocked — see that function's own doc comment and
+//!   `cryptick-token-code`'s NOTES.md ("PIV factory reset") for the
+//!   firmware-side design, including why that gate is flagged there as a
+//!   product decision rather than settled silently by this pass.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 use crate::error::ManagerError;
@@ -127,7 +136,7 @@ pub fn print_piv_help() {
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
-           reset         Reset PIV application data and restore default PIN/PUK\n\
+           reset         Factory-reset PIV (requires PIN and PUK already blocked)\n\
            access        Manage PIN, PUK, and management key access codes\n\
            provision     Generate and install keys and certificates (e.g. for macOS login / SSH)\n\
            certificates  Manage X.509 certificates stored in PIV slots\n\n\
@@ -910,6 +919,16 @@ fn run_piv_certificates(
 }
 
 /// Handles `ctctl piv reset`.
+///
+/// `RESET APPLICATION` (vendor, INS `0xFB`) only succeeds once the PIN and
+/// PUK are *both* already blocked — see
+/// `commands::reset_application()`'s own doc comment for why the card
+/// enforces that itself and this function does not merely decide to. This
+/// queries both counters first so an operator who still has a working PIN
+/// or PUK gets a clear explanation instead of a bare device status word;
+/// `--force` only skips the destructive-action confirmation below, never
+/// this precondition, since the precondition is a security policy the
+/// device enforces regardless of what this CLI prompts for.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],
@@ -921,8 +940,27 @@ fn run_piv_reset(
         }
     }
 
+    select_piv(transport)?;
+
+    let pin_retries = query_retries(transport, false)?;
+    let puk_retries = query_retries(transport, true)?;
+    if pin_retries > 0 || puk_retries > 0 {
+        return Err(ManagerError::InvalidInput(format!(
+            "Factory reset requires the PIN and PUK to already be blocked (0 attempts \
+             remaining on both), so holding the device is not by itself enough to wipe \
+             it and install new keys. Currently {pin_retries} PIN attempt(s) and \
+             {puk_retries} PUK attempt(s) remain. Block both first (e.g. 'ctctl piv \
+             access change-pin'/'change-puk' with the wrong value, repeated), then run \
+             'ctctl piv reset' again."
+        )));
+    }
+
     if !force {
-        print!("WARNING: This will delete all stored PIV certificates and reset PIN/PUK! Proceed? [y/N]: ");
+        print!(
+            "WARNING: PIN and PUK are both blocked. This will permanently delete every \
+             stored PIV certificate and reset the PIN, PUK, and management key to their \
+             factory defaults. This cannot be undone. Proceed? [y/N]: "
+        );
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
         io::stdin()
@@ -930,18 +968,25 @@ fn run_piv_reset(
             .map_err(|e| e.to_string())?;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Reset cancelled.");
-            Ok(())
-        } else {
-            select_piv(transport)?;
-            println!(
-                "✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678)."
-            );
-            Ok(())
+            return Ok(());
         }
-    } else {
-        select_piv(transport)?;
-        println!("✓ PIV application reset to factory defaults.");
+    }
+
+    let cmd = commands::reset_application();
+    let raw = transport.transceive(
+        0x03,
+        &cmd.encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if resp.is_success() {
+        println!(
+            "✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678)."
+        );
         Ok(())
+    } else {
+        Err(ManagerError::DeviceStatus(resp.sw))
     }
 }
 

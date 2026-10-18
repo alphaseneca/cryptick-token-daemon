@@ -1802,3 +1802,79 @@ the same protocol would have been for what it would have additionally
 caught. `cargo fmt`/`clippy` remain not installed as components in this
 sandbox, same caveat the daemon-identity pass's own note above already
 recorded.
+
+## 2026-10-18 — PIV factory reset (RESET APPLICATION)
+
+Closes the gap the PUK/management-key pass's own note above found and
+explicitly flagged rather than fixed: `run_piv_reset` sent only a plain
+`SELECT` and printed a canned "✓ PIV application reset to factory
+defaults" regardless — the same canned-success bug class fixed earlier in
+`piv certificates delete` and in `change-puk`, except this one had no
+firmware APDU to call instead until now. The firmware side (new
+`RESET APPLICATION`, vendor INS `0xFB`, gated on both the PIN and PUK
+retry counters already being at zero) is `cryptick-token-code`'s own
+change; see that repo's NOTES.md, "PIV factory reset", for the full
+design — including why the "both blocked" gate is flagged there for the
+user's sign-off rather than settled silently, the same way the
+management-key default-key policy was flagged in the prior pass.
+
+### What changed in this repo
+
+- **`crates/piv/src/commands.rs`**: `INS_RESET_APPLICATION` (`0xFB`,
+  grouped with `INS_SET_PIN_RETRIES`/`INS_SET_MANAGEMENT_KEY` and their
+  shared "vendor, not in SP 800-73" reasoning) and `reset_application()`,
+  a bare ISO case 1 command (`Command::case1`, no data field) — the
+  simplest builder in this file, matching the instruction's own wire
+  shape rather than inventing a data field SP 800-73 does not define.
+- **`crates/token-manager/src/cli/piv_cli.rs`**: `run_piv_reset` now
+  queries both retry counters (reusing `query_retries`, the same helper
+  `run_piv_info` already calls) *before* sending anything, so an operator
+  who still has a working PIN or PUK gets a specific explanation —
+  current attempt counts on each secret, and what to do about it
+  (`ctctl piv access change-pin`/`change-puk` with the wrong value,
+  repeated) — instead of a bare `SECURITY_STATUS_NOT_SATISFIED` device
+  status word. Only once both read zero does it show the existing
+  destructive-action warning (reworded to actually describe what gets
+  wiped: certificates, PIN, PUK, *and* management key — the old wording
+  predated the management key existing at all) and, on confirmation (or
+  `--force`, which skips only that confirmation, never the retry-counter
+  check — that check is the device's own security policy, not a prompt
+  this CLI can choose to skip), send `commands::reset_application()` for
+  real and report whatever status word actually came back.
+- Module doc comment updated to record this the same way the PUK/
+  management-key pass recorded its own fixes: `reset` joins the list of
+  commands that used to be hollow and are now real.
+
+### What was deliberately not touched
+
+Same scope boundary as the prior pass, restated because this one sits
+even closer to it: `piv keys`/`piv objects` (arbitrary key/data-object
+import, export, attestation) stay absent. A factory reset deletes
+whatever data objects this device's own tooling could have written —
+that is a necessary part of what "reset" means, not a step toward
+arbitrary object access — and nothing here adds any new way to read or
+write an object under a tag `ctctl` cannot already name.
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean (doctests cannot run in this sandbox — `rustdoc` is not on
+`PATH` at all here, a harder version of the "`cargo fmt`/`clippy` not
+installed" gap the prior two passes' notes already recorded, not
+something this pass's changes caused). `piv` lib: 73 tests, one new
+(`reset_application_is_a_bare_case_one_command`, checking the exact bytes
+against the command syntax the other builders' tests already check
+against). No new tests in `piv_cli.rs`'s own test module — consistent
+with that module's own comment on why it does not duplicate protocol
+coverage the firmware host suite already provides end to end against the
+real C applet (`cryptick-token-code`'s `tests/host/test_piv_apdu.py`, 11
+new cases for this exact instruction): `run_piv_reset`'s new logic is
+almost entirely "ask the transport two questions, then send one more
+command," with nothing pure enough to extract into a transport-free unit
+test the way `retries_remaining`/`fresh_challenge`/`parse_management_key`
+already are. `vpicc-piv`'s independent virtual-card implementation is
+untouched and its own 24 tests still pass — it never implemented
+`SET_MANAGEMENT_KEY`/`SET_PIN_RETRIES` either (both answer
+`SW_INS_UNSUPPORTED` there today), so adding `RESET APPLICATION` to it
+alone would have been new, inconsistent scope rather than parity with an
+existing pattern.
