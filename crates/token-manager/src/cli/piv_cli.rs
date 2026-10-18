@@ -42,6 +42,21 @@
 //!   support") for the firmware-side design, including the management
 //!   key's default-key policy, which was a genuine product-security
 //!   decision made (and written down) rather than defaulted to silently.
+//! - **`reset` only ever sent a bare `SELECT` until this pass** — it
+//!   printed a "factory reset" success message without the firmware
+//!   having any `RESET APPLICATION` APDU to send it at all, so nothing
+//!   was ever actually wiped. Now sends `commands::reset_application()`,
+//!   gated (by the device, not merely by this CLI) on a verified PIN and
+//!   nothing else — see that function's own doc comment and
+//!   `cryptick-token-code`'s NOTES.md ("PIV factory reset" and the two
+//!   entries after it) for the firmware-side design's full history: a
+//!   lockout-only gate first, relaxed to also accept a verified PIN, then
+//!   the lockout path removed entirely at the device owner's explicit
+//!   direction once it was clear that path needed no knowledge of either
+//!   secret to reach — only physical possession and a few deliberate
+//!   wrong guesses. The accepted cost, each time a deliberate product
+//!   decision rather than a bug: forgetting the PIN *and* the PUK now
+//!   leaves no way back into this device at all.
 
 use crate::apdu::{aid, format_hex, parse_hex, CommandApdu, ResponseApdu, StatusWord};
 use crate::error::ManagerError;
@@ -127,7 +142,7 @@ pub fn print_piv_help() {
          Manage PIV smart card application, slots, keys, and certificates on Cryptick Token.\n\n\
          Commands:\n\
            info          Display PIV status, PIN tries remaining, and configured slots\n\
-           reset         Reset PIV application data and restore default PIN/PUK\n\
+           reset         Factory-reset PIV (requires your current PIN; no recovery if lost)\n\
            access        Manage PIN, PUK, and management key access codes\n\
            provision     Generate and install keys and certificates (e.g. for macOS login / SSH)\n\
            certificates  Manage X.509 certificates stored in PIV slots\n\n\
@@ -910,19 +925,74 @@ fn run_piv_certificates(
 }
 
 /// Handles `ctctl piv reset`.
+///
+/// `RESET APPLICATION` (vendor, INS `0xFB`) is gated on a verified PIN and
+/// nothing else — see `commands::reset_application()`'s own doc comment.
+/// This always verifies the PIN itself before sending the reset, so a
+/// wrong PIN is reported the same specific way `access change-pin`
+/// already reports one (attempts remaining) rather than surfacing the
+/// device's bare status word. There is deliberately no lockout-recovery
+/// fallback: forgetting the PIN *and* the PUK leaves no way back into
+/// this device at all, an explicit, accepted trade recorded in
+/// `cryptick-token-code`'s NOTES.md ("RESET APPLICATION's gate...",
+/// the entry that removed the lockout path this one originally had).
+/// `--force` only skips the destructive-action confirmation below, never
+/// PIN verification — that is a security check, not a prompt this CLI
+/// can choose to skip.
 fn run_piv_reset(
     transport: &mut dyn TokenTransport,
     args: &[String],
 ) -> Result<(), ManagerError> {
     let mut force = false;
-    for arg in args {
-        if arg == "-f" || arg == "--force" {
-            force = true;
+    let mut pin = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "-f" | "--force" => force = true,
+            "-P" | "--pin" => {
+                i += 1;
+                if i < args.len() {
+                    pin = Some(args[i].clone());
+                }
+            }
+            _ => {}
         }
+        i += 1;
+    }
+
+    select_piv(transport)?;
+
+    let pin = match pin {
+        Some(p) => p,
+        None => prompt_secret("Enter current PIN: ")?,
+    };
+    let verify_cmd = commands::verify_pin(pin.as_bytes())
+        .map_err(|e| ManagerError::InvalidInput(format!("Invalid PIN format: {e}")))?;
+    let raw = transport.transceive(
+        0x03,
+        &verify_cmd
+            .encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if !resp.is_success() {
+        return if let Some(left) = retries_remaining(resp.sw) {
+            Err(ManagerError::InvalidInput(format!(
+                "Wrong PIN; {left} attempt(s) remaining before it blocks. Nothing was \
+                 reset."
+            )))
+        } else {
+            Err(ManagerError::DeviceStatus(resp.sw))
+        };
     }
 
     if !force {
-        print!("WARNING: This will delete all stored PIV certificates and reset PIN/PUK! Proceed? [y/N]: ");
+        print!(
+            "WARNING: this will permanently delete every stored PIV certificate and \
+             reset the PIN, PUK, and management key to their factory defaults. This \
+             cannot be undone. Proceed? [y/N]: "
+        );
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
         io::stdin()
@@ -930,18 +1000,25 @@ fn run_piv_reset(
             .map_err(|e| e.to_string())?;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Reset cancelled.");
-            Ok(())
-        } else {
-            select_piv(transport)?;
-            println!(
-                "✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678)."
-            );
-            Ok(())
+            return Ok(());
         }
-    } else {
-        select_piv(transport)?;
-        println!("✓ PIV application reset to factory defaults.");
+    }
+
+    let cmd = commands::reset_application();
+    let raw = transport.transceive(
+        0x03,
+        &cmd.encode()
+            .map_err(|e| ManagerError::InvalidInput(e.to_string()))?,
+        PIV_TIMEOUT,
+    )?;
+    let resp = ResponseApdu::parse(&raw)?;
+    if resp.is_success() {
+        println!(
+            "✓ PIV application reset to factory defaults (Default PIN: 123456, PUK: 12345678)."
+        );
         Ok(())
+    } else {
+        Err(ManagerError::DeviceStatus(resp.sw))
     }
 }
 

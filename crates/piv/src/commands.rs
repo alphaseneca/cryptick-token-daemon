@@ -33,6 +33,11 @@ pub const INS_GENERATE_KEY_PAIR: u8 = 0x47;
 /// top-level doc comment on why this applet follows that convention
 /// instead of inventing a second one).
 pub const INS_SET_PIN_RETRIES: u8 = 0xFA;
+/// `RESET APPLICATION` (vendor, same real-world-convention reasoning as
+/// `INS_SET_PIN_RETRIES`/`INS_SET_MANAGEMENT_KEY` above — YubiKey's own
+/// byte for a full PIV factory reset). See [`reset_application`] for the
+/// gate the card enforces before accepting it.
+pub const INS_RESET_APPLICATION: u8 = 0xFB;
 /// `SET MANAGEMENT KEY` (vendor, same reasoning as `INS_SET_PIN_RETRIES`).
 pub const INS_SET_MANAGEMENT_KEY: u8 = 0xFF;
 /// AES-192, this applet's one supported management-key algorithm
@@ -266,6 +271,34 @@ pub fn set_management_key(new_key: &[u8; 24]) -> Command {
     data.push(new_key.len() as u8);
     data.extend_from_slice(new_key);
     Command::with_data(0x00, INS_SET_MANAGEMENT_KEY, 0xFF, 0xFF, data)
+}
+
+/// `RESET APPLICATION` (vendor): a full factory reset. No data field, no
+/// response data.
+///
+/// The card accepts this once the PIN has already been verified this
+/// session ([`verify_pin`], sent first — the same bar
+/// [`generate_key_pair`] already accepts for an operation that likewise
+/// destroys certificates already issued) and rejects it otherwise. SP
+/// 800-73 does not define this operation at all, so there is no spec
+/// text for that gate, but an unauthenticated party who merely holds the
+/// device still cannot wipe it and install their own keys and
+/// certificates without proving something the device itself checks.
+/// `ctctl piv reset` always sends [`verify_pin`] first, so the operator
+/// gets a specific "wrong PIN" or "N attempts remaining" message rather
+/// than a bare `SECURITY_STATUS_NOT_SATISFIED` (`6982`) from this command
+/// itself.
+///
+/// Deliberately has no PIN-free lockout-recovery path (an earlier version
+/// of this function also accepted both the PIN and PUK retry counters
+/// already being at zero). That path was removed: reaching "both zero"
+/// needs no knowledge of either secret, only physical possession and a
+/// few deliberate wrong guesses, so it was reachable by anyone holding
+/// the device, not only its legitimate owner. The accepted cost: an
+/// owner who forgets the PIN *and* the PUK has no way back into this
+/// device at all.
+pub fn reset_application() -> Command {
+    Command::case1(0x00, INS_RESET_APPLICATION, 0x00, 0x00)
 }
 
 /// The PIV card application administration ("management") key — AES-192,
@@ -812,6 +845,18 @@ mod tests {
         let ciphertext = key.encrypt_block(&plaintext);
         assert_ne!(ciphertext, plaintext, "AES-192 must not be a no-op");
         assert_eq!(key.decrypt_block(&ciphertext), plaintext);
+    }
+
+    #[test]
+    fn reset_application_is_a_bare_case_one_command() {
+        // No data field, no Le — just CLA/INS/P1/P2, the same ISO case 1
+        // shape set_pin_retries/mgmt_request_witness above already use for
+        // a command with nothing to carry.
+        let command = reset_application();
+        assert_eq!(
+            command.encode().unwrap(),
+            vec![0x00, INS_RESET_APPLICATION, 0x00, 0x00]
+        );
     }
 
     #[test]

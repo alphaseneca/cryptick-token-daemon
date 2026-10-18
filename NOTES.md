@@ -1805,3 +1805,169 @@ the same protocol would have been for what it would have additionally
 caught. `cargo fmt`/`clippy` remain not installed as components in this
 sandbox, same caveat the daemon-identity pass's own note above already
 recorded.
+
+## 2026-10-18 — PIV factory reset (RESET APPLICATION)
+
+Closes the gap the PUK/management-key pass's own note above found and
+explicitly flagged rather than fixed: `run_piv_reset` sent only a plain
+`SELECT` and printed a canned "✓ PIV application reset to factory
+defaults" regardless — the same canned-success bug class fixed earlier in
+`piv certificates delete` and in `change-puk`, except this one had no
+firmware APDU to call instead until now. The firmware side (new
+`RESET APPLICATION`, vendor INS `0xFB`, gated on both the PIN and PUK
+retry counters already being at zero) is `cryptick-token-code`'s own
+change; see that repo's NOTES.md, "PIV factory reset", for the full
+design — including why the "both blocked" gate is flagged there for the
+user's sign-off rather than settled silently, the same way the
+management-key default-key policy was flagged in the prior pass.
+
+### What changed in this repo
+
+- **`crates/piv/src/commands.rs`**: `INS_RESET_APPLICATION` (`0xFB`,
+  grouped with `INS_SET_PIN_RETRIES`/`INS_SET_MANAGEMENT_KEY` and their
+  shared "vendor, not in SP 800-73" reasoning) and `reset_application()`,
+  a bare ISO case 1 command (`Command::case1`, no data field) — the
+  simplest builder in this file, matching the instruction's own wire
+  shape rather than inventing a data field SP 800-73 does not define.
+- **`crates/token-manager/src/cli/piv_cli.rs`**: `run_piv_reset` now
+  queries both retry counters (reusing `query_retries`, the same helper
+  `run_piv_info` already calls) *before* sending anything, so an operator
+  who still has a working PIN or PUK gets a specific explanation —
+  current attempt counts on each secret, and what to do about it
+  (`ctctl piv access change-pin`/`change-puk` with the wrong value,
+  repeated) — instead of a bare `SECURITY_STATUS_NOT_SATISFIED` device
+  status word. Only once both read zero does it show the existing
+  destructive-action warning (reworded to actually describe what gets
+  wiped: certificates, PIN, PUK, *and* management key — the old wording
+  predated the management key existing at all) and, on confirmation (or
+  `--force`, which skips only that confirmation, never the retry-counter
+  check — that check is the device's own security policy, not a prompt
+  this CLI can choose to skip), send `commands::reset_application()` for
+  real and report whatever status word actually came back.
+- Module doc comment updated to record this the same way the PUK/
+  management-key pass recorded its own fixes: `reset` joins the list of
+  commands that used to be hollow and are now real.
+
+### What was deliberately not touched
+
+Same scope boundary as the prior pass, restated because this one sits
+even closer to it: `piv keys`/`piv objects` (arbitrary key/data-object
+import, export, attestation) stay absent. A factory reset deletes
+whatever data objects this device's own tooling could have written —
+that is a necessary part of what "reset" means, not a step toward
+arbitrary object access — and nothing here adds any new way to read or
+write an object under a tag `ctctl` cannot already name.
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean (doctests cannot run in this sandbox — `rustdoc` is not on
+`PATH` at all here, a harder version of the "`cargo fmt`/`clippy` not
+installed" gap the prior two passes' notes already recorded, not
+something this pass's changes caused). `piv` lib: 73 tests, one new
+(`reset_application_is_a_bare_case_one_command`, checking the exact bytes
+against the command syntax the other builders' tests already check
+against). No new tests in `piv_cli.rs`'s own test module — consistent
+with that module's own comment on why it does not duplicate protocol
+coverage the firmware host suite already provides end to end against the
+real C applet (`cryptick-token-code`'s `tests/host/test_piv_apdu.py`, 11
+new cases for this exact instruction): `run_piv_reset`'s new logic is
+almost entirely "ask the transport two questions, then send one more
+command," with nothing pure enough to extract into a transport-free unit
+test the way `retries_remaining`/`fresh_challenge`/`parse_management_key`
+already are. `vpicc-piv`'s independent virtual-card implementation is
+untouched and its own 24 tests still pass — it never implemented
+`SET_MANAGEMENT_KEY`/`SET_PIN_RETRIES` either (both answer
+`SW_INS_UNSUPPORTED` there today), so adding `RESET APPLICATION` to it
+alone would have been new, inconsistent scope rather than parity with an
+existing pattern.
+
+## 2026-10-19 — RESET APPLICATION's gate, relaxed per explicit product direction
+
+The firmware pass's own NOTES.md entry above flagged the lockout-only gate
+(both PIN and PUK already blocked) as a product decision worth the
+device's owner's sign-off, not an engineering call to settle silently. The
+owner's answer: this device is for personal macOS login, and requiring a
+deliberate 6-attempt lockout before a reset is reachable at all is more
+friction than they want — "proper security but not that hard." See that
+repo's NOTES.md entry of the same name for the full design; this entry
+covers only the daemon-side follow-up.
+
+### What changed in this repo
+
+`run_piv_reset` now queries both retry counters as before, but only
+treats "neither is already zero" as a reason to ask for the PIN rather
+than refusing outright. When at least one secret still works, it sends
+`commands::verify_pin()` itself before the reset, accepting either a
+`-P`/`--pin` flag (consistent with every other `access` subcommand's
+flag-parsing pattern) or an interactive prompt. A wrong PIN here is
+reported the same specific way `access change-pin` already reports one —
+"N attempts remaining" via `retries_remaining`, not the device's bare
+`SECURITY_STATUS_NOT_SATISFIED` — and the reset is not attempted. Only
+once a secret is actually confirmed usable does this function move on to
+the existing destructive-action warning and, on confirmation (or
+`--force`, unchanged in scope — it still skips only that confirmation,
+never PIN verification), send `reset_application()` for real.
+
+When both counters already read zero, the PIN prompt is skipped entirely
+and this function goes straight to the warning and the reset — the
+original lockout-recovery path from the prior entry, untouched.
+
+`crates/piv/src/commands.rs`'s `reset_application()` doc comment was
+updated to describe both gate paths instead of only the lockout one; the
+function's own wire shape (`Command::case1`, no data) did not change.
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean, same doctest-toolchain caveat as every entry above
+(`rustdoc` is not on `PATH` in this sandbox). No new Rust unit tests —
+same reasoning as the prior entry: `run_piv_reset`'s branches are still
+almost entirely "ask the transport a question, maybe send one more
+command before the real one," and the branch this pass added is
+exercised end to end by `cryptick-token-code`'s own host suite (4 new
+cases there cover the verified-PIN path directly, including that it is
+genuinely independent of PUK state and that it does not survive a later
+failed VERIFY).
+
+## 2026-10-19 — RESET APPLICATION's lockout-recovery path, removed per explicit product direction
+
+The firmware pass's own NOTES.md entry of this same name explains why:
+the "both PIN and PUK retry counters at zero" branch the prior entry's
+`run_piv_reset` relied on to skip the PIN prompt needed no knowledge of
+either secret to reach, only six deliberate wrong guesses — reachable by
+anyone holding the device, not a real recovery path restricted to its
+owner. The device's owner, personal macOS login being the only use case
+that matters here, chose to remove it rather than keep a reset path
+physical possession alone eventually opens regardless of who is holding
+the device.
+
+### What changed in this repo
+
+`run_piv_reset` no longer queries either retry counter or conditionally
+skips the PIN prompt. It always sends `commands::verify_pin()` first —
+via `-P`/`--pin` or an interactive prompt — and refuses to proceed past a
+failed verify, same error reporting as before (`retries_remaining` for a
+wrong PIN, not the device's bare status word). `commands::reset_application()`'s
+doc comment was updated to describe the single remaining gate and record
+why the second path was removed rather than just quietly dropped.
+
+### What this costs, stated plainly
+
+An owner who forgets the PIN *and* the PUK now has no way to reset this
+device via `ctctl`. That is the direct, accepted cost — there is no
+narrower fix that keeps "recoverable from losing both secrets" without
+also keeping "wipeable by anyone who merely finds or steals the device,"
+since the two shared the exact same mechanism (both counters reaching
+zero needs no secret, just willingness to fail six times on purpose).
+
+### Verification
+
+`cargo build --workspace` and `cargo test --workspace --lib --bins
+--tests` clean (same doctest-toolchain caveat as every entry above). No
+Rust unit tests added or removed — `run_piv_reset`'s shape (ask the
+transport a question, send one more command) is unchanged by this
+simplification, and the behavior change itself is pinned down on the
+firmware side, where it is actually enforced
+(`test_reset_application_has_no_lockout_recovery_path`, `cryptick-token-
+code`'s host suite).
