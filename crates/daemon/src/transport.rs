@@ -34,6 +34,15 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(3);
 /// that has already succeeded — see `attempt_piv_connect`.
 const PIV_CONNECT_TIMEOUT: Duration = Duration::from_secs(12);
 
+/// How long [`read_verified_identity`]'s single characteristic read gets.
+/// Short — it is one GATT read on a connection that has already completed
+/// discovery, not a multi-step negotiation — but it is not optional: every
+/// other BLE operation in this loop is bounded for exactly the stated
+/// reason that one bad attempt must not wedge the whole reconnect/retarget
+/// task indefinitely, and an unbounded `peripheral.read().await` here was
+/// the one place that reasoning didn't actually reach.
+const IDENTITY_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How often the loop polls link state (and drains a pending retarget
 /// request) while the connection looks healthy. Equal to
 /// [`transport_ble::INITIAL_BACKOFF`] on purpose: detecting a *new*
@@ -99,7 +108,10 @@ async fn read_verified_identity(peripheral: &Peripheral) -> Option<String> {
         .characteristics()
         .into_iter()
         .find(|c| c.uuid.to_string() == DAEMON_SERIAL_NUMBER_UUID)?;
-    let raw = peripheral.read(&chr).await.ok()?;
+    let raw = tokio::time::timeout(IDENTITY_READ_TIMEOUT, peripheral.read(&chr))
+        .await
+        .ok()?
+        .ok()?;
     let text = std::str::from_utf8(&raw).ok()?.trim();
     is_stable_serial_format(text).then(|| text.to_string())
 }
@@ -652,12 +664,18 @@ async fn handle_retarget_request(
         let mut w = inner.write().await;
         *w = Some(new_transport);
     }
+    // Cleared here, before the read below, not after it: `inner` above
+    // already points at the new physical unit, and read_verified_identity
+    // is a real GATT round trip, not instantaneous. A caller of
+    // verified_identity() during that window — ListDevices in
+    // particular — must see "unknown" rather than the *previous* target's
+    // identity now misattributed to this connection. Same reasoning as the
+    // periodic-reconnect branch's own clear-before-adopting above.
+    *verified_id.lock().unwrap_or_else(|e| e.into_inner()) = None;
     connected.store(true, Ordering::SeqCst);
     bonded.store(true, Ordering::SeqCst);
     authenticated.store(true, Ordering::SeqCst);
     connecting.store(false, Ordering::SeqCst);
-    // Replaces whatever identity (if any) the previous connection reported —
-    // this is a different physical unit's connection now.
     *verified_id.lock().unwrap_or_else(|e| e.into_inner()) =
         read_verified_identity(&peripheral).await;
     // A fresh, confirmed-good connection is up under the new target — the

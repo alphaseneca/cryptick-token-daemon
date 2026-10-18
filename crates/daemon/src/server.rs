@@ -728,9 +728,10 @@ pub mod windows {
 
     impl Drop for ScopedHandle {
         fn drop(&mut self) {
-            // SAFETY: the only constructors of this type are the two call
-            // sites below, each wrapping a handle a successful `OpenProcess`
-            // or `OpenProcessToken` just produced. The type is not `Clone`,
+            // SAFETY: the only constructors of this type are the three call
+            // sites below (current_user_sid's and client_user_sid's two),
+            // each wrapping a handle a successful `OpenProcess` or
+            // `OpenProcessToken` just produced. The type is not `Clone`,
             // so the handle is closed here and nowhere else.
             unsafe { CloseHandle(self.0) };
         }
