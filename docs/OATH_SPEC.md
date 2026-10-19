@@ -81,41 +81,51 @@ Calculates the current OTP code for a specified account label.
   00 A2 00 00 1A 71 0C 47 69 74 48 75 62 3A 61 6C 69 63 65 74 08 00 00 00 00 03 89 D4 B0
   ```
 - **Response Payload**:
-  - `Tag 0x75` (`TAG_RESPONSE`): 4-byte big-endian integer representing the full 6-digit decimal code.
-  - `Tag 0x78` (`TAG_PROPERTY`): 1-byte integer indicating the remaining validity seconds in the current 30-second window.
+  - `Tag 0x75` (`TAG_RESPONSE`), length 5: a digit-count byte (always `6`)
+    followed by a 4-byte big-endian integer holding the full decimal code.
+    There is no separate "remaining validity seconds" field in the
+    response — the 30-second window is fixed and known to the caller, so
+    `webauthn-host` computes it host-side from wall-clock time
+    (`30 - (now % 30)`) rather than reading it off the wire.
 - **Response Example**:
   ```text
-  75 04 00 0C DB E7 78 01 16 90 00
+  75 05 06 00 0C DB E7 90 00
   ```
-  *(Code value: `0x000CDBE7` = `842727`, remaining: 22 seconds, SW: `90 00`)*
+  *(digits: 6, code value: `0x000CDBE7` = `842727`, SW: `90 00`)*
 
 ---
 
 ### 3.3 `INS 0x01` — ENROLL ACCOUNT (PUT)
-Enrolls a new TOTP secret seed onto the hardware token.
+Enrolls a new TOTP secret seed onto the hardware token. Verified directly
+against `src/host/cryptick_oath_hid.cpp`'s `OATH_INS_PUT` handler.
 
 - **Request Payload**:
-  - `Tag 0x71` (`TAG_NAME`): Account name string (e.g. `AWS:prod-admin`).
-  - `Tag 0x73` (`TAG_KEY`): Algorithm identifier byte + raw binary secret seed:
-    - Algorithm byte `0x11`: HMAC-SHA1, 6 digits, 30s period.
-    - Algorithm byte `0x21`: HMAC-SHA256, 6 digits, 30s period.
-  - `Tag 0x78` (`TAG_PROPERTY`): Flags:
-    - Bit 0 (`0x01`): Require User Verification (biometric / touch) to calculate.
+  - `Tag 0x71` (`TAG_NAME`): Account name string (1-64 bytes, e.g.
+    `AWS:prod-admin`).
+  - `Tag 0x73` (`TAG_KEY`): three parts, in order — a type/algorithm byte,
+    a digit-count byte, then the raw secret seed (1-64 bytes):
+    - Type/algorithm byte: `0x21` is the only value this firmware accepts
+      (`& 0x0F == 0x01` for SHA1, `& 0xF0 == 0x20` for TOTP — a YKOATH-style
+      encoding, not a flat algorithm ID). HMAC-SHA256 is not implemented;
+      any other value is refused with `0x69 0x85`.
+    - Digit count: must be exactly `6`; any other value is refused with
+      `0x69 0x85`.
 - **Token Processing**:
-  - Encrypts seed under token master key using hardware AES-256-GCM.
-  - Writes record to `/oath/<sha256_hash>.bin` in LittleFS.
-  - Answers `0x90 0x00`.
+  - All accounts live in one AES-256-GCM-encrypted JSON file
+    (`/totp_config.json` in LittleFS, `CONFIG_FILE` in `board_config.h`) —
+    not one file per account.
+  - Answers `0x90 0x00`, or `0x6A 0x84` if the token has no space left.
 
 ---
 
-### 3.4 `INS 0x03` — DELETE ACCOUNT
+### 3.4 `INS 0x02` — DELETE ACCOUNT
 Permanently deletes an account seed from flash.
 
 - **Request Payload**:
   - `Tag 0x71` (`TAG_NAME`): Account label to delete.
 - **Token Processing**:
-  - Erases flash sector and zeroes key material.
-  - Answers `0x90 0x00`.
+  - Removes the account from `/totp_config.json` and rewrites it.
+  - Answers `0x90 0x00`, or `0x6A 0x82` if the name isn't found.
 
 ---
 
@@ -130,14 +140,24 @@ Synchronizes the token's internal hardware Real-Time Clock (RTC) with host UTC t
 
 ## 4. TLV Tag Dictionary
 
+Checked against `src/host/cryptick_oath_hid.cpp`'s actual tag constants and
+handlers — not every tag this document previously listed is real. `0x76`
+(`TAG_TRUNCATED`) and `0x78` (`TAG_PROPERTY`) do not exist anywhere in the
+firmware; removed rather than left as unverifiable claims.
+
 | Tag Value | Tag Constant | Length | Description |
 |---|---|---|---|
 | `0x71` | `TAG_NAME` | 1–64 bytes | UTF-8 account identifier (e.g. `Issuer:account@domain`). |
-| `0x73` | `TAG_KEY` | 11–65 bytes | Algorithm byte (`0x11` / `0x21`) followed by 10–64 byte secret seed. |
+| `0x73` | `TAG_KEY` | 3–66 bytes | Type/algorithm byte (`0x21`, see §3.3) + digit-count byte (`6`) + 1–64 byte secret seed. |
 | `0x74` | `TAG_CHALLENGE` | 8 bytes | Big-endian 64-bit integer (time-step counter or epoch seconds). |
-| `0x75` | `TAG_RESPONSE` | 4 bytes | Big-endian 32-bit integer representing the calculated OTP code. |
-| `0x76` | `TAG_TRUNCATED` | 4 bytes | Truncated decimal OTP format. |
-| `0x78` | `TAG_PROPERTY` | 1 byte | Account property flags (Bit 0: Touch Required) or remaining seconds. |
+| `0x75` | `TAG_RESPONSE` | 5 bytes | Digit-count byte (`6`) + big-endian 32-bit integer holding the calculated OTP code. |
+
+There is also `INS 0x40` (`OATH_INS_PUT_OTPAUTH`), undocumented until now:
+enrolls directly from a raw `otpauth://...` URI (no TLV wrapping, body is
+the URI bytes verbatim, max 400). The token parses the name, algorithm and
+secret itself. Not used by this repo's own clients (`UsbClient::oath_enroll`
+builds the explicit TAG_NAME/TAG_KEY form above instead), but real and
+available to any client that wants to hand over a URI unparsed.
 
 ---
 
