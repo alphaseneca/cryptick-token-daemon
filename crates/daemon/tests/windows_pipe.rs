@@ -38,14 +38,17 @@ use std::{
     },
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use windows_sys::Win32::{
-    Foundation::{LocalFree, ERROR_SUCCESS, HANDLE, HLOCAL},
-    Security::{
-        Authorization::{
-            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-            SE_KERNEL_OBJECT,
+use windows_sys::{
+    core::PWSTR,
+    Win32::{
+        Foundation::{LocalFree, ERROR_SUCCESS, HANDLE, HLOCAL},
+        Security::{
+            Authorization::{
+                ConvertSecurityDescriptorToStringSecurityDescriptorW, ConvertSidToStringSidW,
+                ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
+            },
+            DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID,
         },
-        DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     },
 };
 
@@ -116,6 +119,59 @@ fn dacl_of(handle: HANDLE) -> String {
     sddl
 }
 
+/// Converts an SDDL account token - a canonical `S-1-...` SID string, or one
+/// of SDDL's short aliases such as `LA` - to its canonical numeric SID
+/// string.
+///
+/// `ConvertSecurityDescriptorToStringSecurityDescriptorW` renders a SID using
+/// its alias whenever the SID matches one of SDDL's well-known constants
+/// (RID 500, the built-in Administrator account, renders as `LA`), which is
+/// exactly what a cloud CI runner's own account commonly is. The ACE still
+/// names only the daemon's own user; only its *spelling* differs, so this
+/// normalizes both sides to the same form before they're compared.
+fn canonical_sid(token: &str) -> String {
+    let wide: Vec<u16> = token.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut sid: PSID = std::ptr::null_mut();
+    // SAFETY: `wide` is NUL-terminated UTF-16 and outlives the call; `sid` is
+    // a live out-param, freed below.
+    let ok = unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) };
+    assert_ne!(ok, 0, "not a SID or a recognized SDDL alias: {token}");
+
+    let mut raw: PWSTR = std::ptr::null_mut();
+    // SAFETY: `sid` was just produced above and is still valid; `raw` is a
+    // live out-param receiving a LocalAlloc'd string, freed below.
+    let ok = unsafe { ConvertSidToStringSidW(sid, &mut raw) };
+    assert_ne!(ok, 0, "could not re-render the SID as a string");
+
+    // SAFETY: `raw` is a NUL-terminated UTF-16 string owned by us until the
+    // `LocalFree` calls below, which are the documented deallocators.
+    let s = unsafe {
+        let mut len = 0usize;
+        while *raw.add(len) != 0 {
+            len += 1;
+        }
+        let s = String::from_utf16_lossy(std::slice::from_raw_parts(raw, len));
+        LocalFree(raw as HLOCAL);
+        LocalFree(sid as HLOCAL);
+        s
+    };
+    s
+}
+
+/// The account token (SID or alias) named by a single-ACE DACL of the form
+/// `D:P(A;;RIGHTS;;;TOKEN)`.
+fn ace_account_token(sddl: &str) -> &str {
+    let inner = sddl
+        .split('(')
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .unwrap_or_else(|| panic!("not a single-ACE SDDL string: {sddl}"));
+    inner
+        .rsplit(';')
+        .next()
+        .unwrap_or_else(|| panic!("empty ACE: {sddl}"))
+}
+
 #[tokio::test]
 async fn a_request_round_trips_over_a_real_pipe() {
     let path = scratch_pipe();
@@ -184,8 +240,12 @@ async fn the_pipe_grants_access_only_to_the_daemons_own_user() {
 
     let sddl = dacl_of(client.as_raw_handle() as HANDLE);
 
-    assert!(
-        sddl.contains(&owner),
+    // Compare canonical SIDs rather than raw substrings: the kernel may
+    // render the ACE's account using an SDDL alias (e.g. `LA`) instead of
+    // `owner`'s numeric form even though it names the exact same SID.
+    assert_eq!(
+        canonical_sid(ace_account_token(&sddl)),
+        owner,
         "the daemon's own user must be granted access: {sddl}"
     );
 
@@ -235,7 +295,7 @@ async fn a_second_instance_carries_the_same_restriction() {
         .expect("connect to the second instance");
 
     let sddl = dacl_of(second.as_raw_handle() as HANDLE);
-    assert!(sddl.contains(&owner), "{sddl}");
+    assert_eq!(canonical_sid(ace_account_token(&sddl)), owner, "{sddl}");
     for wide_open in [";WD)", ";AU)", ";BU)", ";BA)", ";AN)", "S-1-1-0"] {
         assert!(
             !sddl.contains(wide_open),
