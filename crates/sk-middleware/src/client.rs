@@ -42,6 +42,7 @@ mod windows_pipe {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    #[derive(Debug)]
     pub struct PipeStream {
         writer: File,
         rx: mpsc::Receiver<io::Result<Vec<u8>>>,
