@@ -34,6 +34,10 @@ enum HostRequest {
     TotpList,
     #[serde(rename = "totp_code")]
     TotpCode(TotpCodeRequest),
+    #[serde(rename = "totp_add")]
+    TotpAdd(TotpAddRequest),
+    #[serde(rename = "totp_delete")]
+    TotpDelete(TotpDeleteRequest),
     #[serde(rename = "sync_time")]
     SyncTime,
     #[serde(rename = "list_credentials")]
@@ -53,6 +57,19 @@ struct SelectDeviceRequest {
 
 #[derive(Debug, Deserialize)]
 struct TotpCodeRequest {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TotpAddRequest {
+    name: String,
+    /// Base32-encoded secret, same string form `otpauth://` URIs and setup
+    /// pages hand a user -- decoded on this side, never on the extension's.
+    secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TotpDeleteRequest {
     name: String,
 }
 
@@ -872,6 +889,129 @@ fn handle_totp_code(name: &str, counter: u64) -> Result<String, String> {
     parse_oath_code(&resp.data)
 }
 
+/// Decodes an RFC 4648 Base32 string into raw bytes: case-insensitive,
+/// tolerant of spaces/hyphens (how a human types or pastes a secret) and
+/// `=` padding (stops there, same as unpadded input). Matches
+/// `token-manager`'s `otpauth::decode_base32`; kept as a second, tiny copy
+/// here rather than pulling in a dependency between these two separate
+/// binaries for one ~30-line function.
+fn decode_base32(input: &str) -> Result<Vec<u8>, String> {
+    let mut clean = String::with_capacity(input.len());
+    for c in input.chars() {
+        if c.is_whitespace() || c == '-' {
+            continue;
+        }
+        if c == '=' {
+            break;
+        }
+        clean.push(c.to_ascii_uppercase());
+    }
+    if clean.is_empty() {
+        return Err("secret is empty".into());
+    }
+
+    let mut out = Vec::new();
+    let mut buffer = 0u64;
+    let mut bits_left = 0u32;
+    for c in clean.chars() {
+        let val = match c {
+            'A'..='Z' => (c as u8 - b'A') as u64,
+            '2'..='7' => (c as u8 - b'2' + 26) as u64,
+            _ => return Err(format!("invalid Base32 character: '{c}'")),
+        };
+        buffer = (buffer << 5) | val;
+        bits_left += 5;
+        if bits_left >= 8 {
+            bits_left -= 8;
+            out.push(((buffer >> bits_left) & 0xFF) as u8);
+        }
+    }
+    Ok(out)
+}
+
+/// `INS 0x01` / `OATH_INS_PUT` -- see `UsbClient::oath_enroll`'s doc
+/// comment for the on-wire TLV shape this mirrors exactly (the BLE path
+/// has no separate native type for this, so it is built by hand here too).
+fn build_oath_enroll_apdu(name: &str, secret: &[u8]) -> Vec<u8> {
+    let name_bytes = name.as_bytes();
+    let mut data = Vec::with_capacity(2 + name_bytes.len() + 2 + 2 + secret.len());
+    data.push(0x71);
+    data.push(name_bytes.len() as u8);
+    data.extend_from_slice(name_bytes);
+    data.push(0x73);
+    data.push((2 + secret.len()) as u8);
+    data.push(0x21);
+    data.push(6);
+    data.extend_from_slice(secret);
+
+    let mut apdu = vec![0x00, 0x01, 0x00, 0x00, data.len() as u8];
+    apdu.extend_from_slice(&data);
+    apdu
+}
+
+fn handle_totp_add(name: &str, secret_b32: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.as_bytes().len() > 64 {
+        return Err("account name must be 1-64 bytes".into());
+    }
+    let secret = decode_base32(secret_b32)?;
+    if secret.is_empty() || secret.len() > 64 {
+        return Err("secret seed must be 1-64 bytes once decoded".into());
+    }
+
+    // Both PUT and DELETE wait for a fingerprint touch whenever this device
+    // has one enrolled (CRYPTICK_OATH_REQUIRE_FP, SECURITY_ROADMAP.md) --
+    // the same UV ceremony CALCULATE already waits 25s for above, confirmed
+    // directly against real hardware: a 5s timeout here was too short to
+    // ever complete that ceremony and failed every time on a device with a
+    // fingerprint enrolled, not because the APDU was wrong.
+    if let Some(mut usb) = UsbClient::try_connect() {
+        return usb
+            .oath_enroll(name, &secret, Duration::from_secs(25))
+            .map_err(|e| e.to_string());
+    }
+
+    let mut client = DaemonClient::connect(Duration::from_millis(500))
+        .map_err(|e| format!("Token not on USB and Daemon unreachable: {e}"))?;
+    let apdu = build_oath_enroll_apdu(name, &secret);
+    let req = ctap::Request::new(ctap::Command(0xE3), apdu);
+    let resp = client
+        .transact(&req, Duration::from_secs(25))
+        .map_err(|e| format!("{e}"))?;
+    parse_oath_sw(&resp.data)
+}
+
+fn build_oath_delete_apdu(name: &str) -> Vec<u8> {
+    let name_bytes = name.as_bytes();
+    let mut data = vec![0x71, name_bytes.len() as u8];
+    data.extend_from_slice(name_bytes);
+    let mut apdu = vec![0x00, 0x02, 0x00, 0x00, data.len() as u8];
+    apdu.extend_from_slice(&data);
+    apdu
+}
+
+fn handle_totp_delete(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.as_bytes().len() > 64 {
+        return Err("account name must be 1-64 bytes".into());
+    }
+
+    if let Some(mut usb) = UsbClient::try_connect() {
+        return usb
+            .oath_delete(name, Duration::from_secs(25))
+            .map_err(|e| e.to_string());
+    }
+
+    let mut client = DaemonClient::connect(Duration::from_millis(500))
+        .map_err(|e| format!("Token not on USB and Daemon unreachable: {e}"))?;
+    let apdu = build_oath_delete_apdu(name);
+    let req = ctap::Request::new(ctap::Command(0xE3), apdu);
+    let resp = client
+        .transact(&req, Duration::from_secs(25))
+        .map_err(|e| format!("{e}"))?;
+    parse_oath_sw(&resp.data)
+}
+
 fn build_oath_set_time_apdu(utc_secs: u64) -> Vec<u8> {
     let ts = (utc_secs as u32).to_be_bytes();
     let mut apdu = vec![0x00, 0x04, 0x00, 0x00, 0x04];
@@ -1223,11 +1363,7 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                 // uphold beyond calling it.
                 let uid = unsafe { libc::getuid() };
                 let _ = std::process::Command::new("launchctl")
-                    .args([
-                        "kickstart",
-                        "-k",
-                        &format!("gui/{uid}/com.cryptick.daemon"),
-                    ])
+                    .args(["kickstart", "-k", &format!("gui/{uid}/com.cryptick.daemon")])
                     .output();
             }
             #[cfg(target_os = "linux")]
@@ -1253,6 +1389,14 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                 r
             }
             Err(e) => HostResponse::error(format!("TOTP list failed: {e}")),
+        },
+        Ok(HostRequest::TotpAdd(req)) => match handle_totp_add(&req.name, &req.secret) {
+            Ok(()) => HostResponse::ok(),
+            Err(e) => HostResponse::error(format!("Could not add account: {e}")),
+        },
+        Ok(HostRequest::TotpDelete(req)) => match handle_totp_delete(&req.name) {
+            Ok(()) => HostResponse::ok(),
+            Err(e) => HostResponse::error(format!("Could not delete account: {e}")),
         },
         Ok(HostRequest::TotpCode(req)) => {
             let now = std::time::SystemTime::now()
@@ -1501,5 +1645,65 @@ mod tests {
         } else {
             println!("No USB token connected; skipping hardware test");
         }
+    }
+
+    /// Real round trip against real hardware: enroll a throwaway account,
+    /// confirm it lists and calculates a 6-digit code, then delete it and
+    /// confirm it's actually gone. Self-skips with no device connected --
+    /// but unlike the other hardware tests here, PUT/DELETE both wait on
+    /// this device's UV ceremony whenever a fingerprint is enrolled
+    /// (confirmed on real hardware: up to the full 25s CRYPTICK_OATH_UV_
+    /// TIMEOUT_MS before failing with no touch). That makes this one
+    /// `#[ignore]`d rather than part of the normal suite: a machine with
+    /// the device connected but nobody at the keyboard would otherwise
+    /// fail (or hang for 25s) on every `cargo test`. Run explicitly with
+    /// `cargo test -- --ignored test_usb_device_oath_enroll` and touch the
+    /// sensor when prompted.
+    #[test]
+    #[ignore]
+    fn test_usb_device_oath_enroll_calculate_delete_round_trip() {
+        let Some(mut usb) = UsbClient::try_connect() else {
+            println!("No USB token connected; skipping hardware test");
+            return;
+        };
+
+        const NAME: &str = "ctctl-test:oath-enroll-roundtrip";
+        // RFC 6238 Appendix B's own 20-byte SHA1 test seed, "12345678901234567890".
+        let secret = decode_base32("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ").unwrap();
+        assert_eq!(secret, b"12345678901234567890");
+
+        // Clean up first in case a previous run of this test was interrupted
+        // before reaching its own cleanup below.
+        let _ = usb.oath_delete(NAME, Duration::from_secs(30));
+
+        println!("Enrolling -- if this device has a fingerprint enrolled, touch the sensor now");
+        usb.oath_enroll(NAME, &secret, Duration::from_secs(30))
+            .expect("enroll ok");
+
+        let accounts = usb.oath_list(Duration::from_secs(2)).expect("list ok");
+        assert!(
+            accounts.contains(&NAME.to_string()),
+            "enrolled account missing from list: {accounts:?}"
+        );
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let code = usb
+            .oath_calculate(NAME, now / 30, Duration::from_secs(10))
+            .expect("calculate ok");
+        assert_eq!(code.len(), 6, "expected a 6-digit code, got {code:?}");
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+
+        usb.oath_delete(NAME, Duration::from_secs(5))
+            .expect("delete ok");
+        let accounts = usb.oath_list(Duration::from_secs(2)).expect("list ok");
+        assert!(
+            !accounts.contains(&NAME.to_string()),
+            "deleted account still listed: {accounts:?}"
+        );
+
+        println!("OATH enroll/calculate/delete round trip ok, code={code}");
     }
 }

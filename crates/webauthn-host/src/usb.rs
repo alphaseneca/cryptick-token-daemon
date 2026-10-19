@@ -162,9 +162,7 @@ impl UsbClient {
             }
         };
         if resp.len() < 19 || resp[4] != 0x86 || resp[7..15] != nonce {
-            return Err(UsbError::Handshake(
-                "invalid CTAPHID_INIT response".into(),
-            ));
+            return Err(UsbError::Handshake("invalid CTAPHID_INIT response".into()));
         }
 
         let mut cid = [0u8; 4];
@@ -408,6 +406,105 @@ impl UsbClient {
         Err(UsbError::Protocol(
             "invalid OATH CALCULATE response format".into(),
         ))
+    }
+
+    /// Enrolls a new TOTP account (`INS 0x01` / `OATH_INS_PUT`).
+    ///
+    /// `secret` is the raw, already-decoded seed -- base32 decoding is the
+    /// caller's job, same layering `oath_calculate` already has for its own
+    /// challenge bytes. Verified directly against this device's firmware
+    /// (`src/host/cryptick_oath_hid.cpp`'s `OATH_INS_PUT` handler), not
+    /// against the OATH_SPEC.md doc this disagreed with before being
+    /// checked on real hardware:
+    ///
+    /// - The key TLV's value is `[type_algo][digits][secret bytes...]` --
+    ///   three leading structural bytes, not one. `type_algo` must satisfy
+    ///   `& 0x0F == 0x01` (SHA1) and `& 0xF0 == 0x20` (TOTP): `0x21` is the
+    ///   only accepted value, so it is hardcoded here rather than exposed
+    ///   as a parameter nothing can meaningfully vary. `digits` must be
+    ///   exactly `6`; anything else is `SW_CONDITIONS` (0x6985).
+    /// - The secret itself has no documented minimum -- the firmware only
+    ///   rejects empty (0) or over `OATH_MAX_SECRET` (64) bytes.
+    /// - There is no per-account UV/touch-required flag at enrollment: the
+    ///   firmware's `OATH_INS_PUT` handler never reads a TAG_PROPERTY at
+    ///   all. UV gating is the global `CRYPTICK_OATH_REQUIRE_FP` policy
+    ///   (SECURITY_ROADMAP.md) -- on whenever any fingerprint is enrolled,
+    ///   for every account alike -- not something a caller can set per
+    ///   account, so this function takes no such parameter either.
+    pub fn oath_enroll(
+        &mut self,
+        name: &str,
+        secret: &[u8],
+        timeout: Duration,
+    ) -> Result<(), UsbError> {
+        let name_bytes = name.as_bytes();
+        if name_bytes.is_empty() || name_bytes.len() > 64 {
+            return Err(UsbError::Protocol("account name must be 1-64 bytes".into()));
+        }
+        if secret.is_empty() || secret.len() > 64 {
+            return Err(UsbError::Protocol(
+                "secret seed must be 1-64 bytes once decoded".into(),
+            ));
+        }
+
+        let mut data = Vec::with_capacity(2 + name_bytes.len() + 2 + 2 + secret.len());
+        // TAG_NAME = 0x71
+        data.push(0x71);
+        data.push(name_bytes.len() as u8);
+        data.extend_from_slice(name_bytes);
+        // TAG_KEY = 0x73: type_algo (TOTP|SHA1 = 0x21), digits (6), seed.
+        data.push(0x73);
+        data.push((2 + secret.len()) as u8);
+        data.push(0x21);
+        data.push(6);
+        data.extend_from_slice(secret);
+
+        let mut apdu = vec![0x00, 0x01, 0x00, 0x00, data.len() as u8];
+        apdu.extend_from_slice(&data);
+
+        let resp = self.transact_raw(0x63, &apdu, timeout)?;
+        if resp.len() < 2 {
+            return Err(UsbError::Protocol("short OATH response".into()));
+        }
+        let sw = u16::from_be_bytes([resp[resp.len() - 2], resp[resp.len() - 1]]);
+        if sw != 0x9000 {
+            if sw == 0x6A84 {
+                return Err(UsbError::Protocol("no space for another account".into()));
+            }
+            return Err(UsbError::Protocol(format!(
+                "OATH ENROLL returned error {sw:#06x}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Deletes an account (`INS 0x02` / `OATH_INS_DELETE`): just TAG_NAME,
+    /// no key material -- the firmware's handler takes nothing else.
+    pub fn oath_delete(&mut self, name: &str, timeout: Duration) -> Result<(), UsbError> {
+        let name_bytes = name.as_bytes();
+        if name_bytes.is_empty() || name_bytes.len() > 64 {
+            return Err(UsbError::Protocol("account name must be 1-64 bytes".into()));
+        }
+        let mut data = vec![0x71, name_bytes.len() as u8];
+        data.extend_from_slice(name_bytes);
+
+        let mut apdu = vec![0x00, 0x02, 0x00, 0x00, data.len() as u8];
+        apdu.extend_from_slice(&data);
+
+        let resp = self.transact_raw(0x63, &apdu, timeout)?;
+        if resp.len() < 2 {
+            return Err(UsbError::Protocol("short OATH response".into()));
+        }
+        let sw = u16::from_be_bytes([resp[resp.len() - 2], resp[resp.len() - 1]]);
+        if sw != 0x9000 {
+            if sw == 0x6A82 {
+                return Err(UsbError::Protocol("account not found on token".into()));
+            }
+            return Err(UsbError::Protocol(format!(
+                "OATH DELETE returned error {sw:#06x}"
+            )));
+        }
+        Ok(())
     }
 
     pub fn oath_set_time(&mut self, utc_secs: u64, timeout: Duration) -> Result<(), UsbError> {
