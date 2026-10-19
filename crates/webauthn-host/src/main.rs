@@ -178,10 +178,6 @@ struct HostResponse {
     clock_synced: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "timeOffsetSecs")]
     time_offset_secs: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "tzOffsetMins")]
-    tz_offset_mins: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none", rename = "tzOffsetStr")]
-    tz_offset_str: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "relyingParties")]
     relying_parties: Option<Vec<RelyingPartyOut>>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "totalCredentials")]
@@ -256,8 +252,6 @@ impl HostResponse {
             clock_utc: None,
             clock_synced: None,
             time_offset_secs: None,
-            tz_offset_mins: None,
-            tz_offset_str: None,
             relying_parties: None,
             total_credentials: None,
             remaining_slots: None,
@@ -296,40 +290,12 @@ impl HostResponse {
             clock_utc: None,
             clock_synced: None,
             time_offset_secs: None,
-            tz_offset_mins: None,
-            tz_offset_str: None,
             relying_parties: None,
             total_credentials: None,
             remaining_slots: None,
             devices: None,
         }
     }
-}
-
-fn get_local_tz_offset() -> (i32, String) {
-    // SAFETY: `libc::time` with a null `time_t*` out-pointer has no output
-    // parameter to write through; it only returns the current time by
-    // value, so there is no buffer for the call to misuse.
-    let t = unsafe { libc::time(std::ptr::null_mut()) };
-    // SAFETY: `libc::tm` is a plain C struct of integers; the all-zero bit
-    // pattern is a valid (if not yet meaningful) value for every field, and
-    // `localtime_r` below fully populates it before it's read.
-    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-    // SAFETY: `&t` and `&mut tm` are both valid, live, non-overlapping
-    // pointers to correctly-sized objects (a `time_t` and a `libc::tm`),
-    // which is everything `localtime_r` requires of its two out-parameters.
-    unsafe { libc::localtime_r(&t, &mut tm) };
-    #[cfg(unix)]
-    let offset_secs = tm.tm_gmtoff;
-    #[cfg(not(unix))]
-    let offset_secs = 0;
-
-    let offset_mins = (offset_secs / 60) as i32;
-    let sign = if offset_secs >= 0 { '+' } else { '-' };
-    let abs_secs = offset_secs.abs();
-    let hours = abs_secs / 3600;
-    let mins = (abs_secs % 3600) / 60;
-    (offset_mins, format!("UTC{}{:02}:{:02}", sign, hours, mins))
 }
 
 fn check_usb_device() -> bool {
@@ -1274,8 +1240,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
             let usb_ctaphid = UsbClient::try_connect().is_some();
             let usb_serial_present = check_usb_device();
 
-            let (tz_mins, tz_str) = get_local_tz_offset();
-
             if usb_ctaphid {
                 let elapsed = t0.elapsed().as_millis().max(1) as u64;
                 let mut r = HostResponse::ok();
@@ -1288,8 +1252,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                 r.clock_utc = Some(now_utc);
                 r.clock_synced = Some(true);
                 r.time_offset_secs = Some(0);
-                r.tz_offset_mins = Some(tz_mins);
-                r.tz_offset_str = Some(tz_str);
                 r
             } else {
                 match DaemonClient::connect(Duration::from_millis(300)) {
@@ -1310,8 +1272,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                             r.clock_utc = Some(now_utc);
                             r.clock_synced = Some(in_range);
                             r.time_offset_secs = Some(0);
-                            r.tz_offset_mins = Some(tz_mins);
-                            r.tz_offset_str = Some(tz_str);
                             if usb_serial_present {
                                 r.message = Some(
                                     "USB device detected in bootloader mode (0x303A:0x1001)".into(),
@@ -1326,8 +1286,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                             r.transport = Some("none".into());
                             r.clock_utc = Some(now_utc);
                             r.time_offset_secs = Some(0);
-                            r.tz_offset_mins = Some(tz_mins);
-                            r.tz_offset_str = Some(tz_str);
                             if usb_serial_present {
                                 r.message = Some(
                                     "USB device detected in bootloader mode (0x303A:0x1001)".into(),
@@ -1343,8 +1301,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                         r.transport = Some("offline".into());
                         r.clock_utc = Some(now_utc);
                         r.time_offset_secs = Some(0);
-                        r.tz_offset_mins = Some(tz_mins);
-                        r.tz_offset_str = Some(tz_str);
                         if usb_serial_present {
                             r.message =
                                 Some("USB device in bootloader mode and daemon unreachable".into());
@@ -1412,9 +1368,6 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                     r.code = Some(code);
                     r.remaining = Some(remaining);
                     r.clock_utc = Some(now);
-                    let (tz_mins, tz_str) = get_local_tz_offset();
-                    r.tz_offset_mins = Some(tz_mins);
-                    r.tz_offset_str = Some(tz_str);
                     r
                 }
                 Err(e) => HostResponse::error(format!("TOTP calculate failed: {e}")),
@@ -1425,18 +1378,15 @@ fn handle_request(msg_bytes: &[u8], stdout_lock: &Mutex<()>) -> HostResponse {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            let (tz_mins, tz_str) = get_local_tz_offset();
             match handle_sync_time(now) {
                 Ok(()) => {
                     let mut r = HostResponse::ok();
                     r.message = Some(format!(
-                        "Hardware RTC and soft clock synchronized to UTC {now} ({tz_str})"
+                        "Hardware RTC and soft clock synchronized to UTC {now}"
                     ));
                     r.clock_utc = Some(now);
                     r.clock_synced = Some(true);
                     r.time_offset_secs = Some(0);
-                    r.tz_offset_mins = Some(tz_mins);
-                    r.tz_offset_str = Some(tz_str);
                     r
                 }
                 Err(e) => HostResponse::error(format!("Time sync failed: {e}")),
