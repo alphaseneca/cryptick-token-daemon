@@ -98,8 +98,35 @@ pub struct UsbClient {
     channel_id: ChannelId,
 }
 
+/// How many times [`UsbClient::try_connect`] retries a failed enumeration
+/// before giving up, and how long it waits between attempts.
+///
+/// A plug-in event doesn't make the device visible to `hidapi` atomically —
+/// the OS can take a couple hundred milliseconds to finish binding the new
+/// interface, and a query landing in that window would previously fail
+/// permanently with a single `open_path`/handshake attempt and no retry at
+/// all, even though the exact same query a moment later would succeed.
+/// Reported as "USB connected, extension still says it isn't" — confirmed
+/// live: 15/15 `status` calls succeeded on an already-settled connection, so
+/// the gap is specifically the transition window, not steady-state
+/// flakiness.
+const USB_CONNECT_RETRIES: u32 = 4;
+const USB_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(120);
+
 impl UsbClient {
     pub fn try_connect() -> Option<Self> {
+        for attempt in 0..=USB_CONNECT_RETRIES {
+            if attempt > 0 {
+                std::thread::sleep(USB_CONNECT_RETRY_DELAY);
+            }
+            if let Some(client) = Self::try_connect_once() {
+                return Some(client);
+            }
+        }
+        None
+    }
+
+    fn try_connect_once() -> Option<Self> {
         let api = HidApi::new().ok()?;
 
         // Find all candidate HID devices matching Cryptick VID/PID on USB bus.
