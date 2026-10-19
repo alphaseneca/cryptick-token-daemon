@@ -102,10 +102,7 @@ pub fn print_fido_help() {
 /// see this device's firmware (`core/fido2/ctap.c`'s `ctap_get_info`) for
 /// what it does and does not advertise (no CTAP2.1, no `largeBlobKey`, no
 /// `bioEnroll`/`pinUvAuthToken` options).
-fn run_fido_info(
-    transport: &mut dyn TokenTransport,
-    _args: &[String],
-) -> Result<(), ManagerError> {
+fn run_fido_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), ManagerError> {
     let raw = match transport.transceive(0x10, &[Command::GET_INFO.as_u8()], FIDO_TIMEOUT) {
         Ok(raw) => raw,
         Err(e) => {
@@ -121,9 +118,7 @@ fn run_fido_info(
     let response = match Response::decode(&raw) {
         Ok(response) => response,
         Err(e) => {
-            eprintln!(
-                "fido info: transport sent an empty authenticatorGetInfo response ({e})"
-            );
+            eprintln!("fido info: transport sent an empty authenticatorGetInfo response ({e})");
             return Ok(());
         }
     };
@@ -233,7 +228,9 @@ fn run_fido_access(
                     let p1 = prompt_secret("Enter new FIDO2 PIN: ")?;
                     let p2 = prompt_secret("Confirm new FIDO2 PIN: ")?;
                     if p1 != p2 {
-                        return Err(ManagerError::InvalidInput("PIN entries do not match".into()));
+                        return Err(ManagerError::InvalidInput(
+                            "PIN entries do not match".into(),
+                        ));
                     }
                     p1
                 }
@@ -399,8 +396,9 @@ fn obtain_uv_token(
         FIDO_TIMEOUT,
         "fido credentials: key agreement",
     )?;
-    let device_key = cred_mgmt::parse_key_agreement_response(&ka_data)
-        .map_err(|e| ManagerError::Other(format!("fido credentials: key agreement response: {e}")))?;
+    let device_key = cred_mgmt::parse_key_agreement_response(&ka_data).map_err(|e| {
+        ManagerError::Other(format!("fido credentials: key agreement response: {e}"))
+    })?;
 
     let platform = PlatformKeyAgreement::generate();
     let shared_secret = platform.shared_secret(&device_key);
@@ -413,8 +411,11 @@ fn obtain_uv_token(
         "fido credentials: touch authorisation",
     )?;
 
-    cred_mgmt::parse_uv_token_response(&uv_data, &shared_secret)
-        .map_err(|e| ManagerError::Other(format!("fido credentials: touch response did not decrypt: {e}")))
+    cred_mgmt::parse_uv_token_response(&uv_data, &shared_secret).map_err(|e| {
+        ManagerError::Other(format!(
+            "fido credentials: touch response did not decrypt: {e}"
+        ))
+    })
 }
 
 /// Handles `ctctl fido credentials [list|delete]`.
@@ -459,8 +460,9 @@ fn run_credentials_list(
         CRED_MGMT_TIMEOUT,
         "fido credentials list: metadata",
     )?;
-    let metadata = cred_mgmt::Metadata::parse(&metadata_data)
-        .map_err(|e| ManagerError::Other(format!("fido credentials list: metadata response: {e}")))?;
+    let metadata = cred_mgmt::Metadata::parse(&metadata_data).map_err(|e| {
+        ManagerError::Other(format!("fido credentials list: metadata response: {e}"))
+    })?;
 
     if metadata.existing_resident_credentials_count == 0 {
         if !csv {
@@ -472,7 +474,12 @@ fn run_credentials_list(
     let mut total = 0;
     let mut next_rp = Some(cred_mgmt::rp_begin_request(&pin_token));
     while let Some(req) = next_rp.take() {
-        let rp_data = cred_mgmt_transceive(transport, &req, CRED_MGMT_TIMEOUT, "fido credentials list: RP enumeration")?;
+        let rp_data = cred_mgmt_transceive(
+            transport,
+            &req,
+            CRED_MGMT_TIMEOUT,
+            "fido credentials list: RP enumeration",
+        )?;
         if rp_data.is_empty() {
             break;
         }
@@ -480,17 +487,27 @@ fn run_credentials_list(
             .map_err(|e| ManagerError::Other(format!("fido credentials list: RP response: {e}")))?;
 
         if !csv {
-            println!("{} ({})", rp.rp_name.as_deref().unwrap_or(&rp.rp_id), rp.rp_id);
+            println!(
+                "{} ({})",
+                rp.rp_name.as_deref().unwrap_or(&rp.rp_id),
+                rp.rp_id
+            );
         }
 
         let mut next_cred = Some(cred_mgmt::rk_begin_request(&pin_token, &rp.rp_id_hash));
         while let Some(creq) = next_cred.take() {
-            let cred_data = cred_mgmt_transceive(transport, &creq, CRED_MGMT_TIMEOUT, "fido credentials list: credential enumeration")?;
+            let cred_data = cred_mgmt_transceive(
+                transport,
+                &creq,
+                CRED_MGMT_TIMEOUT,
+                "fido credentials list: credential enumeration",
+            )?;
             if cred_data.is_empty() {
                 break;
             }
-            let entry = cred_mgmt::CredentialEntry::parse(&cred_data)
-                .map_err(|e| ManagerError::Other(format!("fido credentials list: credential response: {e}")))?;
+            let entry = cred_mgmt::CredentialEntry::parse(&cred_data).map_err(|e| {
+                ManagerError::Other(format!("fido credentials list: credential response: {e}"))
+            })?;
             let id_b64 = URL_SAFE_NO_PAD.encode(&entry.credential_id);
             let user = entry.user_name.as_deref().unwrap_or("");
             let display = entry.user_display_name.as_deref().unwrap_or("");
@@ -531,15 +548,17 @@ fn run_credentials_delete(
     }
     let credential_id = credential_id
         .ok_or_else(|| "Usage: ctctl fido credentials delete CREDENTIAL [-f]".to_string())?;
-    let raw_id = URL_SAFE_NO_PAD
-        .decode(&credential_id)
-        .map_err(|e| ManagerError::InvalidInput(format!("Invalid credential ID (not base64url): {e}")))?;
+    let raw_id = URL_SAFE_NO_PAD.decode(&credential_id).map_err(|e| {
+        ManagerError::InvalidInput(format!("Invalid credential ID (not base64url): {e}"))
+    })?;
 
     if !force {
         print!("Delete this passkey? It cannot be recovered. [y/N]: ");
         io::stdout().flush().map_err(|e| e.to_string())?;
         let mut input = String::new();
-        io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+        io::stdin()
+            .read_line(&mut input)
+            .map_err(|e| e.to_string())?;
         if !input.trim().eq_ignore_ascii_case("y") {
             println!("Delete cancelled.");
             return Ok(());

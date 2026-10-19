@@ -50,7 +50,10 @@ pub fn print_config_help() {
     );
 }
 
-fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_config_mode(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut mode_str = None;
     let mut force = false;
     let mut lock_code = None;
@@ -104,7 +107,10 @@ fn run_config_mode(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
 /// nothing here can actually enable/disable one of these GATT services
 /// independently of the others, so no `-e/-d` flags are offered until that
 /// control exists.
-fn run_config_ble(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), ManagerError> {
+fn run_config_ble(
+    transport: &mut dyn TokenTransport,
+    _args: &[String],
+) -> Result<(), ManagerError> {
     let _ = get_config_status(transport)?;
 
     println!("=== Bluetooth Low Energy ===");
@@ -115,7 +121,10 @@ fn run_config_ble(transport: &mut dyn TokenTransport, _args: &[String]) -> Resul
     Ok(())
 }
 
-fn run_config_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_config_reset(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut force = false;
     for arg in args {
         if arg == "-f" || arg == "--force" {

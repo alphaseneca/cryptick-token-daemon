@@ -35,8 +35,9 @@ pub struct UsbTransport {
 impl UsbTransport {
     /// Lists all detected Cryptick Token USB devices.
     pub fn list_devices() -> Result<Vec<UsbDeviceInfo>, ManagerError> {
-        let api = HidApi::new()
-            .map_err(|e| ManagerError::Transport(format!("Failed to initialize HID subsystem: {e}")))?;
+        let api = HidApi::new().map_err(|e| {
+            ManagerError::Transport(format!("Failed to initialize HID subsystem: {e}"))
+        })?;
         let mut list = Vec::new();
         for dev in api.device_list() {
             if dev.vendor_id() == CRYPTICK_VID && dev.product_id() == CRYPTICK_PID {
@@ -170,7 +171,9 @@ impl UsbTransport {
             Ok(n) => Err(ManagerError::Transport(format!(
                 "Unexpected USB packet length: {n} (expected {PACKET_SIZE})"
             ))),
-            Err(e) => Err(ManagerError::Transport(format!("USB packet read error: {e}"))),
+            Err(e) => Err(ManagerError::Transport(format!(
+                "USB packet read error: {e}"
+            ))),
         }
     }
 }

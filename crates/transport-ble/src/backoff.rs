@@ -81,9 +81,7 @@ impl ReconnectBackoff {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0);
-        let seed = now
-            ^ counter.wrapping_mul(0x2545_F491_4F6C_DD1D)
-            ^ 0x9E37_79B9_7F4A_7C15;
+        let seed = now ^ counter.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0x9E37_79B9_7F4A_7C15;
         Self {
             attempt: 0,
             // splitmix64 degenerates for a zero state; guarantee non-zero.
@@ -165,7 +163,10 @@ mod tests {
             if i < MAX_SHIFT {
                 // Each successive floor (ceiling / 2) must not shrink while
                 // still climbing toward the ceiling.
-                assert!(d + d >= prev_floor, "equal jitter floor regressed at attempt {i}");
+                assert!(
+                    d + d >= prev_floor,
+                    "equal jitter floor regressed at attempt {i}"
+                );
             }
             prev_floor = d;
         }

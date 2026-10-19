@@ -145,7 +145,10 @@ fn run_oath_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result
 // 3. OATH ACCESS
 // ---------------------------------------------------------------------------
 
-fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_oath_access(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: ctctl oath access [COMMAND] [OPTIONS]\n\n\
@@ -168,7 +171,10 @@ fn run_oath_access(transport: &mut dyn TokenTransport, args: &[String]) -> Resul
     }
 }
 
-fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_access_change(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut clear = false;
     let mut password = None;
     let mut new_password = None;
@@ -191,7 +197,11 @@ fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Res
                 }
             }
             "-r" | "--remember" => remember = true,
-            other => return Err(ManagerError::InvalidInput(format!("Unknown option '{other}'"))),
+            other => {
+                return Err(ManagerError::InvalidInput(format!(
+                    "Unknown option '{other}'"
+                )))
+            }
         }
         i += 1;
     }
@@ -236,7 +246,10 @@ fn run_access_change(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_access_forget(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_access_forget(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut all = false;
     for arg in args {
         if arg == "-a" || arg == "--all" {
@@ -260,7 +273,10 @@ fn run_access_forget(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_access_remember(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut password = None;
     let mut i = 0;
     while i < args.len() {
@@ -295,7 +311,10 @@ fn run_access_remember(transport: &mut dyn TokenTransport, args: &[String]) -> R
 // 4. OATH ACCOUNTS
 // ---------------------------------------------------------------------------
 
-fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_oath_accounts(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: ctctl oath accounts [COMMAND] [OPTIONS]\n\n\
@@ -326,7 +345,10 @@ fn run_oath_accounts(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     }
 }
 
-fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_list(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut single = false;
     let mut type_filter = None;
     let mut password = None;
@@ -397,7 +419,10 @@ fn run_accounts_list(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_code(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut single = false;
     let mut password = None;
     let mut query = None;
@@ -432,7 +457,9 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
         accounts.retain(|a| !is_hidden_account(&a.name));
     }
     if accounts.is_empty() {
-        return Err(ManagerError::NotFound("No accounts configured on token.".into()));
+        return Err(ManagerError::NotFound(
+            "No accounts configured on token.".into(),
+        ));
     }
 
     let mut targets = accounts;
@@ -475,7 +502,10 @@ fn run_accounts_code(transport: &mut dyn TokenTransport, args: &[String]) -> Res
     Ok(())
 }
 
-fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_add(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut name = None;
     let mut secret_str = None;
     let mut oath_type = OathType::Totp;
@@ -595,7 +625,10 @@ fn run_accounts_add(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
     Ok(())
 }
 
-fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_delete(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut query = None;
     let mut force = false;
     let mut password = None;
@@ -639,7 +672,10 @@ fn run_accounts_delete(transport: &mut dyn TokenTransport, args: &[String]) -> R
     Ok(())
 }
 
-fn run_accounts_rename(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_rename(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut query = None;
     let mut new_name = None;
     let mut password = None;
@@ -674,7 +710,10 @@ fn run_accounts_rename(transport: &mut dyn TokenTransport, args: &[String]) -> R
     Ok(())
 }
 
-fn run_accounts_uri(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_uri(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut uri_str = None;
     let mut touch = false;
     let mut password = None;
@@ -721,7 +760,10 @@ fn run_accounts_uri(transport: &mut dyn TokenTransport, args: &[String]) -> Resu
     Ok(())
 }
 
-fn run_accounts_import(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
+fn run_accounts_import(
+    transport: &mut dyn TokenTransport,
+    args: &[String],
+) -> Result<(), ManagerError> {
     let mut file_path = None;
     let mut touch = false;
     let mut password = None;

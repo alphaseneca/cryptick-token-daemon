@@ -59,8 +59,8 @@ impl GetInfoResponse {
     pub fn parse(body: &[u8]) -> Result<Self, GetInfoError> {
         let value = Value::decode(body)?;
 
-        let versions = text_array(&value, member::VERSIONS)?
-            .ok_or(GetInfoError::MissingMember {
+        let versions =
+            text_array(&value, member::VERSIONS)?.ok_or(GetInfoError::MissingMember {
                 member: member::VERSIONS,
             })?;
         let extensions = text_array(&value, member::EXTENSIONS)?.unwrap_or_default();
@@ -218,8 +218,8 @@ mod tests {
 
     #[test]
     fn wrong_type_for_versions_is_an_error() {
-        let body = Value::Map(vec![(Value::Unsigned(member::VERSIONS), Value::Bool(true))])
-            .encode();
+        let body =
+            Value::Map(vec![(Value::Unsigned(member::VERSIONS), Value::Bool(true))]).encode();
         assert_eq!(
             GetInfoResponse::parse(&body),
             Err(GetInfoError::WrongType {

@@ -494,8 +494,7 @@ impl ReconnectingBleTransport {
 /// error type: every failure here (timeout or connect error) is handled
 /// identically by both callers, and the message is already logged.
 async fn connect_peripheral(peripheral: &Peripheral, addr: &str) -> Option<BleTransport> {
-    match tokio::time::timeout(CONNECT_TIMEOUT, BleTransport::connect_daemon(peripheral)).await
-    {
+    match tokio::time::timeout(CONNECT_TIMEOUT, BleTransport::connect_daemon(peripheral)).await {
         Ok(Ok(new_transport)) => {
             eprintln!("Connected to Cryptick Token [{addr}]!");
             Some(new_transport)

@@ -264,7 +264,11 @@ impl DaemonTransport {
                 }
                 Ok(chunk) => self.decoder.push(&chunk),
                 Err(e) if e.kind() == ErrorKind::TimedOut => {}
-                Err(e) => return Err(ManagerError::Transport(format!("Named pipe read error: {e}"))),
+                Err(e) => {
+                    return Err(ManagerError::Transport(format!(
+                        "Named pipe read error: {e}"
+                    )))
+                }
             }
         }
     }
@@ -399,7 +403,9 @@ impl TokenTransport for DaemonTransport {
         )?;
 
         match self.recv(&id, Instant::now() + timeout)? {
-            DaemonMessage::CtapResponse { status, cbor } => decode_daemon_response(cmd, status, cbor),
+            DaemonMessage::CtapResponse { status, cbor } => {
+                decode_daemon_response(cmd, status, cbor)
+            }
             DaemonMessage::Error { code, message } => {
                 eprintln!("ctctl: daemon reported error ({code:?}): {message}");
                 Err(ManagerError::Transport(format!(

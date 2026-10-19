@@ -912,10 +912,14 @@ fn synthetic_public_key(slot: u8, generation: u32) -> [u8; PUBKEY_LEN] {
     let mut point = [0u8; PUBKEY_LEN];
     point[0] = 0x04;
     for i in 0..32 {
-        point[1 + i] = (i as u8).wrapping_add(slot).wrapping_add((generation as u8).wrapping_mul(31));
+        point[1 + i] = (i as u8)
+            .wrapping_add(slot)
+            .wrapping_add((generation as u8).wrapping_mul(31));
     }
     for i in 0..32 {
-        point[33 + i] = !(i as u8).wrapping_add(slot).wrapping_add((generation as u8).wrapping_mul(31));
+        point[33 + i] = !(i as u8)
+            .wrapping_add(slot)
+            .wrapping_add((generation as u8).wrapping_mul(31));
     }
     point
 }
@@ -1119,7 +1123,13 @@ mod tests {
         let mut card = FirmwareCard::new();
         let gen = |c: &mut FirmwareCard| {
             let body = [0xACu8, 0x03, 0x80, 0x01, 0x11];
-            c.handle_apdu(&[&[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05], &body[..]].concat())
+            c.handle_apdu(
+                &[
+                    &[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05],
+                    &body[..],
+                ]
+                .concat(),
+            )
         };
         assert_eq!(status(&gen(&mut card)), SW_SECURITY_NOT_SATISFIED);
 
@@ -1139,10 +1149,17 @@ mod tests {
         let mut card = FirmwareCard::new();
         verify(&mut card, CORRECT_PIN);
         let body = [0xACu8, 0x03, 0x80, 0x01, 0x11];
-        let cmd = [&[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05], &body[..]].concat();
+        let cmd = [
+            &[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05],
+            &body[..],
+        ]
+        .concat();
         let first = card.handle_apdu(&cmd);
         let second = card.handle_apdu(&cmd);
-        assert_ne!(first, second, "generate must roll the key, not re-derive one");
+        assert_ne!(
+            first, second,
+            "generate must roll the key, not re-derive one"
+        );
     }
 
     #[test]
@@ -1151,7 +1168,17 @@ mod tests {
         let digest = [0x11u8; 32];
         let inner = [&[0x81u8, 0x20][..], &digest[..]].concat();
         let body = [&[0x7Cu8, inner.len() as u8][..], &inner[..]].concat();
-        let cmd = [&[0x00, INS_GENERAL_AUTHENTICATE, 0x11, SLOT_CARD_AUTH, body.len() as u8][..], &body[..]].concat();
+        let cmd = [
+            &[
+                0x00,
+                INS_GENERAL_AUTHENTICATE,
+                0x11,
+                SLOT_CARD_AUTH,
+                body.len() as u8,
+            ][..],
+            &body[..],
+        ]
+        .concat();
         assert_eq!(status(&card.handle_apdu(&cmd)), SW_OK);
     }
 
@@ -1162,8 +1189,16 @@ mod tests {
         let inner = [&[0x81u8, 0x20][..], &digest[..]].concat();
         let body = [&[0x7Cu8, inner.len() as u8][..], &inner[..]].concat();
         for slot in [SLOT_AUTHENTICATION, SLOT_SIGNATURE, SLOT_KEY_MANAGEMENT] {
-            let cmd = [&[0x00, INS_GENERAL_AUTHENTICATE, 0x11, slot, body.len() as u8][..], &body[..]].concat();
-            assert_eq!(status(&card.handle_apdu(&cmd)), SW_SECURITY_NOT_SATISFIED, "slot {slot:#x}");
+            let cmd = [
+                &[0x00, INS_GENERAL_AUTHENTICATE, 0x11, slot, body.len() as u8][..],
+                &body[..],
+            ]
+            .concat();
+            assert_eq!(
+                status(&card.handle_apdu(&cmd)),
+                SW_SECURITY_NOT_SATISFIED,
+                "slot {slot:#x}"
+            );
         }
     }
 
@@ -1172,13 +1207,27 @@ mod tests {
         let mut card = FirmwareCard::new();
         verify(&mut card, CORRECT_PIN);
         let gen_body = [0xACu8, 0x03, 0x80, 0x01, 0x11];
-        let gen_cmd = [&[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05], &gen_body[..]].concat();
+        let gen_cmd = [
+            &[0x00, INS_GENERATE_KEYPAIR, 0x00, SLOT_AUTHENTICATION, 0x05],
+            &gen_body[..],
+        ]
+        .concat();
         assert_eq!(status(&card.handle_apdu(&gen_cmd)), SW_OK);
 
         let digest = [0x22u8; 32];
         let inner = [&[0x81u8, 0x20][..], &digest[..]].concat();
         let sign_body = [&[0x7Cu8, inner.len() as u8][..], &inner[..]].concat();
-        let sign_cmd = [&[0x00, INS_GENERAL_AUTHENTICATE, 0x11, SLOT_AUTHENTICATION, sign_body.len() as u8][..], &sign_body[..]].concat();
+        let sign_cmd = [
+            &[
+                0x00,
+                INS_GENERAL_AUTHENTICATE,
+                0x11,
+                SLOT_AUTHENTICATION,
+                sign_body.len() as u8,
+            ][..],
+            &sign_body[..],
+        ]
+        .concat();
         let resp = card.handle_apdu(&sign_cmd);
         assert_eq!(status(&resp), SW_OK);
         assert_eq!(resp[0], 0x7C);
@@ -1188,11 +1237,19 @@ mod tests {
     fn chuid_is_synthesised_when_absent() {
         let mut card = FirmwareCard::new();
         let body = [0x5Cu8, 0x03, 0x5F, 0xC1, 0x02];
-        let cmd = [&[0x00, INS_GET_DATA, 0x3F, 0xFF, body.len() as u8][..], &body[..]].concat();
+        let cmd = [
+            &[0x00, INS_GET_DATA, 0x3F, 0xFF, body.len() as u8][..],
+            &body[..],
+        ]
+        .concat();
         let resp = card.handle_apdu(&cmd);
         assert_eq!(status(&resp), SW_OK);
         assert_eq!(resp[0], 0x53, "must carry its 53 wrapper");
-        assert_eq!(resp[1] as usize, resp.len() - 2 - 2, "declared length matches body");
+        assert_eq!(
+            resp[1] as usize,
+            resp.len() - 2 - 2,
+            "declared length matches body"
+        );
     }
 
     #[test]
@@ -1201,7 +1258,11 @@ mod tests {
         for tag in [OBJ_CERT_9A, OBJ_CERT_9C, OBJ_CERT_9D, OBJ_CERT_9E] {
             let tag_bytes = [(tag >> 16) as u8, (tag >> 8) as u8, tag as u8];
             let body = [&[0x5Cu8, 0x03][..], &tag_bytes[..]].concat();
-            let cmd = [&[0x00, INS_GET_DATA, 0x3F, 0xFF, body.len() as u8][..], &body[..]].concat();
+            let cmd = [
+                &[0x00, INS_GET_DATA, 0x3F, 0xFF, body.len() as u8][..],
+                &body[..],
+            ]
+            .concat();
             assert_eq!(status(&card.handle_apdu(&cmd)), SW_NOT_FOUND, "{tag:#x}");
         }
     }
@@ -1212,15 +1273,26 @@ mod tests {
         let tag_bytes = [0x5Fu8, 0xC1, 0x05];
         let container = [0x53u8, 0x03, b'A', b'B', b'C'];
         let body = [&[0x5Cu8, 0x03][..], &tag_bytes[..], &container[..]].concat();
-        let put_cmd = [&[0x00, INS_PUT_DATA, 0x3F, 0xFF, body.len() as u8][..], &body[..]].concat();
+        let put_cmd = [
+            &[0x00, INS_PUT_DATA, 0x3F, 0xFF, body.len() as u8][..],
+            &body[..],
+        ]
+        .concat();
 
-        assert_eq!(status(&card.handle_apdu(&put_cmd)), SW_SECURITY_NOT_SATISFIED);
+        assert_eq!(
+            status(&card.handle_apdu(&put_cmd)),
+            SW_SECURITY_NOT_SATISFIED
+        );
 
         verify(&mut card, CORRECT_PIN);
         assert_eq!(status(&card.handle_apdu(&put_cmd)), SW_OK);
 
         let get_body = [&[0x5Cu8, 0x03][..], &tag_bytes[..]].concat();
-        let get_cmd = [&[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..], &get_body[..]].concat();
+        let get_cmd = [
+            &[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..],
+            &get_body[..],
+        ]
+        .concat();
         let resp = card.handle_apdu(&get_cmd);
         assert_eq!(status(&resp), SW_OK);
         assert_eq!(&resp[..resp.len() - 2], &container[..]);
@@ -1237,7 +1309,11 @@ mod tests {
 
         let tag_bytes = [0x5Fu8, 0xC1, 0x05];
         let get_body = [&[0x5Cu8, 0x03][..], &tag_bytes[..]].concat();
-        let get_cmd = [&[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..], &get_body[..]].concat();
+        let get_cmd = [
+            &[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..],
+            &get_body[..],
+        ]
+        .concat();
 
         let first = card.handle_apdu(&get_cmd);
         let mut sw = status(&first);
@@ -1246,13 +1322,20 @@ mod tests {
 
         // Drive GET RESPONSE until the card reports success.
         while sw & 0xFF00 == 0x6100 {
-            let le = if sw & 0xFF == 0 { 0x00 } else { (sw & 0xFF) as u8 };
+            let le = if sw & 0xFF == 0 {
+                0x00
+            } else {
+                (sw & 0xFF) as u8
+            };
             let resp = card.handle_apdu(&[0x00, INS_GET_RESPONSE, 0x00, 0x00, le]);
             sw = status(&resp);
             whole.extend_from_slice(&resp[..resp.len() - 2]);
         }
         assert_eq!(sw, SW_OK);
-        assert_eq!(whole, container, "chained reassembly lost or reordered bytes");
+        assert_eq!(
+            whole, container,
+            "chained reassembly lost or reordered bytes"
+        );
     }
 
     #[test]
@@ -1273,19 +1356,31 @@ mod tests {
             let chunk = &body[chunk_start..(chunk_start + block).min(body.len())];
             let last = chunk_start + block >= body.len();
             let cla = if last { 0x00 } else { CLA_CHAIN };
-            let cmd = [&[cla, INS_PUT_DATA, 0x3F, 0xFF, chunk.len() as u8][..], chunk].concat();
+            let cmd = [
+                &[cla, INS_PUT_DATA, 0x3F, 0xFF, chunk.len() as u8][..],
+                chunk,
+            ]
+            .concat();
             last_sw = status(&card.handle_apdu(&cmd));
         }
         assert_eq!(last_sw, SW_OK);
 
         let get_body = [&[0x5Cu8, 0x03][..], &tag_bytes[..]].concat();
-        let get_cmd = [&[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..], &get_body[..]].concat();
+        let get_cmd = [
+            &[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..],
+            &get_body[..],
+        ]
+        .concat();
         let mut got = Vec::new();
         let first = card.handle_apdu(&get_cmd);
         let mut sw = status(&first);
         got.extend_from_slice(&first[..first.len() - 2]);
         while sw & 0xFF00 == 0x6100 {
-            let le = if sw & 0xFF == 0 { 0x00 } else { (sw & 0xFF) as u8 };
+            let le = if sw & 0xFF == 0 {
+                0x00
+            } else {
+                (sw & 0xFF) as u8
+            };
             let resp = card.handle_apdu(&[0x00, INS_GET_RESPONSE, 0x00, 0x00, le]);
             sw = status(&resp);
             got.extend_from_slice(&resp[..resp.len() - 2]);
@@ -1299,15 +1394,34 @@ mod tests {
         verify(&mut card, CORRECT_PIN);
         let body = b"\x5c\x03\x5f\xc1\x05\x53\x03AB";
         assert_eq!(
-            status(&card.handle_apdu(&[&[CLA_CHAIN, INS_PUT_DATA, 0x3F, 0xFF, body.len() as u8][..], body].concat())),
+            status(
+                &card.handle_apdu(
+                    &[
+                        &[CLA_CHAIN, INS_PUT_DATA, 0x3F, 0xFF, body.len() as u8][..],
+                        body
+                    ]
+                    .concat()
+                )
+            ),
             SW_OK
         );
         // Different INS mid-chain: abandoned.
-        assert_eq!(status(&card.handle_apdu(&[0x00, INS_GET_DATA, 0x3F, 0xFF, 0x01, b'C'])), SW_WRONG_DATA);
+        assert_eq!(
+            status(&card.handle_apdu(&[0x00, INS_GET_DATA, 0x3F, 0xFF, 0x01, b'C'])),
+            SW_WRONG_DATA
+        );
         // The chain is gone, not merely paused.
         let get_body = b"\x5c\x03\x5f\xc1\x05";
         assert_eq!(
-            status(&card.handle_apdu(&[&[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..], get_body].concat())),
+            status(
+                &card.handle_apdu(
+                    &[
+                        &[0x00, INS_GET_DATA, 0x3F, 0xFF, get_body.len() as u8][..],
+                        get_body
+                    ]
+                    .concat()
+                )
+            ),
             SW_NOT_FOUND
         );
     }
@@ -1347,21 +1461,30 @@ mod tests {
     #[test]
     fn truncated_header_is_wrong_length() {
         let mut card = FirmwareCard::new();
-        assert_eq!(status(&card.handle_apdu(&[0x00, INS_SELECT, 0x04])), SW_WRONG_LENGTH);
+        assert_eq!(
+            status(&card.handle_apdu(&[0x00, INS_SELECT, 0x04])),
+            SW_WRONG_LENGTH
+        );
     }
 
     #[test]
     fn unsupported_class_is_rejected() {
         let mut card = FirmwareCard::new();
         for cla in [0x80u8, 0xFF, 0x0C, 0x01] {
-            assert_eq!(status(&card.handle_apdu(&[cla, INS_SELECT, 0x04, 0x00])), SW_CLA_UNSUPPORTED);
+            assert_eq!(
+                status(&card.handle_apdu(&[cla, INS_SELECT, 0x04, 0x00])),
+                SW_CLA_UNSUPPORTED
+            );
         }
     }
 
     #[test]
     fn unknown_instruction_is_rejected() {
         let mut card = FirmwareCard::new();
-        assert_eq!(status(&card.handle_apdu(&[0x00, 0xFF, 0x00, 0x00])), SW_INS_UNSUPPORTED);
+        assert_eq!(
+            status(&card.handle_apdu(&[0x00, 0xFF, 0x00, 0x00])),
+            SW_INS_UNSUPPORTED
+        );
     }
 
     #[test]
@@ -1372,7 +1495,11 @@ mod tests {
         let mut new_pin = b"654321".to_vec();
         new_pin.resize(8, 0xFF);
         body.extend_from_slice(&new_pin);
-        let cmd = [&[0x00, INS_CHANGE_REFERENCE, 0x00, 0x80, body.len() as u8][..], &body[..]].concat();
+        let cmd = [
+            &[0x00, INS_CHANGE_REFERENCE, 0x00, 0x80, body.len() as u8][..],
+            &body[..],
+        ]
+        .concat();
         assert_eq!(status(&card.handle_apdu(&cmd)), SW_OK);
         assert_eq!(verify(&mut card, b"654321"), SW_OK);
         assert_ne!(verify(&mut card, CORRECT_PIN), SW_OK);

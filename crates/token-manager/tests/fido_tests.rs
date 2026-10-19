@@ -8,10 +8,10 @@
 //! without erroring out, whether the device answers or not — matching the
 //! `SimulatedOathToken` pattern in `oath_tests.rs`.
 
+use ctap_client::Value;
 use ctctl::cli::fido_cli::handle_fido_command;
 use ctctl::error::ManagerError;
 use ctctl::transport::TokenTransport;
-use ctap_client::Value;
 use std::time::Duration;
 
 /// A simulated Cryptick Token that answers `authenticatorGetInfo` the way
@@ -156,12 +156,11 @@ impl TokenTransport for UnsupportedCredMgmtToken {
 #[test]
 fn fido_credentials_list_reports_unsupported_firmware_honestly() {
     let mut token = UnsupportedCredMgmtToken;
-    let err = handle_fido_command(
-        &mut token,
-        &["credentials".to_string(), "list".to_string()],
-    )
-    .unwrap_err();
-    assert!(err.to_string().contains("unsupported on this device's current firmware"));
+    let err = handle_fido_command(&mut token, &["credentials".to_string(), "list".to_string()])
+        .unwrap_err();
+    assert!(err
+        .to_string()
+        .contains("unsupported on this device's current firmware"));
 }
 
 #[test]
@@ -183,9 +182,7 @@ fn fido_credentials_delete_rejects_a_non_base64_credential_id() {
 #[test]
 fn fido_credentials_degrades_gracefully_when_the_device_is_unreachable() {
     let mut token = UnreachableToken;
-    assert!(handle_fido_command(
-        &mut token,
-        &["credentials".to_string(), "list".to_string()]
-    )
-    .is_err());
+    assert!(
+        handle_fido_command(&mut token, &["credentials".to_string(), "list".to_string()]).is_err()
+    );
 }

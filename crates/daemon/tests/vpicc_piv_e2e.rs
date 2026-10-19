@@ -73,7 +73,10 @@ async fn read_reply<R: AsyncReadExt + Unpin>(reader: &mut R) -> Vec<u8> {
 }
 
 /// Frames `apdu`, writes it, and reads back the framed response.
-async fn transceive<S: AsyncReadExt + AsyncWriteExt + Unpin>(stream: &mut S, apdu: &[u8]) -> Vec<u8> {
+async fn transceive<S: AsyncReadExt + AsyncWriteExt + Unpin>(
+    stream: &mut S,
+    apdu: &[u8],
+) -> Vec<u8> {
     let framed = vpcd::frame(apdu).unwrap();
     stream.write_all(&framed).await.unwrap();
     read_reply(stream).await
@@ -151,7 +154,10 @@ async fn start_relay_with_card(
     let relay_task = tokio::spawn(async move { relay.connect_and_run().await });
 
     let (stream, client_addr) = listener.accept().await.unwrap();
-    assert!(client_addr.ip().is_loopback(), "relay must dial loopback only (PROJECT.md §15.6)");
+    assert!(
+        client_addr.ip().is_loopback(),
+        "relay must dial loopback only (PROJECT.md §15.6)"
+    );
     (stream, relay_task)
 }
 
@@ -256,14 +262,24 @@ async fn a_certificate_too_large_for_one_response_is_chained_through_get_respons
     while sw & 0xFF00 == 0x6100 {
         rounds += 1;
         assert!(rounds < 10, "chaining did not converge");
-        let le = if sw & 0xFF == 0 { 0x00 } else { (sw & 0xFF) as u8 };
+        let le = if sw & 0xFF == 0 {
+            0x00
+        } else {
+            (sw & 0xFF) as u8
+        };
         let resp = transceive(&mut stream, &get_response_apdu(le)).await;
         sw = status(&resp);
         reassembled.extend_from_slice(&resp[..resp.len() - 2]);
     }
     assert_eq!(sw, 0x9000);
-    assert_eq!(reassembled, container, "chained GET RESPONSE reassembly lost or reordered bytes");
-    assert!(rounds >= 1, "test is only meaningful if chaining actually happened");
+    assert_eq!(
+        reassembled, container,
+        "chained GET RESPONSE reassembly lost or reordered bytes"
+    );
+    assert!(
+        rounds >= 1,
+        "test is only meaningful if chaining actually happened"
+    );
 }
 
 #[tokio::test]
@@ -299,13 +315,20 @@ async fn put_data_command_chain_round_trips_through_get_data_over_vpcd() {
     let mut sw = status(&first);
     let mut got = first[..first.len() - 2].to_vec();
     while sw & 0xFF00 == 0x6100 {
-        let le = if sw & 0xFF == 0 { 0x00 } else { (sw & 0xFF) as u8 };
+        let le = if sw & 0xFF == 0 {
+            0x00
+        } else {
+            (sw & 0xFF) as u8
+        };
         let resp = transceive(&mut stream, &get_response_apdu(le)).await;
         sw = status(&resp);
         got.extend_from_slice(&resp[..resp.len() - 2]);
     }
     assert_eq!(sw, 0x9000);
-    assert_eq!(got, container, "command-chained PUT DATA did not round trip");
+    assert_eq!(
+        got, container,
+        "command-chained PUT DATA did not round trip"
+    );
 }
 
 #[tokio::test]
@@ -323,10 +346,17 @@ async fn extended_length_select_is_rejected_through_vpcd_and_ble() {
 
     let mut cmd = vec![0x00, 0xA4, 0x04, 0x00, 0x00, 0x00, 0x09];
     cmd.extend_from_slice(&[0xA0, 0x00, 0x00, 0x03, 0x08, 0x00, 0x00, 0x10, 0x00]);
-    assert!(cmd.len() <= 261, "test input must itself respect the ceiling it is not the one being proven here");
+    assert!(
+        cmd.len() <= 261,
+        "test input must itself respect the ceiling it is not the one being proven here"
+    );
 
     let resp = transceive(&mut stream, &cmd).await;
-    assert_eq!(status(&resp), 0x6700, "extended-length SELECT must be refused, unconditionally");
+    assert_eq!(
+        status(&resp),
+        0x6700,
+        "extended-length SELECT must be refused, unconditionally"
+    );
 }
 
 #[tokio::test]

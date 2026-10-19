@@ -53,7 +53,11 @@ pub fn run_apdu_command(
             part if !part.starts_with('-') => {
                 apdu_parts.push(part.to_string());
             }
-            other => return Err(ManagerError::InvalidInput(format!("Unknown option '{other}'"))),
+            other => {
+                return Err(ManagerError::InvalidInput(format!(
+                    "Unknown option '{other}'"
+                )))
+            }
         }
         i += 1;
     }

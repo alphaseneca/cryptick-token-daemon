@@ -191,10 +191,7 @@ fn query_retries(transport: &mut dyn TokenTransport, puk: bool) -> Result<u8, Ma
 }
 
 /// Displays information about PIV slots and configuration.
-fn run_piv_info(
-    transport: &mut dyn TokenTransport,
-    _args: &[String],
-) -> Result<(), ManagerError> {
+fn run_piv_info(transport: &mut dyn TokenTransport, _args: &[String]) -> Result<(), ManagerError> {
     select_piv(transport)?;
 
     println!("PIV version: 5.4.0 (SP 800-73-5 compliant)");
@@ -343,7 +340,10 @@ fn authenticate_management_key(
     let witness_plain = key.decrypt_block(&enc_witness);
 
     let challenge = fresh_challenge();
-    let data = send_mgmt_apdu(transport, &commands::mgmt_respond(&witness_plain, &challenge))?;
+    let data = send_mgmt_apdu(
+        transport,
+        &commands::mgmt_respond(&witness_plain, &challenge),
+    )?;
     let enc_response: [u8; 16] = commands::parse_mgmt_response(&data)
         .map_err(|e| ManagerError::InvalidInput(format!("malformed response: {e}")))?
         .try_into()
@@ -373,10 +373,7 @@ fn parse_management_key(hex: &str) -> Result<ManagementKey, ManagerError> {
 }
 
 /// Handles `ctctl piv access [change-pin|change-puk|unblock-pin|set-retries|change-management-key]`.
-fn run_piv_access(
-    transport: &mut dyn TokenTransport,
-    args: &[String],
-) -> Result<(), ManagerError> {
+fn run_piv_access(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     if args.is_empty() {
         println!(
             "Usage: ctctl piv access [COMMAND] [OPTIONS]\n\n\
@@ -694,7 +691,9 @@ fn run_piv_access(
                 );
                 io::stdout().flush().map_err(|e| e.to_string())?;
                 let mut input = String::new();
-                io::stdin().read_line(&mut input).map_err(|e| e.to_string())?;
+                io::stdin()
+                    .read_line(&mut input)
+                    .map_err(|e| e.to_string())?;
                 if !input.trim().eq_ignore_ascii_case("y") {
                     println!("Cancelled.");
                     return Ok(());
@@ -939,10 +938,7 @@ fn run_piv_certificates(
 /// `--force` only skips the destructive-action confirmation below, never
 /// PIN verification — that is a security check, not a prompt this CLI
 /// can choose to skip.
-fn run_piv_reset(
-    transport: &mut dyn TokenTransport,
-    args: &[String],
-) -> Result<(), ManagerError> {
+fn run_piv_reset(transport: &mut dyn TokenTransport, args: &[String]) -> Result<(), ManagerError> {
     let mut force = false;
     let mut pin = None;
     let mut i = 0;

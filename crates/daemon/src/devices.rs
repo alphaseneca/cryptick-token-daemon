@@ -453,7 +453,10 @@ mod tests {
         let store = DeviceStore::load_from(&path);
         let devices = store.list();
         assert_eq!(devices.len(), 1);
-        assert!(!devices[0].verified, "missing field must default to false, not fail to load");
+        assert!(
+            !devices[0].verified,
+            "missing field must default to false, not fail to load"
+        );
         let _ = fs::remove_file(&path);
     }
 

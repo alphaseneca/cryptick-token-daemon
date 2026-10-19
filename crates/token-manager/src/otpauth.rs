@@ -106,7 +106,9 @@ pub fn decode_base32(input: &str) -> Result<Vec<u8>, ManagerError> {
     }
 
     if clean.is_empty() {
-        return Err(ManagerError::InvalidInput("Base32 input is empty".to_string()));
+        return Err(ManagerError::InvalidInput(
+            "Base32 input is empty".to_string(),
+        ));
     }
 
     let mut out = Vec::new();

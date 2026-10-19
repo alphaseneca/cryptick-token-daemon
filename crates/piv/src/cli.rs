@@ -9,7 +9,9 @@
 use crate::cert::{parse_certificate, CertError};
 use crate::commands;
 use crate::objects::Slot;
-use crate::provision::{provision_slot, ProvisionError, ProvisionOptions, ProvisionReport, SimulatedCard};
+use crate::provision::{
+    provision_slot, ProvisionError, ProvisionOptions, ProvisionReport, SimulatedCard,
+};
 use thiserror::Error;
 
 /// Parsed CLI commands.

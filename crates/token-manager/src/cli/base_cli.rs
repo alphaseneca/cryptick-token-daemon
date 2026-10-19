@@ -135,8 +135,9 @@ pub fn run_base_script(
             continue;
         }
 
-        let tokens = tokenize_line(trimmed)
-            .map_err(|e| ManagerError::InvalidInput(format!("Script syntax error at line {line_no}: {e}")))?;
+        let tokens = tokenize_line(trimmed).map_err(|e| {
+            ManagerError::InvalidInput(format!("Script syntax error at line {line_no}: {e}"))
+        })?;
         if tokens.is_empty() {
             continue;
         }

@@ -740,7 +740,10 @@ mod tests {
     #[test]
     fn change_puk_matches_the_command_syntax_table() {
         // Same shape as change_pin, key reference 81 instead of 80.
-        let command = change_puk(b"12345678", b"87654321").unwrap().encode().unwrap();
+        let command = change_puk(b"12345678", b"87654321")
+            .unwrap()
+            .encode()
+            .unwrap();
         assert_eq!(
             command,
             vec![
@@ -805,7 +808,10 @@ mod tests {
     fn mgmt_request_witness_asks_for_an_empty_witness() {
         // §3.2.4 Table 7: 7C 02 80 00.
         let command = mgmt_request_witness();
-        assert_eq!((command.p1, command.p2), (ALG_MANAGEMENT_AES192, objects::KEY_REFERENCE_MANAGEMENT));
+        assert_eq!(
+            (command.p1, command.p2),
+            (ALG_MANAGEMENT_AES192, objects::KEY_REFERENCE_MANAGEMENT)
+        );
         assert_eq!(command.data, vec![0x7C, 0x02, 0x80, 0x00]);
     }
 

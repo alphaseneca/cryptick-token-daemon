@@ -210,7 +210,9 @@ fn run_select(id: &str) -> Result<(), ManagerError> {
         return Ok(());
     }
     let mut daemon = DaemonTransport::connect(Duration::from_secs(2)).map_err(|e| {
-        ManagerError::Transport(format!("Cannot reach cryptick-daemon to select a device: {e}"))
+        ManagerError::Transport(format!(
+            "Cannot reach cryptick-daemon to select a device: {e}"
+        ))
     })?;
     daemon.select_device(id)?;
     println!("[OK] '{id}' is now the active device.");
