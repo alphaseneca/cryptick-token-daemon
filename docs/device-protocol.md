@@ -1,16 +1,20 @@
 # PIV over BLE — wire protocol
 
-Status: **implemented on the daemon side** — `crates/transport-ble` (`PivBleTransport`),
-`crates/ble-framing` (shared framing/reassembly), `crates/vpcd`, and
-`crates/daemon` (`vpcd_relay`, wired into `ReconnectingBleTransport::spawn`)
-relay opaque APDUs over this service exactly as specified below: `pivControlPointLength`
-is read from the device (20–512, never assumed), the reassembler bounds inbound
-fragments by the transport ceiling rather than that characteristic, and `CANCEL`
-is delivered on its first fragment and never reassembled or answered. Firmware-side
-implementation status is **unconfirmed from this repo** — verify against
-`alphaseneca/cryptick-token-code` before relying on interop; this document was
-written for the firmware to implement against, and nothing here has been
-exercised against real hardware (PROJECT.md §14 L4). Version 1.
+Status: **implemented on both sides.** Daemon side — `crates/transport-ble`
+(`PivBleTransport`), `crates/ble-framing` (shared framing/reassembly),
+`crates/vpcd`, and `crates/daemon` (`vpcd_relay`, wired into
+`ReconnectingBleTransport::spawn`) relay opaque APDUs over this service
+exactly as specified below: `pivControlPointLength` is read from the device
+(20–512, never assumed), the reassembler bounds inbound fragments by the
+transport ceiling rather than that characteristic, and `CANCEL` is delivered
+on its first fragment and never reassembled or answered. Firmware side —
+`alphaseneca/cryptick-token-code`'s `core/ble_fido/ble_piv_gatt_esp32.cpp`
+and `ble_piv.h` implement this service and were audited line-by-line against
+this document (see that repo's `NOTES.md`, "PIV correctness"): framing,
+`SEQ` wrap, the `CANCEL` rule, and the 261-byte ceiling (`BLE_PIV_MAX_MSG`)
+all match exactly. What that audit did *not* cover is a live BLE connection
+actually exercising this path end-to-end on real hardware — that remains
+unverified (PROJECT.md §14 L4). Version 1.
 
 This is the private GATT service PROJECT.md §4 and §12 refer to. It carries
 ISO 7816 APDUs between the daemon's virtual smart card reader and the PIV

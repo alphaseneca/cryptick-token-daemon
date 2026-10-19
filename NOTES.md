@@ -1,4 +1,35 @@
-# Agent pass — real credential management + basic multi-device
+# Agent work notes
+
+Chronological log, most recent work at the bottom. Each section below was
+the current state of the branch named in its own heading at the time it
+was written — treat the heading as history, not as this file's scope.
+
+## [2026-09-27] — Unified USB-First / BLE-Fallback OpenSSH Security Key Middleware
+
+Folded in from this repo's old `CHANGELOG.md`, which saw no further entries
+after this one — this file is now the one running log.
+
+### Added
+- **Unified Transport in `sk-middleware` (`crates/sk-middleware/src/usb.rs`)**:
+  - Direct USB CTAPHID client (`UsbClient`) using `hidapi`.
+  - Scans for Cryptick Token hardware (`0x1209:0xBEEE`, Interface 0, Usage Page `0xF1D0`, Usage `0x01`).
+  - Implements CTAPHID channel negotiation (`CTAPHID_INIT`) and message packetization/reassembly directly over raw HID reports.
+- **Automatic Fallback Architecture (`crates/sk-middleware/src/ffi.rs`)**:
+  - When OpenSSH invokes `sk_enroll`, `sk_sign`, `sk_load_resident_keys`, or `sk_options`:
+    1. First attempts direct high-speed connection over USB CTAPHID.
+    2. If USB is not connected, seamlessly connects to the local daemon socket (`daemon.sock`) over BLE.
+  - Zero command-line flags required by the user (`ssh -K`, `ssh-keygen -K`, `ssh user@host` work seamlessly).
+- **Environment & SSH Configuration**:
+  - `SSH_SK_PROVIDER` set in user environment (`~/.zshrc`) pointing to `~/.local/lib/libsk_blebridge.dylib`.
+  - `SecurityKeyProvider` in `~/.ssh/config` defaulting to `~/.local/lib/libsk_blebridge.dylib`.
+
+### Clarified
+- **Architecture**:
+  - Direct browser BLE FIDO is deprecated across modern browser engines.
+  - `cryptick-tokend` connects to the ESP32-S3 over a high-throughput custom Daemon GATT service (tunneling raw CTAPHID packets over BLE) and exposes them as a local virtual USB HID / socket bridge.
+  - The OpenSSH SK middleware works transparently on any operating system, bridging to USB directly or through the daemon.
+
+## Agent pass — real credential management + basic multi-device
 
 Branch: `feature/credential-management-and-multidevice`, off `main`. Implements
 items 1 and 2 of `docs/research/multi-device-and-credential-sync.md` as
@@ -1971,3 +2002,99 @@ simplification, and the behavior change itself is pinned down on the
 firmware side, where it is actually enforced
 (`test_reset_application_has_no_lockout_recovery_path`, `cryptick-token-
 code`'s host suite).
+
+## Fabricated docs removed, a real race fixed, TOTP entry built, Windows CI fixed
+
+Five pieces of work, in the order they landed. The first four were a
+continuation of the RESET APPLICATION pass above; the Windows CI fixes
+came later, in response to the daemon's `build-workspace`/`fake-device`
+(windows-latest) CI jobs failing on real Windows for the first time since
+anyone had access to the actual job logs.
+
+### Fabricated marketing docs removed
+`docs/BIOMETRIC_ENCLAVE.md` and `docs/HARDWARE_SPECIFICATIONS.md`
+described hardware this device does not have — a "secure boot v2",
+"hardware eFuse flash encryption", an "on-chip biometric enclave" — all
+flatly contradicted by this project's own honest status docs
+(`cryptick-token-code`'s `SECURITY_ROADMAP.md`: "flash encryption is not
+enabled"; this repo's `PROJECT.md`: "there is no secure element").
+Neither file cited a single real instruction code or TLV tag anything in
+this codebase depends on. Deleted both, plus `docs/INDEX.md` and the
+`docs/README.md` symlink to it (same false "Documentation Hub" framing).
+`docs/OATH_SPEC.md` was different — `crates/token-manager/src/oath.rs`
+cites it directly for real, load-bearing protocol detail — so that one
+was trimmed (cut the "Zero-Trust Passer Model" framing and a fictional
+"1.47\" On-Token Color Display" claim; this device has an OLED) rather
+than deleted, and its §5 security claim corrected to point at
+`SECURITY_ROADMAP.md`'s honest version instead of overclaiming
+flash-dump-proof storage.
+
+### A real verified-identity misattribution window, closed
+`handle_retarget_request` (`crates/daemon/src/transport.rs`) swapped the
+live connection to the new device before clearing/replacing
+`verified_id`, across a real GATT round trip. A `ListDevices` call
+landing in that window could see the new connection while `verified_id`
+still held the *previous* target's identity — momentarily attributing
+one device's hardware-verified serial to a different physical unit now
+on the same connection. PROJECT.md §15.8 is explicit that a verified
+identity must never cross a disconnect; the periodic reconnect path
+already cleared it first, retarget didn't. Fixed, plus a 5s timeout
+added to `read_verified_identity`'s single characteristic read (every
+other BLE operation in that loop already had one — an unanswered read
+would otherwise hang the whole background task indefinitely).
+
+### TOTP entry — the actual "add an account" gap
+`totp_list`/`totp_code` existed and worked against real hardware; there
+was no way to *add* a new TOTP account anywhere in the
+extension-to-native-host path. (`ctctl oath accounts add` exists but
+targets a YKOATH-style SELECT+AID protocol this device doesn't
+implement — confirmed on real hardware, `0x6D00` "instruction not
+supported" — a separate, pre-existing, not-fixed-here bug.) Added
+`oath_enroll`/`oath_delete` to `crates/webauthn-host/src/usb.rs`'s
+`UsbClient` and `handle_totp_add`/`handle_totp_delete` plus a base32
+decoder to `main.rs`, built against the same proven CTAPHID vendor
+protocol (`0xE3`) `totp_list`/`totp_code` already use. Verified byte-for-
+byte against `cryptick-token-code`'s actual firmware source
+(`src/host/cryptick_oath_hid.cpp`) rather than against `OATH_SPEC.md`,
+which disagreed with it in three ways once checked (see that doc's
+matching fix) — including a first draft here that would have failed
+against every real device. Timeouts raised 5s → 25s for PUT/DELETE to
+match the fingerprint/UV ceremony `CALCULATE` already waits on. The new
+hardware round-trip test is `#[ignore]`d — it needs a real touch.
+
+### Windows CI: three real compile/test failures, fixed
+`build-workspace (windows-latest)` and `fake-device (windows-latest)`
+both failed on first real exposure to a Windows CI log (the GitHub API
+and `gh` need auth even for public-repo job logs; this was finally read
+by navigating the Actions UI directly):
+
+1. **`sk-middleware`'s `PipeStream` had no `Debug` impl** — `DaemonClient`
+   derives `Debug` and has a `PipeStream` field on Windows; both of
+   `PipeStream`'s own fields already implement `Debug`, so deriving it
+   was a plain fix.
+2. **`get_local_tz_offset` called the POSIX-only `libc::localtime_r`
+   unconditionally** — doesn't exist in `libc`'s Windows bindings. Rather
+   than port it to Windows' differently-shaped `localtime_s`, the whole
+   function was removed: its only output (`tz_offset_mins`/
+   `tz_offset_str`) had no consumer anywhere — not the extension, not any
+   other crate — and every device-facing time sync already sends only a
+   raw UTC epoch (`build_oath_set_time_apdu`), confirmed against the
+   firmware too (`OATH_INS_SET_TIME` in `cryptick-token-code`'s
+   `cryptick_oath_hid.cpp` parses 4 epoch bytes, nothing else, and the
+   device has no timezone concept anywhere). There was nothing left for
+   the host-side computation to be used for.
+3. **`windows_pipe.rs`'s two DACL tests failed on real Windows** — the
+   kernel rendered the pipe owner's SID back as the SDDL alias `LA`
+   (Local Administrator, RID 500 — what the GitHub-hosted runner's own
+   account turned out to be) instead of `owner_sid()`'s numeric
+   `S-1-...` form, so the literal substring check never matched even
+   though the ACE names the exact same SID (and `GENERIC_ALL`→`FA` for
+   the same reason: a real but harmless Windows ACE-mapping detail, not
+   a bug in the DACL). Both tests now resolve the ACE's account token
+   back to a canonical SID via `ConvertStringSidToSidW` before
+   comparing.
+
+All three confirmed fixed on real Windows CI (not just local
+cross-compilation, which can't fully reproduce the MSVC/Windows-SDK
+environment) — `build-workspace`/`fake-device` (windows-latest) both
+green on the next run.
